@@ -4,6 +4,14 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { useProtectedRoute } from '../src/hooks/useProtectedRoute';
 
+// Import math engine test runner
+import { runMathEngineTests } from '../src/lib/math/generatorTest';
+
+// Execute test suite on boot in development mode
+if (__DEV__) {
+  runMathEngineTests();
+}
+
 function RootLayoutNav() {
   const { isLoading } = useAuth();
   
