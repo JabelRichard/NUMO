@@ -6,6 +6,8 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
+  Alert,
+  Platform,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -84,6 +86,35 @@ export default function MathWorkoutScreen() {
     ? ((currentIndex + 1) / totalQuestions) * 100
     : 0;
 
+  // Handles confirmation prompt before abandoning workout session
+  const handleQuitWorkout = () => {
+    if (Platform.OS === 'web') {
+      const confirmQuit = window.confirm(
+        'Quit Workout?\nYour progress for this workout will not be saved.'
+      );
+      if (confirmQuit) {
+        router.back();
+      }
+    } else {
+      Alert.alert(
+        'Quit Workout?',
+        'Your progress for this workout will not be saved.',
+        [
+          {
+            text: 'Keep Practicing',
+            style: 'cancel',
+          },
+          {
+            text: 'Quit',
+            style: 'destructive',
+            onPress: () => router.back(),
+          },
+        ],
+        { cancelable: true }
+      );
+    }
+  };
+
   const getOperationDisplayTitle = (): string => {
     if (!mode) return 'PRACTICE';
     switch (mode.toLowerCase()) {
@@ -139,7 +170,6 @@ export default function MathWorkoutScreen() {
     setFeedback(attemptResult.isCorrect ? 'correct' : 'incorrect');
     triggerFeedbackAnimation(attemptResult.isCorrect);
 
-    // Save current question attempt into local state accumulator
     const updatedAttempts = [...attempts, attemptResult];
     setAttempts(updatedAttempts);
 
@@ -151,13 +181,12 @@ export default function MathWorkoutScreen() {
         setCurrentIndex((prev) => prev + 1);
         startTimeRef.current = Date.now();
       } else {
-        // Workout Finished: Pass complete session history payload to Results screen
         router.replace({
           pathname: '/results' as any,
           params: {
             mode: mode || 'mixed',
             difficulty: difficulty || 'easy',
-            results: JSON.stringify(updatedAttempts)
+            results: JSON.stringify(updatedAttempts),
           },
         });
       }
@@ -194,7 +223,7 @@ export default function MathWorkoutScreen() {
       <View style={styles.header}>
         <TouchableOpacity
           style={styles.closeButton}
-          onPress={() => router.back()}
+          onPress={handleQuitWorkout}
           activeOpacity={0.7}
         >
           <Ionicons name="close" size={18} color="#1C1C1E" />

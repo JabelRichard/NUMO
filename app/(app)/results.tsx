@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import {
   View,
   Text,
@@ -6,7 +6,8 @@ import {
   SafeAreaView,
   StatusBar,
   ScrollView,
-  TouchableOpacity, 
+  TouchableOpacity,
+  ActivityIndicator,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -18,7 +19,8 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { GlassCard } from '../../src/components/GlassCard';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
-import { QuestionAttemptResult } from '../../src/lib/math/types';
+import { QuestionAttemptResult, OperationType } from '../../src/lib/math/types';
+import { saveWorkoutSession } from '../../src/services/workoutService';
 
 export default function ResultsScreen() {
   const router = useRouter();
@@ -27,6 +29,10 @@ export default function ResultsScreen() {
     difficulty?: string;
     results?: string;
   }>();
+
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const hasSavedRef = useRef(false);
 
   // Reanimated entrance animation values
   const opacity = useSharedValue(0);
@@ -59,6 +65,26 @@ export default function ResultsScreen() {
     }
   }, [results]);
 
+  // Persist session to Supabase ONCE on mount
+  useEffect(() => {
+    if (attempts.length === 0 || hasSavedRef.current) return;
+    hasSavedRef.current = true;
+
+    const activeMode = (mode as OperationType) || 'mixed';
+    const activeDiff = difficulty || 'easy';
+
+    async function persist() {
+      setSaving(true);
+      const { error } = await saveWorkoutSession(attempts, activeMode, activeDiff);
+      setSaving(false);
+      if (error) {
+        setSaveError('Failed to save session online. Results stored locally.');
+      }
+    }
+
+    persist();
+  }, [attempts, mode, difficulty]);
+
   // Derived Performance Metrics
   const totalQuestions = attempts.length;
   const correctCount = attempts.filter((a) => a.isCorrect).length;
@@ -73,14 +99,11 @@ export default function ResultsScreen() {
   const averageTimePerQuestionMs =
     totalQuestions > 0 ? totalTimeSpentMs / totalQuestions : 0;
 
-  // Format Milliseconds to Readable Time String
   const formatTotalTime = (ms: number): string => {
     const totalSeconds = Math.floor(ms / 1000);
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
-    if (mins > 0) {
-      return `${mins}m ${secs}s`;
-    }
+    if (mins > 0) return `${mins}m ${secs}s`;
     return `${secs}s`;
   };
 
@@ -89,7 +112,6 @@ export default function ResultsScreen() {
     return `${seconds}s`;
   };
 
-  // Dynamic Feedback Message & Icon
   const getFeedbackDetails = (accuracyPct: number) => {
     if (accuracyPct >= 90) {
       return {
@@ -152,7 +174,7 @@ export default function ResultsScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Top Title */}
+          {/* Header Tag */}
           <Text style={styles.operationTag}>{getOperationDisplayTitle()}</Text>
 
           {/* Feedback Pill */}
@@ -163,7 +185,17 @@ export default function ResultsScreen() {
             </Text>
           </View>
 
-          {/* Main Focus: Hero Glass Score Card */}
+          {/* Syncing Status Indicator */}
+          {saving ? (
+            <View style={styles.syncContainer}>
+              <ActivityIndicator size="small" color="#EE5839" />
+              <Text style={styles.syncText}>Saving workout...</Text>
+            </View>
+          ) : saveError ? (
+            <Text style={styles.errorText}>{saveError}</Text>
+          ) : null}
+
+          {/* Hero Glass Score Card */}
           <GlassCard style={styles.heroScoreCard} intensity={60}>
             <Text style={styles.scoreLabel}>ACCURACY</Text>
             <Text style={styles.scorePercentage}>{accuracy}%</Text>
@@ -172,7 +204,7 @@ export default function ResultsScreen() {
             </Text>
           </GlassCard>
 
-          {/* Answer Breakdown Row */}
+          {/* Breakdown Row */}
           <View style={styles.metricsRow}>
             <View style={[styles.coloredMetricCard, { backgroundColor: '#AFA2FE' }]}>
               <Text style={styles.coloredMetricValue}>{correctCount}</Text>
@@ -185,7 +217,7 @@ export default function ResultsScreen() {
             </View>
           </View>
 
-          {/* Timing Performance Section */}
+          {/* Timing Section */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Performance</Text>
           </View>
@@ -235,7 +267,7 @@ export default function ResultsScreen() {
             <TouchableOpacity
               style={styles.secondaryButton}
               activeOpacity={0.7}
-              onPress={() => router.replace('/training' as any)} // <--- Added type assertion 'as any'
+              onPress={() => router.replace('/training' as any)}
             >
               <Text style={styles.secondaryButtonText}>Back to Training</Text>
             </TouchableOpacity>
@@ -272,11 +304,27 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16,
     paddingVertical: 8,
     borderRadius: 20,
-    marginBottom: 20,
+    marginBottom: 16,
   },
   feedbackText: {
     fontSize: 14,
     fontWeight: '700',
+  },
+  syncContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  syncText: {
+    fontSize: 12,
+    color: '#8E8E93',
+    fontWeight: '600',
+  },
+  errorText: {
+    fontSize: 12,
+    color: '#D93838',
+    marginBottom: 12,
   },
   heroScoreCard: {
     width: '100%',

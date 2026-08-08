@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
+  Modal,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -14,16 +15,87 @@ import { CORE_PROGRAMS, FUTURE_PROGRAMS } from '../../../src/data/trainingProgra
 import { ProgramCard } from '../../../src/components/ProgramCard';
 import { GlassCard } from '../../../src/components/GlassCard';
 
+type Difficulty = 'easy' | 'medium' | 'hard';
+
 export default function TrainingSelectionScreen() {
   const router = useRouter();
   const [showOthers, setShowOthers] = useState(false);
 
+  // Map storing chosen difficulty per program ID (defaults to 'easy')
+  const [difficulties, setDifficulties] = useState<Record<string, Difficulty>>({});
+
+  // State for active dropdown modal picker
+  const [activePickerId, setActivePickerId] = useState<string | null>(null);
+
+  const getDifficulty = (id: string): Difficulty => difficulties[id] || 'easy';
+
+  const setProgramDifficulty = (id: string, level: Difficulty) => {
+    setDifficulties((prev) => ({ ...prev, [id]: level }));
+    setActivePickerId(null);
+  };
+
   const handleSelectProgram = (programId: string) => {
-    // Navigate to the workout screen with the chosen operation mode
+    const selectedDifficulty = getDifficulty(programId);
     router.push({
-      pathname: '/workout',
-      params: { mode: programId },
+      pathname: '/workout' as any,
+      params: { mode: programId, difficulty: selectedDifficulty },
     });
+  };
+
+  const getDifficultyLabel = (diff: Difficulty): string => {
+    switch (diff) {
+      case 'easy':
+        return 'Easy';
+      case 'medium':
+        return 'Medium';
+      case 'hard':
+        return 'Hard';
+      default:
+        return 'Easy';
+    }
+  };
+
+  // Color theme per difficulty option
+  const getDifficultyTheme = (diff: Difficulty) => {
+    switch (diff) {
+      case 'easy':
+        return {
+          color: '#4CAF50',
+          bg: 'rgba(76, 175, 80, 0.15)',
+          border: 'rgba(76, 175, 80, 0.3)',
+        };
+      case 'medium':
+        return {
+          color: '#EC673C',
+          bg: 'rgba(236, 103, 60, 0.15)',
+          border: 'rgba(236, 103, 60, 0.3)',
+        };
+      case 'hard':
+        return {
+          color: '#EE5839',
+          bg: 'rgba(238, 88, 57, 0.18)',
+          border: 'rgba(238, 88, 57, 0.35)',
+        };
+    }
+  };
+
+  // Maps operation IDs to original colors and icons
+  const getOperationConfig = (id: string) => {
+    switch (id.toLowerCase()) {
+      case 'addition':
+        return { icon: 'add' as const, color: '#AFA2FE' };
+      case 'subtraction':
+        return { icon: 'remove' as const, color: '#EC673C' };
+      case 'multiplication':
+        return { icon: 'close' as const, color: '#F6FE91' };
+      case 'division':
+        return { icon: 'stats-chart' as const, color: '#4CAF50' };
+      case 'adaptive_mix':
+      case 'mixed':
+        return { icon: 'sparkles' as const, color: '#EE5839' };
+      default:
+        return { icon: 'flash' as const, color: '#1C1C1E' };
+    }
   };
 
   return (
@@ -49,7 +121,7 @@ export default function TrainingSelectionScreen() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
-        {/* Hero Quick Start Banner */}
+        {/* Quick Start Banner */}
         <TouchableOpacity
           activeOpacity={0.9}
           onPress={() => handleSelectProgram('adaptive_mix')}
@@ -61,27 +133,75 @@ export default function TrainingSelectionScreen() {
               </View>
               <View>
                 <Text style={styles.quickStartTitle}>Quick Start</Text>
-                <Text style={styles.quickStartSubtitle}>Adaptive mix</Text>
+                <Text style={styles.quickStartSubtitle}>
+                  Adaptive mix • {getDifficultyLabel(getDifficulty('adaptive_mix'))}
+                </Text>
               </View>
             </View>
             <Ionicons name="arrow-forward" size={22} color="#FFF" />
           </View>
         </TouchableOpacity>
 
-        {/* Section: Core Operations */}
+        {/* Section: Core Operations inside Glass Card */}
         <Text style={styles.sectionLabel}>Core operations</Text>
-        <View style={styles.groupedCard}>
-          {CORE_PROGRAMS.map((program, index) => (
-            <ProgramCard
-              key={program.id}
-              program={program}
-              onPress={() => handleSelectProgram(program.id)}
-              showDivider={index < CORE_PROGRAMS.length - 1}
-            />
-          ))}
-        </View>
+        <GlassCard style={styles.groupedGlassCard} intensity={45}>
+          {CORE_PROGRAMS.map((program, index) => {
+            const currentDiff = getDifficulty(program.id);
+            const diffTheme = getDifficultyTheme(currentDiff);
+            const opConfig = getOperationConfig(program.id);
+            const descriptionText =
+              (program as any).subtitle || (program as any).description || '';
 
-        {/* Section: Future Programs Accordion */}
+            return (
+              <React.Fragment key={program.id}>
+                <View style={styles.programCardRow}>
+                  {/* Left Main Area: Tap to Start Workout */}
+                  <TouchableOpacity
+                    style={styles.programInfoLeft}
+                    activeOpacity={0.7}
+                    onPress={() => handleSelectProgram(program.id)}
+                  >
+                    <View style={[styles.iconCircle, { backgroundColor: opConfig.color }]}>
+                      <Ionicons
+                        name={opConfig.icon}
+                        size={20}
+                        color={program.id === 'multiplication' ? '#1C1C1E' : '#FFFFFF'}
+                      />
+                    </View>
+                    <View style={styles.textStack}>
+                      <Text style={styles.programTitle}>{program.title}</Text>
+                      {descriptionText ? (
+                        <Text style={styles.programSubtitle}>{descriptionText}</Text>
+                      ) : null}
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Right Area: Colored Difficulty Pill */}
+                  <TouchableOpacity
+                    style={[
+                      styles.dropdownButton,
+                      {
+                        backgroundColor: diffTheme.bg,
+                        borderColor: diffTheme.border,
+                      },
+                    ]}
+                    activeOpacity={0.7}
+                    onPress={() => setActivePickerId(program.id)}
+                  >
+                    <Text style={[styles.dropdownButtonText, { color: diffTheme.color }]}>
+                      {getDifficultyLabel(currentDiff)}
+                    </Text>
+                    <Ionicons name="chevron-down" size={14} color={diffTheme.color} />
+                  </TouchableOpacity>
+                </View>
+
+                {index < CORE_PROGRAMS.length - 1 && <View style={styles.cardDivider} />}
+              </React.Fragment>
+            );
+          })}
+        </GlassCard>
+
+        {/* Section: Future Programs Accordion (Restored Unchanged) */}
         <GlassCard style={styles.othersHeaderCard} intensity={40}>
           <TouchableOpacity
             style={styles.othersTouchable}
@@ -118,6 +238,73 @@ export default function TrainingSelectionScreen() {
           ) : null}
         </GlassCard>
       </ScrollView>
+
+      {/* Glassmorphic Modal Picker */}
+      <Modal
+        visible={activePickerId !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setActivePickerId(null)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setActivePickerId(null)}
+        >
+          <GlassCard style={styles.glassModalMenu} intensity={70}>
+            <Text style={styles.modalHeaderTitle}>Select Difficulty</Text>
+
+            {(['easy', 'medium', 'hard'] as Difficulty[]).map((level) => {
+              const isSelected = activePickerId
+                ? getDifficulty(activePickerId) === level
+                : false;
+              const levelTheme = getDifficultyTheme(level);
+
+              return (
+                <TouchableOpacity
+                  key={level}
+                  style={[
+                    styles.modalMenuItem,
+                    {
+                      backgroundColor: isSelected ? levelTheme.bg : 'transparent',
+                      borderColor: isSelected ? levelTheme.border : 'transparent',
+                    },
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    if (activePickerId) {
+                      setProgramDifficulty(activePickerId, level);
+                    }
+                  }}
+                >
+                  <View style={styles.modalItemLabelRow}>
+                    <View
+                      style={[
+                        styles.colorDot,
+                        { backgroundColor: levelTheme.color },
+                      ]}
+                    />
+                    <Text
+                      style={[
+                        styles.modalMenuItemText,
+                        {
+                          color: isSelected ? levelTheme.color : '#1C1C1E',
+                          fontWeight: isSelected ? '800' : '600',
+                        },
+                      ]}
+                    >
+                      {getDifficultyLabel(level)}
+                    </Text>
+                  </View>
+                  {isSelected ? (
+                    <Ionicons name="checkmark" size={18} color={levelTheme.color} />
+                  ) : null}
+                </TouchableOpacity>
+              );
+            })}
+          </GlassCard>
+        </TouchableOpacity>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -205,16 +392,58 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     marginLeft: 4,
   },
-  groupedCard: {
-    backgroundColor: '#FFFFFF',
+  groupedGlassCard: {
     borderRadius: 24,
     paddingVertical: 4,
+    paddingHorizontal: 0,
     marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
-    elevation: 2,
+  },
+  programCardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+  },
+  programInfoLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 12,
+  },
+  iconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  textStack: {
+    flex: 1,
+  },
+  programTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  programSubtitle: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+  },
+  dropdownButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 14,
+    borderWidth: 1,
+  },
+  dropdownButtonText: {
+    fontSize: 13,
+    fontWeight: '700',
   },
   othersHeaderCard: {
     borderRadius: 24,
@@ -252,5 +481,54 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.08)',
     marginBottom: 8,
+  },
+  cardDivider: {
+    height: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.06)',
+    marginHorizontal: 16,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 24,
+  },
+  glassModalMenu: {
+    width: '100%',
+    maxWidth: 280,
+    borderRadius: 24,
+    padding: 16,
+  },
+  modalHeaderTitle: {
+    fontSize: 12,
+    fontWeight: '800',
+    color: '#8E8E93',
+    letterSpacing: 1,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  modalMenuItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 6,
+  },
+  modalItemLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  colorDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+  },
+  modalMenuItemText: {
+    fontSize: 15,
   },
 });

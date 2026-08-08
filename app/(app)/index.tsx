@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,23 +14,31 @@ import Animated, {
   withTiming,
   Easing,
 } from 'react-native-reanimated';
-import { useRouter } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { GlassCard } from '../../src/components/GlassCard';
 import { PrimaryButton } from '../../src/components/PrimaryButton';
-import { QuestionAttemptResult } from '../../src/lib/math/types';
+import {
+  getWeeklyStats,
+  getRecentWorkouts,
+  WorkoutSessionRecord,
+  WeeklyStats,
+} from '../../src/services/workoutService';
 
 export default function DashboardScreen() {
   const router = useRouter();
   const { user, signOut } = useAuth();
 
-  // Weekly aggregate metrics state
-  const [weeklySolved, setWeeklySolved] = useState<number>(0);
-  const [weeklyTimeMs, setWeeklyTimeMs] = useState<number>(0);
-  const [weeklyAvgTimeMs, setWeeklyAvgTimeMs] = useState<number>(0);
+  const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>({
+    solvedCount: 0,
+    totalTimeMs: 0,
+    avgTimePerQuestionMs: 0,
+  });
 
-  // Reanimated entrance shared values
+  const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSessionRecord[]>([]);
+
+  // Reanimated entrance animation
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(20);
 
@@ -45,27 +53,30 @@ export default function DashboardScreen() {
     });
   }, []);
 
-  // Compute weekly statistics connected to session data structure
-  useEffect(() => {
-    // Note: Replace or hydrate this array with your persistent storage or database logs (e.g. AsyncStorage or Supabase)
-    const userSessionHistory: QuestionAttemptResult[] = [];
+  // Fetch real workout data whenever the dashboard comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
 
-    const now = Date.now();
-    const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+      async function loadDashboardData() {
+        const [stats, recent] = await Promise.all([
+          getWeeklyStats(),
+          getRecentWorkouts(),
+        ]);
 
-    // Filter attempts recorded within the last 7 days
-    const thisWeekAttempts = userSessionHistory.filter(
-      (attempt) => attempt.timestamp >= sevenDaysAgo
-    );
+        if (isMounted) {
+          setWeeklyStats(stats);
+          setRecentWorkouts(recent);
+        }
+      }
 
-    const totalSolved = thisWeekAttempts.filter((a) => a.isCorrect).length;
-    const totalTime = thisWeekAttempts.reduce((acc, a) => acc + a.timeTakenMs, 0);
-    const avgTime = thisWeekAttempts.length > 0 ? totalTime / thisWeekAttempts.length : 0;
+      loadDashboardData();
 
-    setWeeklySolved(totalSolved);
-    setWeeklyTimeMs(totalTime);
-    setWeeklyAvgTimeMs(avgTime);
-  }, []);
+      return () => {
+        isMounted = false;
+      };
+    }, [])
+  );
 
   const animatedStyle = useAnimatedStyle(() => ({
     opacity: opacity.value,
@@ -77,9 +88,8 @@ export default function DashboardScreen() {
     user?.email?.split('@')[0] ||
     'Math Champion';
 
-  // Format total weekly time (e.g., "12m" or "45s")
   const formatWeeklyTime = (ms: number): string => {
-    if (!ms || ms === 0) return '0s';
+    if (!ms || ms === 0) return '0m';
     const totalSecs = Math.floor(ms / 1000);
     const mins = Math.floor(totalSecs / 60);
     const secs = totalSecs % 60;
@@ -87,11 +97,66 @@ export default function DashboardScreen() {
     return `${secs}s`;
   };
 
-  // Format average time per question (e.g., "2.4s")
   const formatAvgTime = (ms: number): string => {
-    if (!ms || ms === 0) return '0s';
+    if (!ms || ms === 0) return '—';
     const seconds = (ms / 1000).toFixed(1);
     return `${seconds}s`;
+  };
+
+  const formatRelativeDate = (isoString: string): string => {
+    const date = new Date(isoString);
+    const now = new Date();
+
+    const isToday =
+      date.getDate() === now.getDate() &&
+      date.getMonth() === now.getMonth() &&
+      date.getFullYear() === now.getFullYear();
+
+    if (isToday) return 'Today';
+
+    const yesterday = new Date(now);
+    yesterday.setDate(now.getDate() - 1);
+    const isYesterday =
+      date.getDate() === yesterday.getDate() &&
+      date.getMonth() === yesterday.getMonth() &&
+      date.getFullYear() === yesterday.getFullYear();
+
+    if (isYesterday) return 'Yesterday';
+
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  const getOperationIcon = (op: string) => {
+    switch (op.toLowerCase()) {
+      case 'addition':
+        return 'add-circle-outline';
+      case 'subtraction':
+        return 'remove-circle-outline';
+      case 'multiplication':
+        return 'close-circle-outline';
+      case 'division':
+        return 'stats-chart-outline';
+      default:
+        return 'sparkles-outline';
+    }
+  };
+
+  const formatOperationTitle = (op: string) => {
+    switch (op.toLowerCase()) {
+      case 'addition':
+        return 'Addition';
+      case 'subtraction':
+        return 'Subtraction';
+      case 'multiplication':
+        return 'Multiplication';
+      case 'division':
+        return 'Division';
+      case 'adaptive_mix':
+      case 'mixed':
+        return 'Mixed Challenge';
+      default:
+        return op.charAt(0).toUpperCase() + op.slice(1);
+    }
   };
 
   return (
@@ -102,7 +167,7 @@ export default function DashboardScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Top Header Row with Dev Sign Out */}
+          {/* Header Row */}
           <View style={styles.headerRow}>
             <View>
               <Text style={styles.greeting}>Welcome back 👋</Text>
@@ -145,19 +210,21 @@ export default function DashboardScreen() {
             />
           </GlassCard>
 
-          {/* Quick Statistics Section - MODIFIED OVERVIEW */}
+          {/* Quick Statistics Section */}
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Overview</Text>
+            <Text style={styles.sectionTitle}>weekly Overview</Text>
           </View>
           <View style={styles.statsRow}>
             <View style={[styles.coloredStatCard, { backgroundColor: '#AFA2FE' }]}>
-              <Text style={styles.coloredStatValue}>{weeklySolved}</Text>
+              <Text style={styles.coloredStatValue}>
+                {weeklyStats.solvedCount}
+              </Text>
               <Text style={styles.coloredStatLabel}>Solved</Text>
             </View>
 
             <View style={[styles.coloredStatCard, { backgroundColor: '#EC673C' }]}>
               <Text style={[styles.coloredStatValue, { color: '#FFFFFF' }]}>
-                {formatWeeklyTime(weeklyTimeMs)}
+                {formatWeeklyTime(weeklyStats.totalTimeMs)}
               </Text>
               <Text style={[styles.coloredStatLabel, { color: 'rgba(255, 255, 255, 0.8)' }]}>
                 Time
@@ -166,28 +233,66 @@ export default function DashboardScreen() {
 
             <View style={[styles.coloredStatCard, { backgroundColor: '#F6FE91' }]}>
               <Text style={styles.coloredStatValue}>
-                {formatAvgTime(weeklyAvgTimeMs)}
+                {formatAvgTime(weeklyStats.avgTimePerQuestionMs)}
               </Text>
               <Text style={styles.coloredStatLabel}>Avg/Q</Text>
             </View>
           </View>
 
-          {/* Recent Activity Section */}
+          {/* Recent Workouts Section */}
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionTitle}>Recent Workouts</Text>
           </View>
-          <GlassCard style={styles.activityCard} intensity={35}>
-            <View style={styles.emptyActivityContainer}>
-              <View style={styles.emptyIconCircle}>
-                <Ionicons name="time-outline" size={28} color="#8E8E93" />
+
+          {recentWorkouts.length > 0 ? (
+            <GlassCard style={styles.recentListCard} intensity={40}>
+              {recentWorkouts.map((item, index) => {
+                const avgSecs = (item.average_time_per_question / 1000).toFixed(1);
+                return (
+                  <View key={item.id}>
+                    <View style={styles.workoutRow}>
+                      <View style={styles.workoutIconCircle}>
+                        <Ionicons
+                          name={getOperationIcon(item.operation) as any}
+                          size={22}
+                          color="#1C1C1E"
+                        />
+                      </View>
+
+                      <View style={styles.workoutInfo}>
+                        <Text style={styles.workoutTitle}>
+                          {formatOperationTitle(item.operation)}
+                        </Text>
+                        <Text style={styles.workoutSubtitle}>
+                          {item.correct_answers}/{item.total_questions} · {Math.round(item.accuracy)}% · {avgSecs}s/Q
+                        </Text>
+                      </View>
+
+                      <Text style={styles.workoutDate}>
+                        {formatRelativeDate(item.completed_at)}
+                      </Text>
+                    </View>
+                    {index < recentWorkouts.length - 1 ? (
+                      <View style={styles.rowDivider} />
+                    ) : null}
+                  </View>
+                );
+              })}
+            </GlassCard>
+          ) : (
+            <GlassCard style={styles.activityCard} intensity={35}>
+              <View style={styles.emptyActivityContainer}>
+                <View style={styles.emptyIconCircle}>
+                  <Ionicons name="time-outline" size={28} color="#8E8E93" />
+                </View>
+                <Text style={styles.emptyTitle}>No workouts yet</Text>
+                <Text style={styles.emptySubtitle}>
+                  Complete your first mental session to start building your
+                  workout history.
+                </Text>
               </View>
-              <Text style={styles.emptyTitle}>No workouts yet</Text>
-              <Text style={styles.emptySubtitle}>
-                Complete your first mental session to start building your
-                workout history.
-              </Text>
-            </View>
-          </GlassCard>
+            </GlassCard>
+          )}
         </ScrollView>
       </Animated.View>
     </SafeAreaView>
@@ -364,5 +469,47 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 18,
     paddingHorizontal: 16,
+  },
+  recentListCard: {
+    borderRadius: 24,
+    paddingVertical: 6,
+    paddingHorizontal: 16,
+  },
+  workoutRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+  },
+  workoutIconCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.04)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  workoutInfo: {
+    flex: 1,
+  },
+  workoutTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  workoutSubtitle: {
+    fontSize: 12,
+    color: '#8E8E93',
+    marginTop: 2,
+    fontWeight: '500',
+  },
+  workoutDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#8E8E93',
+  },
+  rowDivider: {
+    height: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
   },
 });
