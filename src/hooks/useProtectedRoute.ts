@@ -10,14 +10,20 @@ export function useProtectedRoute() {
   useEffect(() => {
     if (isLoading) return;
 
-    // Check if the current top-level segment is within (auth)
     const inAuthGroup = segments[0] === '(auth)';
+    const currentPath = segments.join('/');
 
-    if (!session && !inAuthGroup) {
-      // 1. User is NOT signed in and trying to access protected routes -> Redirect to Login
-      router.replace('/(auth)/login');
+    // Allow unauthenticated demo sessions on training and results
+    const isDemoAccessibleRoute =
+      currentPath.includes('training') || 
+      currentPath.includes('workout') || 
+      currentPath.includes('results');
+
+    if (!session && !inAuthGroup && !isDemoAccessibleRoute) {
+      // 1. Unauthenticated user trying to access protected routes -> redirect to Welcome
+      router.replace('/(auth)/welcome');
     } else if (session && inAuthGroup) {
-      // 2. User IS signed in and trying to access Auth screens -> Redirect to Main App
+      // 2. Authenticated user trying to access Auth screens -> redirect to Main App
       router.replace('/');
     }
   }, [session, isLoading, segments]);

@@ -1,5 +1,8 @@
-import { supabase } from "../lib/supabase"; // Ensure this points to your configured Supabase client
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { supabase } from "../config/supabase";
 import { QuestionAttemptResult, OperationType } from "../lib/math/types";
+
+const PENDING_DEMO_KEY = "@numo_pending_demo_workout";
 
 export interface WorkoutSessionPayload {
   operation: OperationType;
@@ -24,22 +27,88 @@ export interface WeeklyStats {
   avgTimePerQuestionMs: number;
 }
 
+export interface PendingDemoSession {
+  attempts: QuestionAttemptResult[];
+  mode: OperationType;
+  difficulty: string;
+  completedAt: string;
+}
+
+// In-memory fallback & concurrency lock
+let inMemoryPendingDemo: PendingDemoSession | null = null;
+let isSyncingDemo = false;
+
 /**
- * Saves a completed workout session to Supabase
+ * Stores a completed demo workout locally while the user creates an account / signs in
+ */
+export async function setPendingDemoSession(
+  attempts: QuestionAttemptResult[],
+  mode: OperationType = "mixed" as OperationType,
+  difficulty: string = "easy"
+): Promise<void> {
+  const pendingData: PendingDemoSession = {
+    attempts,
+    mode,
+    difficulty,
+    completedAt: new Date().toISOString(),
+  };
+
+  inMemoryPendingDemo = pendingData;
+  try {
+    await AsyncStorage.setItem(PENDING_DEMO_KEY, JSON.stringify(pendingData));
+  } catch (e) {
+    console.warn("Failed to store pending demo session in AsyncStorage:", e);
+  }
+}
+
+/**
+ * Retrieves the pending demo workout if one exists
+ */
+export async function getPendingDemoSession(): Promise<PendingDemoSession | null> {
+  if (inMemoryPendingDemo) return inMemoryPendingDemo;
+  try {
+    const raw = await AsyncStorage.getItem(PENDING_DEMO_KEY);
+    return raw ? (JSON.parse(raw) as PendingDemoSession) : null;
+  } catch (e) {
+    console.warn("Failed to retrieve pending demo session:", e);
+    return null;
+  }
+}
+
+/**
+ * Clears the pending demo workout
+ */
+export async function clearPendingDemoSession(): Promise<void> {
+  inMemoryPendingDemo = null;
+  try {
+    await AsyncStorage.removeItem(PENDING_DEMO_KEY);
+  } catch (e) {
+    console.warn("Failed to clear pending demo session:", e);
+  }
+}
+
+/**
+ * Saves a completed workout session to Supabase (authenticated user)
  */
 export async function saveWorkoutSession(
   attempts: QuestionAttemptResult[],
   mode: OperationType,
   difficulty: string = "easy",
+  explicitUserId?: string
 ): Promise<{ data: WorkoutSessionRecord | null; error: Error | null }> {
   try {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
+    let targetUserId = explicitUserId;
 
-    if (userError || !user) {
-      throw new Error("User not authenticated.");
+    if (!targetUserId) {
+      const {
+        data: { user },
+        error: userError,
+      } = await supabase.auth.getUser();
+
+      if (userError || !user) {
+        throw new Error("User not authenticated.");
+      }
+      targetUserId = user.id;
     }
 
     const total_questions = attempts.length;
@@ -57,7 +126,7 @@ export async function saveWorkoutSession(
         : 0;
 
     const payload = {
-      user_id: user.id,
+      user_id: targetUserId,
       operation: mode,
       difficulty,
       total_questions,
@@ -84,6 +153,53 @@ export async function saveWorkoutSession(
 }
 
 /**
+ * Syncs and saves any pending demo session once the user logs in or signs up.
+ * Includes concurrency locking to prevent duplicate insertions.
+ */
+export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
+  if (isSyncingDemo || !userId) return false;
+
+  try {
+    isSyncingDemo = true;
+    const pendingSession = await getPendingDemoSession();
+
+    if (!pendingSession || !pendingSession.attempts || pendingSession.attempts.length === 0) {
+      isSyncingDemo = false;
+      return false;
+    }
+
+    // Clear local storage first to prevent duplicate attempts if re-triggered
+    await clearPendingDemoSession();
+
+    const { data, error } = await saveWorkoutSession(
+      pendingSession.attempts,
+      pendingSession.mode,
+      pendingSession.difficulty,
+      userId
+    );
+
+    if (error || !data) {
+      console.error("Failed to sync pending demo workout to Supabase:", error);
+      // Restore locally if failed
+      await setPendingDemoSession(
+        pendingSession.attempts,
+        pendingSession.mode,
+        pendingSession.difficulty
+      );
+      isSyncingDemo = false;
+      return false;
+    }
+
+    isSyncingDemo = false;
+    return true;
+  } catch (err) {
+    console.error("Error during demo workout sync:", err);
+    isSyncingDemo = false;
+    return false;
+  }
+}
+
+/**
  * Calculates current calendar week statistics for the authenticated user
  */
 export async function getWeeklyStats(): Promise<WeeklyStats> {
@@ -94,9 +210,8 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
     if (!user)
       return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
 
-    // Get current calendar week start (Monday at 00:00:00)
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0 = Sun, 1 = Mon ...
+    const dayOfWeek = now.getDay();
     const distanceToMon = (dayOfWeek + 6) % 7;
     const startOfWeek = new Date(now);
     startOfWeek.setDate(now.getDate() - distanceToMon);
@@ -114,15 +229,15 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
 
     const solvedCount = data.reduce(
       (acc: number, row) => acc + row.correct_answers,
-      0,
+      0
     );
     const totalTimeMs = data.reduce(
       (acc: number, row) => acc + row.total_time,
-      0,
+      0
     );
     const totalQuestions = data.reduce(
       (acc: number, row) => acc + row.total_questions,
-      0,
+      0
     );
 
     const avgTimePerQuestionMs =

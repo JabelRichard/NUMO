@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,7 +9,7 @@ import {
   StatusBar,
   Modal,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { CORE_PROGRAMS, FUTURE_PROGRAMS } from '../../../src/data/trainingPrograms';
 import { ProgramCard } from '../../../src/components/ProgramCard';
@@ -19,7 +19,22 @@ type Difficulty = 'easy' | 'medium' | 'hard';
 
 export default function TrainingSelectionScreen() {
   const router = useRouter();
+  const params = useLocalSearchParams<{ mode?: string; difficulty?: Difficulty }>();
   const [showOthers, setShowOthers] = useState(false);
+
+  // Auto-redirect if launched directly in demo mode from the Welcome screen
+  useEffect(() => {
+    if (params.mode === 'demo') {
+      router.replace({
+        pathname: '/workout' as any,
+        params: {
+          mode: 'adaptive_mix',
+          difficulty: 'easy',
+          isDemo: 'true',
+        },
+      });
+    }
+  }, [params.mode]);
 
   // Map storing chosen difficulty per program ID (defaults to 'easy')
   const [difficulties, setDifficulties] = useState<Record<string, Difficulty>>({});
@@ -201,7 +216,7 @@ export default function TrainingSelectionScreen() {
           })}
         </GlassCard>
 
-        {/* Section: Future Programs Accordion (Restored Unchanged) */}
+        {/* Section: Future Programs Accordion */}
         <GlassCard style={styles.othersHeaderCard} intensity={40}>
           <TouchableOpacity
             style={styles.othersTouchable}

@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../config/supabase';
 import { AuthContextType, AuthState } from '../types/auth';
+import { syncPendingDemoWorkout } from '../services/workoutService';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -15,15 +16,24 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     // 1. Initial Session Check (on App Launch / Restart)
     const initializeAuth = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
+        const {
+          data: { session },
+          error,
+        } = await supabase.auth.getSession();
         if (error) {
           console.error('Error retrieving session:', error.message);
         }
+
         setState({
           session,
           user: session?.user ?? null,
           isLoading: false,
         });
+
+        // Sync pending demo if already logged in or session restored
+        if (session?.user?.id) {
+          await syncPendingDemoWorkout(session.user.id);
+        }
       } catch (err) {
         console.error('Unexpected auth initialization error:', err);
         setState({
@@ -38,12 +48,17 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     // 2. Real-time Subscription to Supabase Auth State Changes
     const { data: authListener } = supabase.auth.onAuthStateChange(
-      (_event, session) => {
+      async (event, session) => {
         setState({
           session,
           user: session?.user ?? null,
           isLoading: false,
         });
+
+        // Sync pending demo workout as soon as user signs up or logs in
+        if (session?.user?.id && (event === 'SIGNED_IN' || event === 'USER_UPDATED')) {
+          await syncPendingDemoWorkout(session.user.id);
+        }
       }
     );
 

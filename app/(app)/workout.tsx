@@ -30,11 +30,13 @@ import {
 
 export default function MathWorkoutScreen() {
   const router = useRouter();
-  const { mode, difficulty } = useLocalSearchParams<{
+  const { mode, difficulty, isDemo } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
+    isDemo?: string;
   }>();
 
+  const isDemoMode = isDemo === 'true' || mode === 'demo';
   const generatorRef = useRef(new QuestionGenerator());
 
   const [questions, setQuestions] = useState<MathQuestion[]>([]);
@@ -68,20 +70,23 @@ export default function MathWorkoutScreen() {
 
     const activeDifficulty = difficulty === 'medium' || difficulty === 'hard' ? difficulty : 'easy';
 
+    // Demo mode: 10 questions | Normal mode: 20 questions
+    const sessionCount = isDemoMode ? 10 : 20;
+
     const generatedSession = generatorRef.current.generateSession({
       operation: activeMode,
       difficulty: activeDifficulty,
-      questionCount: 20,
+      questionCount: sessionCount,
     });
 
     setQuestions(generatedSession);
     setCurrentIndex(0);
     setAttempts([]);
     startTimeRef.current = Date.now();
-  }, [mode, difficulty]);
+  }, [mode, difficulty, isDemoMode]);
 
   const currentQuestion = questions[currentIndex];
-  const totalQuestions = questions.length || 20;
+  const totalQuestions = questions.length || (isDemoMode ? 10 : 20);
   const progressPercent = questions.length
     ? ((currentIndex + 1) / totalQuestions) * 100
     : 0;
@@ -116,6 +121,7 @@ export default function MathWorkoutScreen() {
   };
 
   const getOperationDisplayTitle = (): string => {
+    if (isDemoMode) return 'DEMO WORKOUT';
     if (!mode) return 'PRACTICE';
     switch (mode.toLowerCase()) {
       case 'addition':
@@ -186,6 +192,7 @@ export default function MathWorkoutScreen() {
           params: {
             mode: mode || 'mixed',
             difficulty: difficulty || 'easy',
+            isDemo: isDemoMode ? 'true' : 'false',
             results: JSON.stringify(updatedAttempts),
           },
         });
