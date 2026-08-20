@@ -18,6 +18,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useAuth } from '../../src/context/AuthContext';
+import { getUserSettings } from '../../src/services/settingsService';
 import { CustomNumericKeypad } from '../../src/components/CustomNumericKeypad';
 import { QuestionGenerator } from '../../src/lib/math/questionGenerator';
 import { recordAttempt } from '../../src/lib/math/questionValidator';
@@ -30,6 +32,7 @@ import {
 
 export default function MathWorkoutScreen() {
   const router = useRouter();
+  const { session } = useAuth();
   const { mode, difficulty, isDemo } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
@@ -61,33 +64,59 @@ export default function MathWorkoutScreen() {
     );
   }, []);
 
-  // Initialize session questions
+  // Initialize session questions dynamically based on saved settings or demo rules
   useEffect(() => {
-    const activeMode: OperationType =
-      mode && ['addition', 'subtraction', 'multiplication', 'division', 'mixed'].includes(mode)
-        ? (mode as OperationType)
-        : 'mixed';
+    let isMounted = true;
 
-    const activeDifficulty = difficulty === 'medium' || difficulty === 'hard' ? difficulty : 'easy';
+    async function initSession() {
+      const activeMode: OperationType =
+        mode && ['addition', 'subtraction', 'multiplication', 'division', 'mixed'].includes(mode)
+          ? (mode as OperationType)
+          : 'mixed';
 
-    // Demo mode: 10 questions | Normal mode: 20 questions
-    const sessionCount = isDemoMode ? 10 : 20;
+      const activeDifficulty = difficulty === 'medium' || difficulty === 'hard' ? difficulty : 'easy';
 
-    const generatedSession = generatorRef.current.generateSession({
-      operation: activeMode,
-      difficulty: activeDifficulty,
-      questionCount: sessionCount,
-    });
+      // 1. Free Demo: Enforce 10 questions
+      let sessionCount = 10;
 
-    setQuestions(generatedSession);
-    setCurrentIndex(0);
-    setAttempts([]);
-    startTimeRef.current = Date.now();
-  }, [mode, difficulty, isDemoMode]);
+      // 2. Normal Mode: Load saved settings (5, 10, 20, 30) or use fallback of 20
+      if (!isDemoMode) {
+        if (session?.user?.id) {
+          try {
+            const userSettings = await getUserSettings(session.user.id);
+            sessionCount = userSettings.daily_question_goal ?? 20;
+          } catch {
+            sessionCount = 20; // Fallback default
+          }
+        } else {
+          sessionCount = 20; // Fallback default if unauthenticated
+        }
+      }
+
+      const generatedSession = generatorRef.current.generateSession({
+        operation: activeMode,
+        difficulty: activeDifficulty,
+        questionCount: sessionCount,
+      });
+
+      if (isMounted) {
+        setQuestions(generatedSession);
+        setCurrentIndex(0);
+        setAttempts([]);
+        startTimeRef.current = Date.now();
+      }
+    }
+
+    initSession();
+
+    return () => {
+      isMounted = false;
+    };
+  }, [mode, difficulty, isDemoMode, session?.user?.id]);
 
   const currentQuestion = questions[currentIndex];
-  const totalQuestions = questions.length || (isDemoMode ? 10 : 20);
-  const progressPercent = questions.length
+  const totalQuestions = questions.length;
+  const progressPercent = totalQuestions
     ? ((currentIndex + 1) / totalQuestions) * 100
     : 0;
 

@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   SafeAreaView,
   StatusBar,
+  Image,
 } from 'react-native';
 import Animated, {
   useSharedValue,
@@ -25,10 +26,11 @@ import {
   WorkoutSessionRecord,
   WeeklyStats,
 } from '../../src/services/workoutService';
+import { getUserProfile } from '../../src/services/settingsService';
 
 export default function DashboardScreen() {
   const router = useRouter();
-  const { user, signOut } = useAuth();
+  const { session } = useAuth();
 
   const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>({
     solvedCount: 0,
@@ -37,8 +39,8 @@ export default function DashboardScreen() {
   });
 
   const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSessionRecord[]>([]);
+  const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
 
-  // Reanimated entrance animation
   const opacity = useSharedValue(0);
   const translateY = useSharedValue(20);
 
@@ -53,7 +55,6 @@ export default function DashboardScreen() {
     });
   }, []);
 
-  // Fetch real workout data whenever the dashboard comes into focus
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -63,6 +64,11 @@ export default function DashboardScreen() {
           getWeeklyStats(),
           getRecentWorkouts(),
         ]);
+
+        if (session?.user?.id) {
+          const prof = await getUserProfile(session.user.id);
+          if (isMounted) setProfile(prof);
+        }
 
         if (isMounted) {
           setWeeklyStats(stats);
@@ -75,7 +81,7 @@ export default function DashboardScreen() {
       return () => {
         isMounted = false;
       };
-    }, [])
+    }, [session?.user?.id])
   );
 
   const animatedStyle = useAnimatedStyle(() => ({
@@ -84,9 +90,23 @@ export default function DashboardScreen() {
   }));
 
   const displayName =
-    user?.user_metadata?.full_name ||
-    user?.email?.split('@')[0] ||
+    profile.full_name ||
+    session?.user?.user_metadata?.full_name ||
+    session?.user?.email?.split('@')[0] ||
     'Math Champion';
+
+  const avatarUrl =
+    profile.avatar_url ||
+    session?.user?.user_metadata?.avatar_url ||
+    null;
+
+  // Extracts clean initials (e.g., "Jabel Richard" -> "JR")
+  const getInitials = (name: string): string => {
+    const parts = name.trim().split(' ').filter(Boolean);
+    if (parts.length === 0) return 'M';
+    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  };
 
   const formatWeeklyTime = (ms: number): string => {
     if (!ms || ms === 0) return '0m';
@@ -167,28 +187,23 @@ export default function DashboardScreen() {
           contentContainerStyle={styles.scrollContent}
           showsVerticalScrollIndicator={false}
         >
-          {/* Header Row */}
+          {/* Top Bar: Name & Tappable Profile Avatar */}
           <View style={styles.headerRow}>
-            <View>
-              <Text style={styles.greeting}>Welcome back 👋</Text>
-              <Text style={styles.userName}>{displayName}</Text>
-            </View>
-            <View style={styles.headerRightActions}>
-              <TouchableOpacity
-                style={styles.devSignOutButton}
-                onPress={signOut}
-                activeOpacity={0.7}
-              >
-                <Ionicons name="log-out-outline" size={20} color="#D93838" />
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.avatarButton} activeOpacity={0.8}>
+            <Text style={styles.appTitle}>NUMO</Text>
+
+            <TouchableOpacity
+              style={styles.avatarButton}
+              activeOpacity={0.8}
+              onPress={() => router.push('/(app)/settings')}
+            >
+              {avatarUrl ? (
+                <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+              ) : (
                 <View style={styles.avatarInner}>
-                  <Text style={styles.avatarText}>
-                    {displayName.charAt(0).toUpperCase()}
-                  </Text>
+                  <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
                 </View>
-              </TouchableOpacity>
-            </View>
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* Hero Card */}
@@ -212,7 +227,7 @@ export default function DashboardScreen() {
 
           {/* Quick Statistics Section */}
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>weekly Overview</Text>
+            <Text style={styles.sectionTitle}>Weekly Overview</Text>
           </View>
           <View style={styles.statsRow}>
             <View style={[styles.coloredStatCard, { backgroundColor: '#AFA2FE' }]}>
@@ -315,79 +330,62 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
   },
-  greeting: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8E8E93',
-  },
-  userName: {
-    fontSize: 24,
-    fontWeight: '800',
+  appTitle: {
+    fontSize: 22,
+    fontWeight: '400',
     color: '#1C1C1E',
-    marginTop: 2,
-  },
-  headerRightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  devSignOutButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: '#FFFFFF',
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 6,
-    elevation: 2,
+    letterSpacing: -0.5,
   },
   avatarButton: {
     width: 48,
     height: 48,
     borderRadius: 24,
     backgroundColor: '#FFFFFF',
-    padding: 3,
+    padding: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
     shadowRadius: 8,
     elevation: 3,
   },
+  avatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 22,
+  },
   avatarInner: {
     flex: 1,
-    borderRadius: 21,
-    backgroundColor: '#EE5839',
+    borderRadius: 22,
+    backgroundColor: '#EC673C',
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarText: {
     color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '700',
+    fontSize: 16,
+    fontWeight: '800',
+    letterSpacing: 0.5,
   },
   heroCard: {
     marginBottom: 28,
   },
   heroBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: 'rgba(238, 88, 57, 0.12)',
+    backgroundColor: 'rgba(236, 103, 60, 0.12)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 12,
     marginBottom: 12,
   },
   heroBadgeText: {
-    color: '#EE5839',
+    color: '#EC673C',
     fontSize: 11,
     fontWeight: '700',
     letterSpacing: 0.8,
   },
   heroTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    fontSize: 25,
+    fontWeight: '500',
     color: '#1C1C1E',
     lineHeight: 28,
     marginBottom: 8,

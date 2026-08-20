@@ -12,11 +12,13 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
 import { AuthBackground } from '../../src/components/AuthBackground';
 
 export default function LoginScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { signInWithPassword } = useAuth();
 
   const [email, setEmail] = useState('');
@@ -31,7 +33,7 @@ export default function LoginScreen() {
       return false;
     }
     const emailRegex = /\S+@\S+\.\S+/;
-    if (!emailRegex.test(email)) {
+    if (!emailRegex.test(email.trim())) {
       setErrorMsg('Please enter a valid email address.');
       return false;
     }
@@ -44,19 +46,23 @@ export default function LoginScreen() {
   };
 
   const handleLogin = async () => {
-    if (!validateForm()) return;
+    if (!validateForm() || loading) return;
 
     setLoading(true);
     setErrorMsg('');
 
-    const { error } = await signInWithPassword(email, password);
+    try {
+      const { error } = await signInWithPassword(email.trim().toLowerCase(), password);
 
-    setLoading(false);
-
-    if (error) {
-      setErrorMsg(error.message);
-    } else {
-      router.replace('/');
+      if (error) {
+        setErrorMsg(error.message || 'Invalid email or password.');
+      } else {
+        router.replace('/');
+      }
+    } catch (err: any) {
+      setErrorMsg(err.message || 'An unexpected error occurred. Please try again.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -65,99 +71,135 @@ export default function LoginScreen() {
       <AuthBackground />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
+        style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingTop: Math.max(insets.top + 24, 48),
+              paddingBottom: Math.max(insets.bottom + 24, 32),
+            },
+          ]}
+          keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <Text style={styles.title}>Login</Text>
-
-          {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
-
-          {/* Email Input */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Email</Text>
-            <View style={styles.inputContainer}>
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your email address"
-                placeholderTextColor="#A0A0A0"
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-              />
+          {/* NUMO Brand Badge */}
+          <View style={styles.brandRow}>
+            <View style={styles.brandBadge}>
+              <Text style={styles.brandBadgeText}>NUMO</Text>
             </View>
           </View>
 
-          {/* Password Input */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Password</Text>
-            <View style={styles.inputContainer}>
-              <TextInput
-                style={[styles.input, { paddingRight: 40 }]}
-                placeholder="Enter your email password"
-                placeholderTextColor="#A0A0A0"
-                secureTextEntry={!showPassword}
-                value={password}
-                onChangeText={setPassword}
+          {/* Header */}
+          <View style={styles.header}>
+            <Text style={styles.title}>Welcome back</Text>
+            <Text style={styles.subtitle}>Log in to continue your training.</Text>
+          </View>
+
+          {/* Error Message Box */}
+          {errorMsg ? (
+            <View style={styles.errorContainer}>
+              <Ionicons
+                name="alert-circle-outline"
+                size={18}
+                color="#D93838"
+                style={styles.errorIcon}
               />
-              <TouchableOpacity
-                style={styles.eyeIcon}
-                onPress={() => setShowPassword(!showPassword)}
-              >
+              <Text style={styles.errorText}>{errorMsg}</Text>
+            </View>
+          ) : null}
+
+          {/* Form */}
+          <View style={styles.form}>
+            {/* Email Field */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Email</Text>
+              <View style={styles.inputWrapper}>
                 <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                  name="mail-outline"
                   size={20}
-                  color="#7E7E7E"
+                  color="#8E8E93"
+                  style={styles.fieldIcon}
                 />
-              </TouchableOpacity>
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter your email"
+                  placeholderTextColor="#8E8E93"
+                  value={email}
+                  onChangeText={(val) => {
+                    setEmail(val);
+                    if (errorMsg) setErrorMsg('');
+                  }}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+              </View>
             </View>
+
+            {/* Password Field */}
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Password</Text>
+              <View style={styles.inputWrapper}>
+                <Ionicons
+                  name="lock-closed-outline"
+                  size={20}
+                  color="#8E8E93"
+                  style={styles.fieldIcon}
+                />
+                <TextInput
+                  style={[styles.input, styles.inputPasswordPadding]}
+                  placeholder="Enter your password"
+                  placeholderTextColor="#8E8E93"
+                  secureTextEntry={!showPassword}
+                  value={password}
+                  onChangeText={(val) => {
+                    setPassword(val);
+                    if (errorMsg) setErrorMsg('');
+                  }}
+                />
+                <TouchableOpacity
+                  style={styles.eyeIcon}
+                  onPress={() => setShowPassword((prev) => !prev)}
+                  activeOpacity={0.7}
+                >
+                  <Ionicons
+                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    size={20}
+                    color="#8E8E93"
+                  />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Forgot Password */}
+            <TouchableOpacity style={styles.forgotButton} activeOpacity={0.7}>
+              <Text style={styles.forgotText}>Forgot password?</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Forgot Password */}
-          <TouchableOpacity style={styles.forgotButton}>
-            <Text style={styles.forgotText}>Forget password</Text>
-          </TouchableOpacity>
-
-          {/* Submit Button */}
+          {/* Login Submit Button */}
           <TouchableOpacity
-            style={styles.submitButton}
+            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
             onPress={handleLogin}
             disabled={loading}
+            activeOpacity={0.85}
           >
             {loading ? (
-              <ActivityIndicator color="#FFF" />
+              <ActivityIndicator color="#FFFFFF" />
             ) : (
               <Text style={styles.submitButtonText}>Login</Text>
             )}
           </TouchableOpacity>
 
-          {/* Divider */}
-          <View style={styles.dividerContainer}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>Or Login with</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          {/* Social Icons Placeholder */}
-          <View style={styles.socialRow}>
-            <TouchableOpacity style={styles.socialCircle}>
-              <Text style={styles.socialIconText}></Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.socialCircle}>
-              <Text style={[styles.socialIconText, { color: '#EA4335' }]}>G</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.socialCircle}>
-              <Text style={[styles.socialIconText, { color: '#1877F2' }]}>f</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Navigation to Signup */}
+          {/* Bottom Navigation to Signup */}
           <View style={styles.footerRow}>
             <Text style={styles.footerText}>Don’t have an account? </Text>
-            <TouchableOpacity onPress={() => router.push('/(auth)/signup')}>
+            <TouchableOpacity
+              onPress={() => router.push('/(auth)/signup')}
+              activeOpacity={0.7}
+            >
               <Text style={styles.linkText}>Sign up</Text>
             </TouchableOpacity>
           </View>
@@ -170,58 +212,132 @@ export default function LoginScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#EBEBEB',
+    backgroundColor: '#E6E6E6',
+  },
+  keyboardView: {
+    flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 28,
-    paddingTop: 120,
-    paddingBottom: 40,
+    paddingHorizontal: 24,
+    justifyContent: 'center',
+  },
+  brandRow: {
+    alignItems: 'center',
+    marginTop: -60,
+    marginBottom: 38,
+  },
+  brandBadge: {
+    backgroundColor: 'rgba(238, 88, 57, 0.12)',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+    borderRadius: 12,
+  },
+  brandBadgeText: {
+    color: '#EE5839',
+    fontSize: 35,
+    fontWeight: '600',
+    letterSpacing: 1.2,
+  },
+  header: {
+    alignItems: 'center',
+    marginBottom: 24,
   },
   title: {
-    fontSize: 42,
-    fontWeight: '700',
-    color: '#000',
-    marginBottom: 32,
+    fontSize: 32,
+    fontWeight: '600',
+    color: '#1C1C1E',
+    letterSpacing: -0.5,
+    textAlign: 'center',
+  },
+  subtitle: {
+    fontSize: 14,
+    color: '#636366',
+    marginTop: 6,
+    textAlign: 'center',
+    lineHeight: 20,
+  },
+  errorContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FDECEC',
+    borderWidth: 1,
+    borderColor: '#F8C8C8',
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
+  },
+  errorIcon: {
+    marginRight: 8,
   },
   errorText: {
     color: '#D93838',
-    marginBottom: 16,
-    fontSize: 14,
+    fontSize: 13,
+    fontWeight: '600',
+    flex: 1,
+    lineHeight: 18,
+  },
+  form: {
+    gap: 14,
   },
   inputGroup: {
-    marginBottom: 20,
+    marginBottom: 2,
   },
   label: {
-    fontSize: 16,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#000',
-    marginBottom: 8,
+    color: '#1C1C1E',
+    marginBottom: 6,
+    marginLeft: 4,
   },
-  inputContainer: {
+  inputWrapper: {
     position: 'relative',
-    justifyContent: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#E2E2E7',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  fieldIcon: {
+    position: 'absolute',
+    left: 16,
+    zIndex: 1,
   },
   input: {
-    backgroundColor: '#F2F2F2',
-    height: 54,
-    borderRadius: 27,
-    paddingHorizontal: 20,
+    flex: 1,
+    height: 56,
+    paddingLeft: 48,
+    paddingRight: 16,
     fontSize: 15,
-    color: '#000',
+    fontWeight: '500',
+    color: '#1C1C1E',
+  },
+  inputPasswordPadding: {
+    paddingRight: 48,
   },
   eyeIcon: {
     position: 'absolute',
-    right: 18,
+    right: 14,
+    padding: 6,
   },
   forgotButton: {
     alignSelf: 'flex-end',
-    marginBottom: 24,
+    marginTop: -2,
+    marginBottom: 8,
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
   forgotText: {
     color: '#EE5839',
-    fontSize: 14,
-    fontWeight: '500',
+    fontSize: 13,
+    fontWeight: '600',
   },
   submitButton: {
     backgroundColor: '#EE5839',
@@ -229,51 +345,22 @@ const styles = StyleSheet.create({
     borderRadius: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 36,
+    marginTop: 14,
+    marginBottom: 24,
     shadowColor: '#EE5839',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.2,
+    shadowOpacity: 0.25,
     shadowRadius: 8,
-    elevation: 4,
+    elevation: 3,
+  },
+  submitButtonDisabled: {
+    opacity: 0.65,
   },
   submitButtonText: {
-    color: '#FFF',
-    fontSize: 20,
-    fontWeight: '600',
-  },
-  dividerContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 28,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: '#BCBCBC',
-  },
-  dividerText: {
-    marginHorizontal: 12,
-    color: '#828282',
-    fontSize: 14,
-  },
-  socialRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 20,
-    marginBottom: 36,
-  },
-  socialCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#E4E4E4',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  socialIconText: {
-    fontSize: 22,
-    fontWeight: 'bold',
-    color: '#000',
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: 0.3,
   },
   footerRow: {
     flexDirection: 'row',
@@ -281,12 +368,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   footerText: {
-    color: '#828282',
+    color: '#636366',
     fontSize: 14,
+    fontWeight: '500',
   },
   linkText: {
     color: '#EE5839',
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '800',
   },
 });
