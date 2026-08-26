@@ -9,20 +9,26 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
-  Alert,
+  StatusBar,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
 import { AuthBackground } from '../../src/components/AuthBackground';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function SignupScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
   const { signUp } = useAuth();
+  const { theme } = useTheme();
   const { source, fromDemo } = useLocalSearchParams<{ source?: string; fromDemo?: string }>();
 
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
   const isFromDemo = source === 'demo' || fromDemo === 'true';
 
   const [fullName, setFullName] = useState('');
@@ -38,7 +44,7 @@ export default function SignupScreen() {
   const passwordStrength = useMemo(() => {
     if (!password) return null;
     if (password.length < 6) return { label: 'Weak', color: '#FF3B30', progress: 0.33 };
-    
+
     const hasLetters = /[a-zA-Z]/.test(password);
     const hasNumbers = /\d/.test(password);
     const hasSpecial = /[^a-zA-Z0-9]/.test(password);
@@ -84,11 +90,14 @@ export default function SignupScreen() {
     setLoading(true);
     setErrorMsg('');
 
-    try {
-      const { error } = await signUp(email.trim().toLowerCase(), password, fullName.trim());
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanFullName = fullName.trim();
 
+    try {
+      const { data, error } = await signUp(cleanEmail, password, cleanFullName);
+
+      // 1. Check explicit Supabase error return
       if (error) {
-        // Intercept and cleanly format duplicate email or rate limit errors from Supabase
         const lowerMsg = (error.message || '').toLowerCase();
         if (
           lowerMsg.includes('already registered') ||
@@ -99,13 +108,20 @@ export default function SignupScreen() {
         } else {
           setErrorMsg(error.message || 'Failed to create account. Please try again.');
         }
-      } else {
-        Alert.alert(
-          'Account Created',
-          'Your account has been created successfully! Please check your email for a confirmation link before logging in.',
-          [{ text: 'OK', onPress: () => router.replace('/(auth)/login') }]
-        );
+        return;
       }
+
+      // 2. Client-side check for existing email (Supabase returns empty identities array for existing users)
+      if (data?.user && (!data.user.identities || data.user.identities.length === 0)) {
+        setErrorMsg('An account with this email already exists. Please log in.');
+        return;
+      }
+
+      // 3. New valid user -> route to 6-digit OTP confirmation screen
+      router.push({
+        pathname: '/(auth)/verify-otp' as any,
+        params: { email: cleanEmail },
+      });
     } catch (err: any) {
       setErrorMsg(err.message || 'An unexpected error occurred.');
     } finally {
@@ -114,7 +130,8 @@ export default function SignupScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
       <AuthBackground />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -124,182 +141,286 @@ export default function SignupScreen() {
           contentContainerStyle={[
             styles.scrollContent,
             {
-              paddingTop: Math.max(insets.top + 16, 40),
-              paddingBottom: Math.max(insets.bottom + 24, 32),
+              paddingTop: Math.max(insets.top + (isCompact ? 10 : 20), 16),
+              paddingBottom: Math.max(insets.bottom + 16, 20),
+              paddingHorizontal: isNarrow ? 18 : 24,
             },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          bounces={false}
         >
-          {/* Subtle NUMO Brand Pill */}
-          <View style={styles.brandRow}>
-            <View style={styles.brandBadge}>
-              <Text style={styles.brandBadgeText}>NUMO</Text>
-            </View>
-          </View>
-
-          {/* Dynamic Header */}
-          <View style={styles.header}>
-            <Text style={styles.title}>
-              {isFromDemo ? 'Save your progress' : 'Create your account'}
-            </Text>
-            <Text style={styles.subtitle}>
-              {isFromDemo
-                ? 'Create a free account to keep your results, track your progress, and build your streak.'
-                : 'Save your progress and keep improving every day.'}
-            </Text>
-          </View>
-
-          {/* Error Message Box */}
-          {errorMsg ? (
-            <View style={styles.errorContainer}>
-              <Ionicons name="alert-circle-outline" size={18} color="#D93838" style={styles.errorIcon} />
-              <Text style={styles.errorText}>{errorMsg}</Text>
-            </View>
-          ) : null}
-
-          {/* Form Fields */}
-          <View style={styles.form}>
-            {/* Full Name */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Full name</Text>
-              <View style={styles.inputWrapper}>
-                <Ionicons name="person-outline" size={18} color="#8E8E93" style={styles.fieldIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your full name"
-                  placeholderTextColor="#8E8E93"
-                  value={fullName}
-                  onChangeText={(val) => {
-                    setFullName(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                  autoCapitalize="words"
-                />
+          <View style={styles.formContainer}>
+            {/* Top Brand Pill */}
+            <View style={[styles.brandRow, isCompact && styles.brandRowCompact]}>
+              <View
+                style={[
+                  styles.brandBadge,
+                  {
+                    backgroundColor: theme.isDark
+                      ? 'rgba(238, 88, 57, 0.2)'
+                      : 'rgba(236, 103, 60, 0.12)',
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.brandBadgeText,
+                    { color: theme.primary },
+                    isCompact && styles.brandBadgeTextCompact,
+                  ]}
+                >
+                  NUMO
+                </Text>
               </View>
             </View>
 
-            {/* Email Address */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <View style={styles.inputWrapper}>
-                <Ionicons name="mail-outline" size={18} color="#8E8E93" style={styles.fieldIcon} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your email"
-                  placeholderTextColor="#8E8E93"
-                  value={email}
-                  onChangeText={(val) => {
-                    setEmail(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
-              </View>
+            {/* Header */}
+            <View style={[styles.header, isCompact && styles.headerCompact]}>
+              <Text style={[styles.title, { color: theme.text }, isCompact && styles.titleCompact]}>
+                {isFromDemo ? 'Save your progress' : 'Create your account'}
+              </Text>
+              <Text
+                style={[styles.subtitle, { color: theme.subtext }, isCompact && styles.subtitleCompact]}
+              >
+                {isFromDemo
+                  ? 'Create a free account to keep your results, track your progress, and build your streak.'
+                  : 'Save your progress and keep improving every day.'}
+              </Text>
             </View>
 
-            {/* Password */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <View style={styles.inputWrapper}>
-                <Ionicons name="lock-closed-outline" size={18} color="#8E8E93" style={styles.fieldIcon} />
-                <TextInput
-                  style={[styles.input, styles.inputPasswordPadding]}
-                  placeholder="Create a password"
-                  placeholderTextColor="#8E8E93"
-                  secureTextEntry={!showPassword}
-                  value={password}
-                  onChangeText={(val) => {
-                    setPassword(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
+            {/* Error Container */}
+            {errorMsg ? (
+              <View
+                style={[
+                  styles.errorContainer,
+                  {
+                    backgroundColor: theme.isDark ? 'rgba(217, 56, 56, 0.18)' : '#FDECEC',
+                    borderColor: theme.isDark ? 'rgba(217, 56, 56, 0.35)' : '#F8C8C8',
+                  },
+                ]}
+              >
+                <Ionicons
+                  name="alert-circle-outline"
+                  size={18}
+                  color="#D93838"
+                  style={styles.errorIcon}
                 />
-                <TouchableOpacity
-                  style={styles.eyeIcon}
-                  onPress={() => setShowPassword((prev) => !prev)}
-                  activeOpacity={0.7}
+                <Text style={styles.errorText}>{errorMsg}</Text>
+              </View>
+            ) : null}
+
+            {/* Inputs Form */}
+            <View style={[styles.form, isCompact && styles.formCompact]}>
+              {/* Full Name */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Full name</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
                 >
                   <Ionicons
-                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    name="person-outline"
                     size={18}
-                    color="#8E8E93"
+                    color={theme.muted}
+                    style={styles.fieldIcon}
                   />
-                </TouchableOpacity>
+                  <TextInput
+                    style={[styles.input, { color: theme.text }, isCompact && styles.inputCompact]}
+                    placeholder="Enter your full name"
+                    placeholderTextColor={theme.muted}
+                    value={fullName}
+                    onChangeText={(val) => {
+                      setFullName(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                    autoCapitalize="words"
+                  />
+                </View>
               </View>
 
-              {/* Password Strength Indicator */}
-              {passwordStrength && (
-                <View style={styles.strengthContainer}>
-                  <View style={styles.strengthBarBackground}>
+              {/* Email Address */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Email</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Ionicons
+                    name="mail-outline"
+                    size={18}
+                    color={theme.muted}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[styles.input, { color: theme.text }, isCompact && styles.inputCompact]}
+                    placeholder="Enter your email"
+                    placeholderTextColor={theme.muted}
+                    value={email}
+                    onChangeText={(val) => {
+                      setEmail(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+              </View>
+
+              {/* Password */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Password</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={18}
+                    color={theme.muted}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[
+                      styles.input,
+                      styles.inputPasswordPadding,
+                      { color: theme.text },
+                      isCompact && styles.inputCompact,
+                    ]}
+                    placeholder="Create a password"
+                    placeholderTextColor={theme.muted}
+                    secureTextEntry={!showPassword}
+                    value={password}
+                    onChangeText={(val) => {
+                      setPassword(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                  />
+                  <TouchableOpacity
+                    style={styles.eyeIcon}
+                    onPress={() => setShowPassword((prev) => !prev)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={18}
+                      color={theme.muted}
+                    />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Password Strength Indicator */}
+                {passwordStrength && (
+                  <View style={styles.strengthContainer}>
                     <View
                       style={[
-                        styles.strengthBarFill,
+                        styles.strengthBarBackground,
                         {
-                          width: `${passwordStrength.progress * 100}%`,
-                          backgroundColor: passwordStrength.color,
+                          backgroundColor: theme.isDark
+                            ? 'rgba(255, 255, 255, 0.12)'
+                            : '#E5E5EA',
                         },
                       ]}
-                    />
+                    >
+                      <View
+                        style={[
+                          styles.strengthBarFill,
+                          {
+                            width: `${passwordStrength.progress * 100}%`,
+                            backgroundColor: passwordStrength.color,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text
+                      style={[styles.strengthLabel, { color: passwordStrength.color }]}
+                    >
+                      {passwordStrength.label}
+                    </Text>
                   </View>
-                  <Text style={[styles.strengthLabel, { color: passwordStrength.color }]}>
-                    {passwordStrength.label}
-                  </Text>
-                </View>
-              )}
-            </View>
+                )}
+              </View>
 
-            {/* Confirm Password */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Confirm password</Text>
-              <View style={styles.inputWrapper}>
-                <Ionicons name="lock-closed-outline" size={18} color="#8E8E93" style={styles.fieldIcon} />
-                <TextInput
-                  style={[styles.input, styles.inputPasswordPadding]}
-                  placeholder="Confirm your password"
-                  placeholderTextColor="#8E8E93"
-                  secureTextEntry={!showConfirmPassword}
-                  value={confirmPassword}
-                  onChangeText={(val) => {
-                    setConfirmPassword(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                />
-                <TouchableOpacity
-                  style={styles.eyeIcon}
-                  onPress={() => setShowConfirmPassword((prev) => !prev)}
-                  activeOpacity={0.7}
+              {/* Confirm Password */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Confirm password</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
                 >
                   <Ionicons
-                    name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
+                    name="lock-closed-outline"
                     size={18}
-                    color="#8E8E93"
+                    color={theme.muted}
+                    style={styles.fieldIcon}
                   />
-                </TouchableOpacity>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      styles.inputPasswordPadding,
+                      { color: theme.text },
+                      isCompact && styles.inputCompact,
+                    ]}
+                    placeholder="Confirm your password"
+                    placeholderTextColor={theme.muted}
+                    secureTextEntry={!showConfirmPassword}
+                    value={confirmPassword}
+                    onChangeText={(val) => {
+                      setConfirmPassword(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                  />
+                  <TouchableOpacity
+                    style={styles.eyeIcon}
+                    onPress={() => setShowConfirmPassword((prev) => !prev)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={18}
+                      color={theme.muted}
+                    />
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
+
+            {/* Submit Button */}
+            <TouchableOpacity
+              style={[
+                styles.submitButton,
+                { backgroundColor: theme.primary, shadowColor: theme.primary },
+                isCompact && styles.submitButtonCompact,
+                loading && styles.submitButtonDisabled,
+              ]}
+              onPress={handleSignup}
+              disabled={loading}
+              activeOpacity={0.8}
+            >
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.submitButtonText}>Create Account</Text>
+              )}
+            </TouchableOpacity>
           </View>
 
-          {/* Submit Button */}
-          <TouchableOpacity
-            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
-            onPress={handleSignup}
-            disabled={loading}
-            activeOpacity={0.8}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.submitButtonText}>Create Account</Text>
-            )}
-          </TouchableOpacity>
-
-          {/* Footer: Route to Login */}
-          <View style={styles.footerRow}>
-            <Text style={styles.footerText}>Already have an account? </Text>
+          {/* Footer Link */}
+          <View style={[styles.footerRow, isCompact && styles.footerRowCompact]}>
+            <Text style={[styles.footerText, { color: theme.subtext }]}>
+              Already have an account?{' '}
+            </Text>
             <TouchableOpacity onPress={() => router.push('/(auth)/login')} activeOpacity={0.7}>
-              <Text style={styles.linkText}>Log in</Text>
+              <Text style={[styles.linkText, { color: theme.primary }]}>Log in</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -318,43 +439,69 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 24,
     justifyContent: 'center',
+    paddingHorizontal: 20,
   },
- brandRow: {
-  alignItems: 'center', // centers the badge horizontally
-  marginBottom: 84,
-},
-brandBadge: {
-  backgroundColor: 'rgba(236, 103, 60, 0.12)',
-  paddingHorizontal: 12,
-  paddingVertical: 5,
-  borderRadius: 12,
-  alignItems: 'center',
-},
+  formContainer: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    gap: 20,
+  },
+  brandRow: {
+    alignItems: 'center',
+    marginBottom: 30,
+  },
+  brandRowCompact: {
+    marginBottom: 10,
+  },
+  brandBadge: {
+    backgroundColor: 'rgba(236, 103, 60, 0.12)',
+    paddingHorizontal: 16,
+    paddingVertical: 5,
+    borderRadius: 14,
+    alignItems: 'center',
+  },
   brandBadgeText: {
     color: '#EC673C',
-    fontSize: 34,
-    fontWeight: '600',
-    letterSpacing: 1.2,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  brandBadgeTextCompact: {
+    fontSize: 20,
+    letterSpacing: 1,
   },
   header: {
-    marginBottom: 20,
+    marginBottom: 18,
+    alignItems: 'center',
+  },
+  headerCompact: {
+    marginBottom: 12,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '600',
+    fontSize: 26,
+    fontWeight: '800',
     color: '#1C1C1E',
     letterSpacing: -0.5,
-    lineHeight: 34,
+    lineHeight: 32,
     textAlign: 'center',
   },
+  titleCompact: {
+    fontSize: 22,
+    lineHeight: 28,
+  },
   subtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#636366',
-    marginTop: 6,
-    lineHeight: 20,
+    marginTop: 4,
+    lineHeight: 18,
     textAlign: 'center',
+    paddingHorizontal: 12,
+  },
+  subtitleCompact: {
+    fontSize: 12,
+    lineHeight: 16,
   },
   errorContainer: {
     flexDirection: 'row',
@@ -364,8 +511,8 @@ brandBadge: {
     borderColor: '#F8C8C8',
     borderRadius: 14,
     paddingHorizontal: 14,
-    paddingVertical: 10,
-    marginBottom: 16,
+    paddingVertical: 9,
+    marginBottom: 14,
   },
   errorIcon: {
     marginRight: 8,
@@ -375,19 +522,22 @@ brandBadge: {
     fontSize: 13,
     fontWeight: '600',
     flex: 1,
-    lineHeight: 18,
+    lineHeight: 17,
   },
   form: {
-    gap: 14,
+    gap: 10,
+  },
+  formCompact: {
+    gap: 6,
   },
   inputGroup: {
     marginBottom: 2,
   },
   label: {
     fontSize: 13,
-    fontWeight: '400',
+    fontWeight: '600',
     color: '#1C1C1E',
-    marginBottom: 6,
+    marginBottom: 4,
     marginLeft: 4,
   },
   inputWrapper: {
@@ -411,12 +561,16 @@ brandBadge: {
   },
   input: {
     flex: 1,
-    height: 50,
+    height: 48,
     paddingLeft: 42,
     paddingRight: 16,
     fontSize: 15,
-    fontWeight: '400',
+    fontWeight: '500',
     color: '#1C1C1E',
+  },
+  inputCompact: {
+    height: 44,
+    fontSize: 14,
   },
   inputPasswordPadding: {
     paddingRight: 46,
@@ -429,7 +583,7 @@ brandBadge: {
   strengthContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 6,
+    marginTop: 5,
     marginLeft: 4,
     gap: 8,
   },
@@ -452,17 +606,20 @@ brandBadge: {
   },
   submitButton: {
     backgroundColor: '#EC673C',
-    height: 52,
+    minHeight: 50,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 22,
-    marginBottom: 20,
+    marginTop: 18,
     shadowColor: '#EC673C',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 3,
+  },
+  submitButtonCompact: {
+    minHeight: 46,
+    marginTop: 12,
   },
   submitButtonDisabled: {
     opacity: 0.65,
@@ -477,15 +634,20 @@ brandBadge: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    marginTop: 14,
+    paddingBottom: 4,
+  },
+  footerRowCompact: {
+    marginTop: 10,
   },
   footerText: {
     color: '#636366',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
   },
   linkText: {
     color: '#EC673C',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '700',
   },
 });

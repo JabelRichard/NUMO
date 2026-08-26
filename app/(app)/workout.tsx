@@ -4,11 +4,12 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   Alert,
   Platform,
+  useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -29,15 +30,22 @@ import {
   FeedbackState,
   OperationType,
 } from '../../src/lib/math/types';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function MathWorkoutScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
+  const { theme } = useTheme();
   const { session } = useAuth();
   const { mode, difficulty, isDemo } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
     isDemo?: string;
   }>();
+
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
 
   const isDemoMode = isDemo === 'true' || mode === 'demo';
   const generatorRef = useRef(new QuestionGenerator());
@@ -64,7 +72,7 @@ export default function MathWorkoutScreen() {
     );
   }, []);
 
-  // Initialize session questions dynamically based on saved settings or demo rules
+  // Initialize session questions
   useEffect(() => {
     let isMounted = true;
 
@@ -76,20 +84,18 @@ export default function MathWorkoutScreen() {
 
       const activeDifficulty = difficulty === 'medium' || difficulty === 'hard' ? difficulty : 'easy';
 
-      // 1. Free Demo: Enforce 10 questions
       let sessionCount = 10;
 
-      // 2. Normal Mode: Load saved settings (5, 10, 20, 30) or use fallback of 20
       if (!isDemoMode) {
         if (session?.user?.id) {
           try {
             const userSettings = await getUserSettings(session.user.id);
             sessionCount = userSettings.daily_question_goal ?? 20;
           } catch {
-            sessionCount = 20; // Fallback default
+            sessionCount = 20;
           }
         } else {
-          sessionCount = 20; // Fallback default if unauthenticated
+          sessionCount = 20;
         }
       }
 
@@ -120,7 +126,6 @@ export default function MathWorkoutScreen() {
     ? ((currentIndex + 1) / totalQuestions) * 100
     : 0;
 
-  // Handles confirmation prompt before abandoning workout session
   const handleQuitWorkout = () => {
     if (Platform.OS === 'web') {
       const confirmQuit = window.confirm(
@@ -240,59 +245,106 @@ export default function MathWorkoutScreen() {
   const getInputColor = () => {
     if (feedback === 'correct') return '#4CAF50';
     if (feedback === 'incorrect') return '#D93838';
-    return '#000000';
+    return theme.text;
   };
+
+  // Dynamic Equation and Answer text sizing
+  const equationFontSize = isNarrow ? 44 : isCompact ? 52 : 62;
+  const answerFontSize = isNarrow ? 40 : isCompact ? 48 : 56;
+  const cursorHeight = isNarrow ? 36 : isCompact ? 42 : 48;
 
   if (!currentQuestion) {
     return (
-      <SafeAreaView style={styles.safeArea}>
-        <StatusBar barStyle="dark-content" />
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
+        <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
       </SafeAreaView>
     );
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity
-          style={styles.closeButton}
-          onPress={handleQuitWorkout}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="close" size={18} color="#1C1C1E" />
-        </TouchableOpacity>
+      {/* Top Header Group */}
+      <View style={styles.topSection}>
+        {/* Header Bar with Close Button, NUMO Badge, Counter */}
+        <View style={[styles.header, isNarrow && styles.headerNarrow]}>
+          <TouchableOpacity
+            style={[styles.closeButton, { backgroundColor: theme.card }]}
+            onPress={handleQuitWorkout}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="close" size={18} color={theme.text} />
+          </TouchableOpacity>
 
-        <View style={styles.progressTrack}>
-          <View style={[styles.progressFill, { width: `${progressPercent}%` }]} />
+          {/* NUMO Branding Badge */}
+          <View style={[styles.brandBadge, { backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : 'rgba(238, 88, 57, 0.12)' }]}>
+            <Text style={[styles.brandBadgeText, { color: theme.primary }, isCompact && styles.brandBadgeTextCompact]}>
+              NUMO
+            </Text>
+          </View>
+
+          <Text style={[styles.counterText, { color: theme.muted }]}>
+            {currentIndex + 1}/{totalQuestions}
+          </Text>
         </View>
 
-        <Text style={styles.counterText}>
-          {currentIndex + 1}/{totalQuestions}
+        {/* Progress Track */}
+        <View style={styles.progressTrackContainer}>
+          <View style={[styles.progressTrack, { backgroundColor: theme.isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)' }]}>
+            <View style={[styles.progressFill, { width: `${progressPercent}%`, backgroundColor: theme.primary }]} />
+          </View>
+        </View>
+
+        {/* Operation Title */}
+        <Text style={[styles.operationTitle, { color: theme.muted }, isCompact && styles.operationTitleCompact]}>
+          {getOperationDisplayTitle()}
         </Text>
       </View>
-
-      {/* Operation Title */}
-      <Text style={styles.operationTitle}>{getOperationDisplayTitle()}</Text>
 
       {/* Equation and Input Display Area */}
       <View style={styles.displayArea}>
         <Animated.View style={[animatedDisplayStyle, styles.equationContainer]}>
-          <Text style={styles.equationText}>{currentQuestion.equation}</Text>
+          <Text
+            style={[
+              styles.equationText,
+              { fontSize: equationFontSize, color: theme.text },
+              isCompact && styles.equationTextCompact,
+            ]}
+            numberOfLines={1}
+            adjustsFontSizeToFit
+          >
+            {currentQuestion.equation}
+          </Text>
 
-          <View style={styles.answerRow}>
-            <Text style={[styles.answerText, { color: getInputColor() }]}>
+          <View style={[styles.answerRow, isCompact && styles.answerRowCompact]}>
+            <Text
+              style={[
+                styles.answerText,
+                { fontSize: answerFontSize, color: getInputColor() },
+              ]}
+              numberOfLines={1}
+            >
               {userAnswer}
             </Text>
-            <Animated.View style={[styles.cursor, animatedCursorStyle]} />
+            <Animated.View
+              style={[
+                styles.cursor,
+                { height: cursorHeight, backgroundColor: theme.text },
+                animatedCursorStyle,
+              ]}
+            />
           </View>
         </Animated.View>
       </View>
 
       {/* Custom Keypad */}
-      <View style={styles.keypadContainer}>
+      <View
+        style={[
+          styles.keypadContainer,
+          { paddingBottom: Math.max(insets.bottom, isCompact ? 10 : 20) },
+        ]}
+      >
         <CustomNumericKeypad
           onKeyPress={handleKeyPress}
           onDelete={handleDelete}
@@ -308,81 +360,130 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: '#E6E6E6',
+    justifyContent: 'space-between',
+  },
+  topSection: {
+    width: '100%',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 12,
-    gap: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  headerNarrow: {
+    paddingHorizontal: 14,
   },
   closeButton: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.04,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  brandBadge: {
+    backgroundColor: 'rgba(238, 88, 57, 0.12)',
+    paddingHorizontal: 14,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  brandBadgeText: {
+    color: '#EE5839',
+    fontSize: 16,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  brandBadgeTextCompact: {
+    fontSize: 14,
+    letterSpacing: 1.5,
+  },
+  counterText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#636366',
+    minWidth: 34,
+    textAlign: 'right',
+  },
+  progressTrackContainer: {
+    paddingHorizontal: 20,
+    marginTop: 8,
   },
   progressTrack: {
-    flex: 1,
-    height: 4,
+    width: '100%',
+    height: 5,
     backgroundColor: 'rgba(0, 0, 0, 0.08)',
-    borderRadius: 2,
+    borderRadius: 3,
     overflow: 'hidden',
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#000000',
-    borderRadius: 2,
-  },
-  counterText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#8E8E93',
+    backgroundColor: '#EE5839',
+    borderRadius: 3,
   },
   operationTitle: {
     textAlign: 'center',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '800',
     color: '#8E8E93',
     letterSpacing: 1.5,
-    marginTop: 12,
+    marginTop: 10,
+  },
+  operationTitleCompact: {
+    marginTop: 6,
+    fontSize: 11,
   },
   displayArea: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 16,
   },
   equationContainer: {
     alignItems: 'center',
+    width: '100%',
   },
   equationText: {
-    fontSize: 64,
     fontWeight: '900',
-    color: '#000000',
-    letterSpacing: 4,
-    marginBottom: 20,
+    color: '#1C1C1E',
+    letterSpacing: 2,
+    marginBottom: 12,
+    textAlign: 'center',
+  },
+  equationTextCompact: {
+    marginBottom: 6,
   },
   answerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 68,
+    minHeight: 56,
+  },
+  answerRowCompact: {
+    minHeight: 46,
   },
   answerText: {
-    fontSize: 58,
     fontWeight: '900',
     letterSpacing: 2,
+    textAlign: 'center',
   },
   cursor: {
-    width: 4,
-    height: 52,
-    backgroundColor: '#000000',
+    width: 3.5,
+    backgroundColor: '#1C1C1E',
     marginLeft: 4,
     borderRadius: 2,
   },
   keypadContainer: {
-    paddingBottom: 36,
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 12,
   },
 });

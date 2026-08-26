@@ -3,9 +3,11 @@ import { Alert, StyleSheet } from 'react-native';
 import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function AppLayout() {
   const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
 
   const handleComingSoon = (feature: string) => {
     Alert.alert(feature, 'This feature is coming soon to NUMO!');
@@ -16,12 +18,17 @@ export default function AppLayout() {
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: true,
-        tabBarActiveTintColor: '#EC673C',
-        tabBarInactiveTintColor: 'rgba(255, 255, 255, 0.45)',
+        tabBarActiveTintColor: theme.primary,
+        tabBarInactiveTintColor: theme.isDark
+          ? 'rgba(255, 255, 255, 0.45)'
+          : 'rgba(255, 255, 255, 0.45)',
         tabBarLabelStyle: styles.label,
         tabBarStyle: [
           styles.tabBar,
-          { bottom: Math.max(insets.bottom, 16) }
+          {
+            backgroundColor: theme.isDark ? '#1C1C1E' : '#1C1C1E',
+            bottom: Math.max(insets.bottom, 16),
+          },
         ],
       }}
     >
@@ -115,8 +122,14 @@ export default function AppLayout() {
       />
 
       {/* Hide full-screen screens from the tab bar dock */}
-      <Tabs.Screen name="workout" options={{ href: null, tabBarStyle: { display: 'none' } }} />
-      <Tabs.Screen name="results" options={{ href: null, tabBarStyle: { display: 'none' } }} />
+      <Tabs.Screen
+        name="workout"
+        options={{ href: null, tabBarStyle: { display: 'none' } }}
+      />
+      <Tabs.Screen
+        name="results"
+        options={{ href: null, tabBarStyle: { display: 'none' } }}
+      />
     </Tabs>
   );
 }

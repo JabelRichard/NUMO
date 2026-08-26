@@ -7,6 +7,7 @@ import {
   ViewStyle,
   TextStyle,
 } from 'react-native';
+import { useTheme } from '@/src/context/ThemeContext';
 
 interface PrimaryButtonProps {
   title: string;
@@ -23,10 +24,19 @@ export const PrimaryButton: React.FC<PrimaryButtonProps> = ({
   style,
   textStyle,
 }) => {
+  const { theme } = useTheme();
+
   return (
     <TouchableOpacity
       activeOpacity={0.85}
-      style={[styles.button, style]}
+      style={[
+        styles.button,
+        {
+          backgroundColor: theme.primary,
+          shadowColor: theme.primary,
+        },
+        style,
+      ]}
       onPress={onPress}
     >
       <Text style={[styles.text, textStyle]}>{title}</Text>

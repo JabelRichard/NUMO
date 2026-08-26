@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { GlassCard } from './GlassCard';
+import { useTheme } from '@/src/context/ThemeContext';
 
 interface StatCardProps {
   icon: string;
@@ -9,13 +10,15 @@ interface StatCardProps {
 }
 
 export const StatCard: React.FC<StatCardProps> = ({ icon, label, value }) => {
+  const { theme } = useTheme();
+
   return (
     <GlassCard style={styles.card} intensity={40}>
       <View style={styles.row}>
         <Text style={styles.icon}>{icon}</Text>
-        <Text style={styles.value}>{value}</Text>
+        <Text style={[styles.value, { color: theme.text }]}>{value}</Text>
       </View>
-      <Text style={styles.label}>{label}</Text>
+      <Text style={[styles.label, { color: theme.muted }]}>{label}</Text>
     </GlassCard>
   );
 };

@@ -5,10 +5,11 @@ import {
   StyleSheet,
   ScrollView,
   TouchableOpacity,
-  SafeAreaView,
   StatusBar,
   Image,
+  useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -27,10 +28,16 @@ import {
   WeeklyStats,
 } from '../../src/services/workoutService';
 import { getUserProfile } from '../../src/services/settingsService';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function DashboardScreen() {
   const router = useRouter();
   const { session } = useAuth();
+  const insets = useSafeAreaInsets();
+  const { width } = useWindowDimensions();
+  const { theme } = useTheme();
+
+  const isNarrow = width < 360;
 
   const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>({
     solvedCount: 0,
@@ -100,7 +107,6 @@ export default function DashboardScreen() {
     session?.user?.user_metadata?.avatar_url ||
     null;
 
-  // Extracts clean initials (e.g., "Jabel Richard" -> "JR")
   const getInitials = (name: string): string => {
     const parts = name.trim().split(' ').filter(Boolean);
     if (parts.length === 0) return 'M';
@@ -180,134 +186,155 @@ export default function DashboardScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top']}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+
+      {/* Fixed Sticky Header: NUMO & Profile Avatar */}
+      <View
+        style={[
+          styles.headerWrapper,
+          {
+            backgroundColor: theme.background,
+            paddingHorizontal: isNarrow ? 16 : 20,
+            paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
+          },
+        ]}
+      >
+        <View style={styles.headerRow}>
+          <Text style={[styles.appTitle, { color: theme.text }]}>NUMO</Text>
+
+          <TouchableOpacity
+            style={[styles.avatarButton, { backgroundColor: theme.card }]}
+            activeOpacity={0.8}
+            onPress={() => router.push('/(app)/settings')}
+          >
+            {avatarUrl ? (
+              <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+            ) : (
+              <View style={[styles.avatarInner, { backgroundColor: theme.primary }]}>
+                <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
+              </View>
+            )}
+          </TouchableOpacity>
+        </View>
+      </View>
+
       <Animated.View style={[{ flex: 1 }, animatedStyle]}>
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingHorizontal: isNarrow ? 16 : 20,
+              paddingTop: 10,
+              paddingBottom: Math.max(insets.bottom, 20) + 90,
+            },
+          ]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Top Bar: Name & Tappable Profile Avatar */}
-          <View style={styles.headerRow}>
-            <Text style={styles.appTitle}>NUMO</Text>
-
-            <TouchableOpacity
-              style={styles.avatarButton}
-              activeOpacity={0.8}
-              onPress={() => router.push('/(app)/settings')}
-            >
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
-              ) : (
-                <View style={styles.avatarInner}>
-                  <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {/* Hero Card */}
-          <GlassCard style={styles.heroCard} intensity={60}>
-            <View style={styles.heroBadge}>
-              <Text style={styles.heroBadgeText}>DAILY GOAL</Text>
-            </View>
-            <Text style={styles.heroTitle}>
-              Ready for today's mental workout?
-            </Text>
-            <Text style={styles.heroSubtitle}>
-              Keep your brain sharp with a quick 3-minute challenge.
-            </Text>
-            <PrimaryButton
-              title="Start Training"
-              onPress={() => router.push('/(app)/training' as any)}
-              icon={<Ionicons name="arrow-forward" size={20} color="#FFF" />}
-              style={styles.heroButton}
-            />
-          </GlassCard>
-
-          {/* Quick Statistics Section */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Weekly Overview</Text>
-          </View>
-          <View style={styles.statsRow}>
-            <View style={[styles.coloredStatCard, { backgroundColor: '#AFA2FE' }]}>
-              <Text style={styles.coloredStatValue}>
-                {weeklyStats.solvedCount}
+          <View style={styles.responsiveContainer}>
+            {/* Hero Card */}
+            <GlassCard style={styles.heroCard} intensity={60}>
+              <View style={[styles.heroBadge, { backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : 'rgba(236, 103, 60, 0.12)' }]}>
+                <Text style={[styles.heroBadgeText, { color: theme.primary }]}>DAILY GOAL</Text>
+              </View>
+              <Text style={[styles.heroTitle, { color: theme.text }]}>
+                Ready for today's mental workout?
               </Text>
-              <Text style={styles.coloredStatLabel}>Solved</Text>
-            </View>
-
-            <View style={[styles.coloredStatCard, { backgroundColor: '#EC673C' }]}>
-              <Text style={[styles.coloredStatValue, { color: '#FFFFFF' }]}>
-                {formatWeeklyTime(weeklyStats.totalTimeMs)}
+              <Text style={[styles.heroSubtitle, { color: theme.subtext }]}>
+                Keep your brain sharp with a quick 3-minute challenge.
               </Text>
-              <Text style={[styles.coloredStatLabel, { color: 'rgba(255, 255, 255, 0.8)' }]}>
-                Time
-              </Text>
-            </View>
-
-            <View style={[styles.coloredStatCard, { backgroundColor: '#F6FE91' }]}>
-              <Text style={styles.coloredStatValue}>
-                {formatAvgTime(weeklyStats.avgTimePerQuestionMs)}
-              </Text>
-              <Text style={styles.coloredStatLabel}>Avg/Q</Text>
-            </View>
-          </View>
-
-          {/* Recent Workouts Section */}
-          <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Workouts</Text>
-          </View>
-
-          {recentWorkouts.length > 0 ? (
-            <GlassCard style={styles.recentListCard} intensity={40}>
-              {recentWorkouts.map((item, index) => {
-                const avgSecs = (item.average_time_per_question / 1000).toFixed(1);
-                return (
-                  <View key={item.id}>
-                    <View style={styles.workoutRow}>
-                      <View style={styles.workoutIconCircle}>
-                        <Ionicons
-                          name={getOperationIcon(item.operation) as any}
-                          size={22}
-                          color="#1C1C1E"
-                        />
-                      </View>
-
-                      <View style={styles.workoutInfo}>
-                        <Text style={styles.workoutTitle}>
-                          {formatOperationTitle(item.operation)}
-                        </Text>
-                        <Text style={styles.workoutSubtitle}>
-                          {item.correct_answers}/{item.total_questions} · {Math.round(item.accuracy)}% · {avgSecs}s/Q
-                        </Text>
-                      </View>
-
-                      <Text style={styles.workoutDate}>
-                        {formatRelativeDate(item.completed_at)}
-                      </Text>
-                    </View>
-                    {index < recentWorkouts.length - 1 ? (
-                      <View style={styles.rowDivider} />
-                    ) : null}
-                  </View>
-                );
-              })}
+              <PrimaryButton
+                title="Start Training"
+                onPress={() => router.push('/(app)/training' as any)}
+                icon={<Ionicons name="arrow-forward" size={20} color="#FFF" />}
+                style={styles.heroButton}
+              />
             </GlassCard>
-          ) : (
-            <GlassCard style={styles.activityCard} intensity={35}>
-              <View style={styles.emptyActivityContainer}>
-                <View style={styles.emptyIconCircle}>
-                  <Ionicons name="time-outline" size={28} color="#8E8E93" />
-                </View>
-                <Text style={styles.emptyTitle}>No workouts yet</Text>
-                <Text style={styles.emptySubtitle}>
-                  Complete your first mental session to start building your
-                  workout history.
+
+            {/* Quick Statistics Section */}
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Weekly Overview</Text>
+            </View>
+            <View style={styles.statsRow}>
+              <View style={[styles.coloredStatCard, { backgroundColor: theme.accentPurple }]}>
+                <Text style={styles.coloredStatValue}>
+                  {weeklyStats.solvedCount}
+                </Text>
+                <Text style={styles.coloredStatLabel}>Solved</Text>
+              </View>
+
+              <View style={[styles.coloredStatCard, { backgroundColor: theme.primary }]}>
+                <Text style={[styles.coloredStatValue, { color: '#FFFFFF' }]}>
+                  {formatWeeklyTime(weeklyStats.totalTimeMs)}
+                </Text>
+                <Text style={[styles.coloredStatLabel, { color: 'rgba(255, 255, 255, 0.8)' }]}>
+                  Time
                 </Text>
               </View>
-            </GlassCard>
-          )}
+
+              <View style={[styles.coloredStatCard, { backgroundColor: theme.accentYellow }]}>
+                <Text style={styles.coloredStatValue}>
+                  {formatAvgTime(weeklyStats.avgTimePerQuestionMs)}
+                </Text>
+                <Text style={styles.coloredStatLabel}>Avg/Q</Text>
+              </View>
+            </View>
+
+            {/* Recent Workouts Section */}
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: theme.text }]}>Recent Workouts</Text>
+            </View>
+
+            {recentWorkouts.length > 0 ? (
+              <GlassCard style={styles.recentListCard} intensity={40}>
+                {recentWorkouts.map((item, index) => {
+                  const avgSecs = (item.average_time_per_question / 1000).toFixed(1);
+                  return (
+                    <View key={item.id}>
+                      <View style={styles.workoutRow}>
+                        <View style={[styles.workoutIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
+                          <Ionicons
+                            name={getOperationIcon(item.operation) as any}
+                            size={22}
+                            color={theme.text}
+                          />
+                        </View>
+
+                        <View style={styles.workoutInfo}>
+                          <Text style={[styles.workoutTitle, { color: theme.text }]}>
+                            {formatOperationTitle(item.operation)}
+                          </Text>
+                          <Text style={[styles.workoutSubtitle, { color: theme.muted }]}>
+                            {item.correct_answers}/{item.total_questions} · {Math.round(item.accuracy)}% · {avgSecs}s/Q
+                          </Text>
+                        </View>
+
+                        <Text style={[styles.workoutDate, { color: theme.muted }]}>
+                          {formatRelativeDate(item.completed_at)}
+                        </Text>
+                      </View>
+                      {index < recentWorkouts.length - 1 ? (
+                        <View style={[styles.rowDivider, { backgroundColor: theme.divider }]} />
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </GlassCard>
+            ) : (
+              <GlassCard style={styles.activityCard} intensity={35}>
+                <View style={styles.emptyActivityContainer}>
+                  <View style={[styles.emptyIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
+                    <Ionicons name="time-outline" size={28} color={theme.muted} />
+                  </View>
+                  <Text style={[styles.emptyTitle, { color: theme.text }]}>No workouts yet</Text>
+                  <Text style={[styles.emptySubtitle, { color: theme.muted }]}>
+                    Complete your first mental session to start building your
+                    workout history.
+                  </Text>
+                </View>
+              </GlassCard>
+            )}
+          </View>
         </ScrollView>
       </Animated.View>
     </SafeAreaView>
@@ -319,16 +346,19 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#E6E6E6',
   },
-  scrollContent: {
-    paddingHorizontal: 20,
-    paddingTop: 16,
-    paddingBottom: 40,
+  headerWrapper: {
+    width: '100%',
+    paddingBottom: 10,
+    backgroundColor: '#E6E6E6',
+    zIndex: 10,
   },
   headerRow: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 24,
   },
   appTitle: {
     fontSize: 22,
@@ -365,6 +395,14 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '800',
     letterSpacing: 0.5,
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
+  responsiveContainer: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
   },
   heroCard: {
     marginBottom: 28,
@@ -414,7 +452,7 @@ const styles = StyleSheet.create({
   },
   coloredStatCard: {
     flex: 1,
-    minWidth: 95,
+    minWidth: 80,
     paddingVertical: 18,
     paddingHorizontal: 14,
     borderRadius: 20,

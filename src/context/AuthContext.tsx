@@ -76,9 +76,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return { error };
   };
 
-  // Signup Function
+  // Signup Function (Triggers 6-digit code to email)
   const signUp = async (email: string, password: string, fullName: string) => {
-    const { error } = await supabase.auth.signUp({
+    const { data, error } = await supabase.auth.signUp({
       email: email.trim(),
       password,
       options: {
@@ -87,7 +87,52 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         },
       },
     });
-    return { error };
+    return { data, error };
+  };
+
+  // Verify 6-digit OTP Token Function (Signup)
+  const verifyOtp = async (email: string, token: string) => {
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: email.trim().toLowerCase(),
+      token: token.trim(),
+      type: 'signup',
+    });
+    return { data, error };
+  };
+
+  // Resend 6-digit OTP Token Function (Signup)
+  const resendOtp = async (email: string) => {
+    const { data, error } = await supabase.auth.resend({
+      type: 'signup',
+      email: email.trim().toLowerCase(),
+    });
+    return { data, error };
+  };
+
+  // 1. Send Password Reset 6-Digit Code
+  const resetPasswordForEmail = async (email: string) => {
+    const { data, error } = await supabase.auth.resetPasswordForEmail(
+      email.trim().toLowerCase()
+    );
+    return { data, error };
+  };
+
+  // 2. Verify Password Reset 6-Digit Code
+  const verifyPasswordResetOtp = async (email: string, token: string) => {
+    const { data, error } = await supabase.auth.verifyOtp({
+      email: email.trim().toLowerCase(),
+      token: token.trim(),
+      type: 'recovery',
+    });
+    return { data, error };
+  };
+
+  // 3. Update Password
+  const updateUserPassword = async (newPassword: string) => {
+    const { data, error } = await supabase.auth.updateUser({
+      password: newPassword,
+    });
+    return { data, error };
   };
 
   // Logout Function
@@ -101,6 +146,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         ...state,
         signInWithPassword,
         signUp,
+        verifyOtp,
+        resendOtp,
+        resetPasswordForEmail,
+        verifyPasswordResetOtp,
+        updateUserPassword,
         signOut,
       }}
     >

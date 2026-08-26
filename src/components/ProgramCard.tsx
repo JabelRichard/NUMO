@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { TrainingProgram } from '../types/training';
+import { useTheme } from '@/src/context/ThemeContext';
 
 interface ProgramCardProps {
   program: TrainingProgram;
@@ -14,6 +15,7 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
   onPress,
   showDivider = false,
 }) => {
+  const { theme } = useTheme();
   const { title, subtitle, symbol, iconName, progress, iconBgColor, isLocked } = program;
 
   return (
@@ -27,27 +29,47 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
         <View
           style={[
             styles.iconBadge,
-            { backgroundColor: isLocked ? '#E5E5EA' : iconBgColor || '#EE5839' },
+            {
+              backgroundColor: isLocked
+                ? theme.isDark
+                  ? '#2C2C2E'
+                  : '#E5E5EA'
+                : iconBgColor || theme.primary,
+            },
           ]}
         >
           {symbol ? (
-            <Text style={[styles.symbolText, isLocked && styles.lockedText]}>
+            <Text
+              style={[
+                styles.symbolText,
+                { color: theme.text },
+                isLocked && { color: theme.muted },
+              ]}
+            >
               {symbol}
             </Text>
           ) : (
             <Ionicons
               name={iconName || 'help-outline'}
               size={20}
-              color={isLocked ? '#8E8E93' : '#1C1C1E'}
+              color={isLocked ? theme.muted : theme.text}
             />
           )}
         </View>
 
         {/* Title and Subtitle Info */}
         <View style={styles.textContainer}>
-          <Text style={[styles.title, isLocked && styles.lockedText]}>{title}</Text>
+          <Text
+            style={[
+              styles.title,
+              { color: theme.text },
+              isLocked && { color: theme.muted },
+            ]}
+          >
+            {title}
+          </Text>
           {subtitle ? (
-            <Text style={styles.subtitle} numberOfLines={1}>
+            <Text style={[styles.subtitle, { color: theme.muted }]} numberOfLines={1}>
               {subtitle}
             </Text>
           ) : null}
@@ -55,18 +77,25 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
 
         {/* Right Side: Progress % or Lock Badge */}
         {isLocked ? (
-          <View style={styles.lockBadge}>
-            <Ionicons name="lock-closed" size={14} color="#8E8E93" />
-            <Text style={styles.lockText}>SOON</Text>
+          <View
+            style={[
+              styles.lockBadge,
+              { backgroundColor: theme.isDark ? '#2C2C2E' : '#E5E5EA' },
+            ]}
+          >
+            <Ionicons name="lock-closed" size={14} color={theme.muted} />
+            <Text style={[styles.lockText, { color: theme.muted }]}>SOON</Text>
           </View>
         ) : (
-          <Text style={styles.progressText}>
+          <Text style={[styles.progressText, { color: theme.text }]}>
             {progress && progress > 0 ? `${progress}%` : 'Not started'}
           </Text>
         )}
       </View>
 
-      {showDivider ? <View style={styles.divider} /> : null}
+      {showDivider ? (
+        <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+      ) : null}
     </TouchableOpacity>
   );
 };
@@ -129,9 +158,6 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#8E8E93',
     letterSpacing: 0.5,
-  },
-  lockedText: {
-    color: '#8E8E93',
   },
   divider: {
     height: 1,

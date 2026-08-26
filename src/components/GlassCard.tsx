@@ -1,43 +1,43 @@
 import React from 'react';
-import { StyleSheet, ViewStyle, StyleProp, View } from 'react-native';
-import { BlurView, BlurViewProps } from 'expo-blur';
+import { View, StyleSheet, StyleProp, ViewStyle } from 'react-native';
+import { useTheme } from '@/src/context/ThemeContext';
 
-interface GlassCardProps {
+interface CardProps {
   children: React.ReactNode;
   style?: StyleProp<ViewStyle>;
   intensity?: number;
-  tint?: BlurViewProps['tint'];
 }
 
-export const GlassCard: React.FC<GlassCardProps> = ({
-  children,
-  style,
-  intensity = 50,
-  tint = 'light',
-}) => {
+export function GlassCard({ children, style, intensity }: CardProps) {
+  const { theme } = useTheme();
+
   return (
-    <View style={[styles.container, style]}>
-      <BlurView intensity={intensity} tint={tint} style={StyleSheet.absoluteFill} />
-      {/* Semi-transparent tint layer for glass depth */}
-      <View style={styles.contentLayer}>{children}</View>
+    <View
+      style={[
+        styles.card,
+        {
+          backgroundColor: theme.card,
+          borderColor: theme.border,
+        },
+        style,
+      ]}
+    >
+      {children}
     </View>
   );
-};
+}
 
 const styles = StyleSheet.create({
-  container: {
-    borderRadius: 24,
-    overflow: 'hidden',
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.6)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
+    borderColor: '#EFEFEF',
+    shadowColor: '#000000',
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.05,
-    shadowRadius: 16,
-    elevation: 3,
-  },
-  contentLayer: {
-    backgroundColor: 'rgba(255, 255, 255, 0.45)',
-    padding: 20,
+    shadowRadius: 10,
+    elevation: 2,
   },
 });

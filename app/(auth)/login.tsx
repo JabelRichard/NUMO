@@ -9,17 +9,25 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  StatusBar,
+  useWindowDimensions,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
 import { AuthBackground } from '../../src/components/AuthBackground';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function LoginScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
   const { signInWithPassword } = useAuth();
+  const { theme } = useTheme();
+
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -67,7 +75,8 @@ export default function LoginScreen() {
   };
 
   return (
-    <View style={styles.container}>
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
       <AuthBackground />
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -77,131 +86,208 @@ export default function LoginScreen() {
           contentContainerStyle={[
             styles.scrollContent,
             {
-              paddingTop: Math.max(insets.top + 24, 48),
-              paddingBottom: Math.max(insets.bottom + 24, 32),
+              paddingTop: Math.max(insets.top + (isCompact ? 12 : 24), 20),
+              paddingBottom: Math.max(insets.bottom + 16, 20),
+              paddingHorizontal: isNarrow ? 18 : 24,
             },
           ]}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
+          bounces={false}
         >
-          {/* NUMO Brand Badge */}
-          <View style={styles.brandRow}>
-            <View style={styles.brandBadge}>
-              <Text style={styles.brandBadgeText}>NUMO</Text>
-            </View>
-          </View>
-
-          {/* Header */}
-          <View style={styles.header}>
-            <Text style={styles.title}>Welcome back</Text>
-            <Text style={styles.subtitle}>Log in to continue your training.</Text>
-          </View>
-
-          {/* Error Message Box */}
-          {errorMsg ? (
-            <View style={styles.errorContainer}>
-              <Ionicons
-                name="alert-circle-outline"
-                size={18}
-                color="#D93838"
-                style={styles.errorIcon}
-              />
-              <Text style={styles.errorText}>{errorMsg}</Text>
-            </View>
-          ) : null}
-
-          {/* Form */}
-          <View style={styles.form}>
-            {/* Email Field */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Email</Text>
-              <View style={styles.inputWrapper}>
-                <Ionicons
-                  name="mail-outline"
-                  size={20}
-                  color="#8E8E93"
-                  style={styles.fieldIcon}
-                />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Enter your email"
-                  placeholderTextColor="#8E8E93"
-                  value={email}
-                  onChangeText={(val) => {
-                    setEmail(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                />
+          <View style={styles.formContainer}>
+            {/* NUMO Brand Badge */}
+            <View style={[styles.brandRow, isCompact && styles.brandRowCompact]}>
+              <View
+                style={[
+                  styles.brandBadge,
+                  {
+                    backgroundColor: theme.isDark
+                      ? 'rgba(238, 88, 57, 0.2)'
+                      : 'rgba(238, 88, 57, 0.12)',
+                  },
+                ]}
+              >
+                <Text
+                  style={[
+                    styles.brandBadgeText,
+                    { color: theme.primary },
+                    isCompact && styles.brandBadgeTextCompact,
+                  ]}
+                >
+                  NUMO
+                </Text>
               </View>
             </View>
 
-            {/* Password Field */}
-            <View style={styles.inputGroup}>
-              <Text style={styles.label}>Password</Text>
-              <View style={styles.inputWrapper}>
+            {/* Header */}
+            <View style={[styles.header, isCompact && styles.headerCompact]}>
+              <Text
+                style={[
+                  styles.title,
+                  { color: theme.text },
+                  isCompact && styles.titleCompact,
+                ]}
+              >
+                Welcome back
+              </Text>
+              <Text
+                style={[
+                  styles.subtitle,
+                  { color: theme.subtext },
+                  isCompact && styles.subtitleCompact,
+                ]}
+              >
+                Log in to continue your training.
+              </Text>
+            </View>
+
+            {/* Error Message Box */}
+            {errorMsg ? (
+              <View
+                style={[
+                  styles.errorContainer,
+                  {
+                    backgroundColor: theme.isDark ? 'rgba(217, 56, 56, 0.18)' : '#FDECEC',
+                    borderColor: theme.isDark ? 'rgba(217, 56, 56, 0.35)' : '#F8C8C8',
+                  },
+                ]}
+              >
                 <Ionicons
-                  name="lock-closed-outline"
-                  size={20}
-                  color="#8E8E93"
-                  style={styles.fieldIcon}
+                  name="alert-circle-outline"
+                  size={18}
+                  color="#D93838"
+                  style={styles.errorIcon}
                 />
-                <TextInput
-                  style={[styles.input, styles.inputPasswordPadding]}
-                  placeholder="Enter your password"
-                  placeholderTextColor="#8E8E93"
-                  secureTextEntry={!showPassword}
-                  value={password}
-                  onChangeText={(val) => {
-                    setPassword(val);
-                    if (errorMsg) setErrorMsg('');
-                  }}
-                />
-                <TouchableOpacity
-                  style={styles.eyeIcon}
-                  onPress={() => setShowPassword((prev) => !prev)}
-                  activeOpacity={0.7}
+                <Text style={styles.errorText}>{errorMsg}</Text>
+              </View>
+            ) : null}
+
+            {/* Form Fields */}
+            <View style={[styles.form, isCompact && styles.formCompact]}>
+              {/* Email Field */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Email</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
                 >
                   <Ionicons
-                    name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                    name="mail-outline"
                     size={20}
-                    color="#8E8E93"
+                    color={theme.muted}
+                    style={styles.fieldIcon}
                   />
-                </TouchableOpacity>
+                  <TextInput
+                    style={[
+                      styles.input,
+                      { color: theme.text },
+                      isCompact && styles.inputCompact,
+                    ]}
+                    placeholder="Enter your email"
+                    placeholderTextColor={theme.muted}
+                    value={email}
+                    onChangeText={(val) => {
+                      setEmail(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
               </View>
+
+              {/* Password Field */}
+              <View style={styles.inputGroup}>
+                <Text style={[styles.label, { color: theme.text }]}>Password</Text>
+                <View
+                  style={[
+                    styles.inputWrapper,
+                    { backgroundColor: theme.card, borderColor: theme.border },
+                  ]}
+                >
+                  <Ionicons
+                    name="lock-closed-outline"
+                    size={20}
+                    color={theme.muted}
+                    style={styles.fieldIcon}
+                  />
+                  <TextInput
+                    style={[
+                      styles.input,
+                      styles.inputPasswordPadding,
+                      { color: theme.text },
+                      isCompact && styles.inputCompact,
+                    ]}
+                    placeholder="Enter your password"
+                    placeholderTextColor={theme.muted}
+                    secureTextEntry={!showPassword}
+                    value={password}
+                    onChangeText={(val) => {
+                      setPassword(val);
+                      if (errorMsg) setErrorMsg('');
+                    }}
+                  />
+                  <TouchableOpacity
+                    style={styles.eyeIcon}
+                    onPress={() => setShowPassword((prev) => !prev)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                      size={20}
+                      color={theme.muted}
+                    />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Forgot Password Link */}
+              <TouchableOpacity
+                style={styles.forgotButton}
+                activeOpacity={0.7}
+                onPress={() => router.push('/(auth)/forgot-password' as any)}
+              >
+                <Text style={[styles.forgotText, { color: theme.primary }]}>
+                  Forgot password?
+                </Text>
+              </TouchableOpacity>
             </View>
 
-            {/* Forgot Password */}
-            <TouchableOpacity style={styles.forgotButton} activeOpacity={0.7}>
-              <Text style={styles.forgotText}>Forgot password?</Text>
-            </TouchableOpacity>
-          </View>
-
-          {/* Login Submit Button */}
-          <TouchableOpacity
-            style={[styles.submitButton, loading && styles.submitButtonDisabled]}
-            onPress={handleLogin}
-            disabled={loading}
-            activeOpacity={0.85}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" />
-            ) : (
-              <Text style={styles.submitButtonText}>Login</Text>
-            )}
-          </TouchableOpacity>
-
-          {/* Bottom Navigation to Signup */}
-          <View style={styles.footerRow}>
-            <Text style={styles.footerText}>Don’t have an account? </Text>
+            {/* Login Submit Button */}
             <TouchableOpacity
-              onPress={() => router.push('/(auth)/signup')}
-              activeOpacity={0.7}
+              style={[
+                styles.submitButton,
+                { backgroundColor: theme.primary, shadowColor: theme.primary },
+                isCompact && styles.submitButtonCompact,
+                loading && styles.submitButtonDisabled,
+              ]}
+              onPress={handleLogin}
+              disabled={loading}
+              activeOpacity={0.85}
             >
-              <Text style={styles.linkText}>Sign up</Text>
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" />
+              ) : (
+                <Text style={styles.submitButtonText}>Login</Text>
+              )}
             </TouchableOpacity>
+
+            {/* Bottom Navigation */}
+            <View style={[styles.footerRow, isCompact && styles.footerRowCompact]}>
+              <Text style={[styles.footerText, { color: theme.subtext }]}>
+                Don’t have an account?{' '}
+              </Text>
+              <TouchableOpacity
+                onPress={() => router.push('/(auth)/signup')}
+                activeOpacity={0.7}
+              >
+                <Text style={[styles.linkText, { color: theme.primary }]}>Sign up</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -219,43 +305,67 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingHorizontal: 24,
     justifyContent: 'center',
+    paddingHorizontal: 20,
+  },
+  formContainer: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    gap: 20,
   },
   brandRow: {
     alignItems: 'center',
-    marginTop: -60,
-    marginBottom: 38,
+    marginBottom: 28,
+  },
+  brandRowCompact: {
+    marginBottom: 16,
   },
   brandBadge: {
     backgroundColor: 'rgba(238, 88, 57, 0.12)',
-    paddingHorizontal: 14,
-    paddingVertical: 5,
-    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 14,
+    alignItems: 'center',
   },
   brandBadgeText: {
     color: '#EE5839',
-    fontSize: 35,
-    fontWeight: '600',
-    letterSpacing: 1.2,
+    fontSize: 26,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+  },
+  brandBadgeTextCompact: {
+    fontSize: 20,
+    letterSpacing: 1,
   },
   header: {
     alignItems: 'center',
-    marginBottom: 24,
+    marginBottom: 20,
+  },
+  headerCompact: {
+    marginBottom: 12,
   },
   title: {
-    fontSize: 32,
-    fontWeight: '600',
+    fontSize: 28,
+    fontWeight: '800',
     color: '#1C1C1E',
     letterSpacing: -0.5,
     textAlign: 'center',
   },
+  titleCompact: {
+    fontSize: 24,
+  },
   subtitle: {
     fontSize: 14,
     color: '#636366',
-    marginTop: 6,
+    marginTop: 4,
     textAlign: 'center',
-    lineHeight: 20,
+    lineHeight: 19,
+    paddingHorizontal: 12,
+  },
+  subtitleCompact: {
+    fontSize: 12,
+    lineHeight: 16,
   },
   errorContainer: {
     flexDirection: 'row',
@@ -266,7 +376,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   errorIcon: {
     marginRight: 8,
@@ -279,7 +389,10 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   form: {
-    gap: 14,
+    gap: 12,
+  },
+  formCompact: {
+    gap: 8,
   },
   inputGroup: {
     marginBottom: 2,
@@ -288,7 +401,7 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     color: '#1C1C1E',
-    marginBottom: 6,
+    marginBottom: 5,
     marginLeft: 4,
   },
   inputWrapper: {
@@ -312,12 +425,16 @@ const styles = StyleSheet.create({
   },
   input: {
     flex: 1,
-    height: 56,
+    height: 52,
     paddingLeft: 48,
     paddingRight: 16,
     fontSize: 15,
     fontWeight: '500',
     color: '#1C1C1E',
+  },
+  inputCompact: {
+    height: 46,
+    fontSize: 14,
   },
   inputPasswordPadding: {
     paddingRight: 48,
@@ -330,7 +447,7 @@ const styles = StyleSheet.create({
   forgotButton: {
     alignSelf: 'flex-end',
     marginTop: -2,
-    marginBottom: 8,
+    marginBottom: 4,
     paddingVertical: 4,
     paddingHorizontal: 4,
   },
@@ -341,40 +458,47 @@ const styles = StyleSheet.create({
   },
   submitButton: {
     backgroundColor: '#EE5839',
-    height: 56,
-    borderRadius: 28,
+    minHeight: 52,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
-    marginTop: 14,
-    marginBottom: 24,
+    marginTop: 16,
     shadowColor: '#EE5839',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
     elevation: 3,
   },
+  submitButtonCompact: {
+    minHeight: 46,
+    marginTop: 10,
+  },
   submitButtonDisabled: {
     opacity: 0.65,
   },
   submitButtonText: {
     color: '#FFFFFF',
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    letterSpacing: 0.2,
   },
   footerRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
+    marginTop: 18,
+  },
+  footerRowCompact: {
+    marginTop: 12,
   },
   footerText: {
     color: '#636366',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
   },
   linkText: {
     color: '#EE5839',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
   },
 });

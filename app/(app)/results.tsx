@@ -3,11 +3,13 @@ import {
   View,
   Text,
   StyleSheet,
-  SafeAreaView,
   StatusBar,
   TouchableOpacity,
   ActivityIndicator,
+  ScrollView,
+  useWindowDimensions,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -21,15 +23,22 @@ import { PrimaryButton } from '../../src/components/PrimaryButton';
 import { QuestionAttemptResult, OperationType } from '../../src/lib/math/types';
 import { saveWorkoutSession, setPendingDemoSession } from '../../src/services/workoutService';
 import { useAuth } from '../../src/context/AuthContext';
+import { useTheme } from '@/src/context/ThemeContext';
 
 export default function ResultsScreen() {
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
+  const { theme } = useTheme();
   const { mode, difficulty, results, isDemo } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
     results?: string;
     isDemo?: string;
   }>();
+
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
 
   const { session } = useAuth();
   const isDemoWorkout = isDemo === 'true' || (!session && isDemo !== 'false');
@@ -121,27 +130,27 @@ export default function ResultsScreen() {
       return {
         message: 'Excellent work! 🔥',
         color: '#4CAF50',
-        badgeBg: 'rgba(76, 175, 80, 0.12)',
+        badgeBg: theme.isDark ? 'rgba(76, 175, 80, 0.22)' : 'rgba(76, 175, 80, 0.12)',
       };
     }
     if (accuracyPct >= 75) {
       return {
         message: 'Great job! 💪',
         color: '#EC673C',
-        badgeBg: 'rgba(236, 103, 60, 0.12)',
+        badgeBg: theme.isDark ? 'rgba(236, 103, 60, 0.22)' : 'rgba(236, 103, 60, 0.12)',
       };
     }
     if (accuracyPct >= 50) {
       return {
         message: 'Good start! 🚀',
         color: '#7C3AED',
-        badgeBg: 'rgba(175, 162, 254, 0.18)',
+        badgeBg: theme.isDark ? 'rgba(175, 162, 254, 0.25)' : 'rgba(175, 162, 254, 0.18)',
       };
     }
     return {
       message: 'Keep going! 🧠',
       color: '#EE5839',
-      badgeBg: 'rgba(238, 88, 57, 0.12)',
+      badgeBg: theme.isDark ? 'rgba(238, 88, 57, 0.22)' : 'rgba(238, 88, 57, 0.12)',
     };
   };
 
@@ -168,142 +177,181 @@ export default function ResultsScreen() {
   };
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="dark-content" />
-      <Animated.View style={[styles.container, animatedStyle]}>
-        
-        {/* Main Content Cluster */}
-        <View style={styles.contentCluster}>
-          {/* Header Block */}
-          <View style={styles.headerBlock}>
-            <Text style={styles.operationTag}>{getOperationDisplayTitle()}</Text>
-            
-            <View style={[styles.feedbackPill, { backgroundColor: feedback.badgeBg }]}>
-              <Text style={[styles.feedbackText, { color: feedback.color }]}>
-                {feedback.message}
-              </Text>
-            </View>
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: Math.max(insets.top > 0 ? 8 : 16, 12),
+            paddingBottom: Math.max(insets.bottom + 12, 20),
+            paddingHorizontal: isNarrow ? 16 : 20,
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
+        <Animated.View style={[styles.container, animatedStyle]}>
+          {/* Main Content Cluster */}
+          <View style={[styles.contentCluster, isCompact && styles.contentClusterCompact]}>
+            {/* Header Block */}
+            <View style={styles.headerBlock}>
+              <Text style={[styles.operationTag, { color: theme.muted }]}>{getOperationDisplayTitle()}</Text>
 
-            {!isDemoWorkout && saving ? (
-              <View style={styles.syncContainer}>
-                <ActivityIndicator size="small" color="#EE5839" />
-                <Text style={styles.syncText}>Saving workout...</Text>
-              </View>
-            ) : saveError ? (
-              <Text style={styles.errorText}>{saveError}</Text>
-            ) : null}
-          </View>
-
-          {/* Hero Accuracy Card */}
-          <GlassCard style={styles.heroScoreCard} intensity={60}>
-            <Text style={styles.scorePercentage}>{accuracy}%</Text>
-            <Text style={styles.scoreLabel}>ACCURACY</Text>
-            <Text style={styles.scoreSubtext}>
-              {correctCount} of {totalQuestions} correct
-            </Text>
-          </GlassCard>
-
-          {/* Two-Column Correct/Incorrect Row */}
-          <View style={styles.metricsRow}>
-            <View style={[styles.coloredMetricCard, { backgroundColor: '#AFA2FE' }]}>
-              <Text style={styles.coloredMetricValue}>{correctCount}</Text>
-              <Text style={styles.coloredMetricLabel}>CORRECT</Text>
-            </View>
-
-            <View style={[styles.coloredMetricCard, { backgroundColor: '#F6FE91' }]}>
-              <Text style={styles.coloredMetricValue}>{incorrectCount}</Text>
-              <Text style={styles.coloredMetricLabel}>INCORRECT</Text>
-            </View>
-          </View>
-
-          {/* Performance Section */}
-          <GlassCard style={styles.performanceCard} intensity={40}>
-            <View style={styles.performanceItem}>
-              <View style={styles.performanceIconCircle}>
-                <Ionicons name="flash-outline" size={17} color="#EC673C" />
-              </View>
-              <View style={styles.performanceTextGroup}>
-                <Text style={styles.performanceItemLabel}>Average Pace</Text>
-                <Text style={styles.performanceItemValue}>
-                  {formatAvgTime(averageTimePerQuestionMs)} / question
+              <View style={[styles.feedbackPill, { backgroundColor: feedback.badgeBg }]}>
+                <Text style={[styles.feedbackText, { color: feedback.color }]}>
+                  {feedback.message}
                 </Text>
               </View>
+
+              {!isDemoWorkout && saving ? (
+                <View style={styles.syncContainer}>
+                  <ActivityIndicator size="small" color={theme.primary} />
+                  <Text style={[styles.syncText, { color: theme.muted }]}>Saving workout...</Text>
+                </View>
+              ) : saveError ? (
+                <Text style={styles.errorText}>{saveError}</Text>
+              ) : null}
             </View>
 
-            <View style={styles.divider} />
-
-            <View style={styles.performanceItem}>
-              <View style={styles.performanceIconCircle}>
-                <Ionicons name="time-outline" size={17} color="#1C1C1E" />
-              </View>
-              <View style={styles.performanceTextGroup}>
-                <Text style={styles.performanceItemLabel}>Total Duration</Text>
-                <Text style={styles.performanceItemValue}>
-                  {formatTotalTime(totalTimeSpentMs)}
-                </Text>
-              </View>
-            </View>
-          </GlassCard>
-        </View>
-
-        {/* Action Controls Section */}
-        {isDemoWorkout ? (
-          <View style={styles.demoActionBox}>
-            <View style={styles.demoBannerCard}>
-              <View style={styles.sparkleIconBox}>
-                <Ionicons name="sparkles" size={18} color="#EC673C" />
-              </View>
-              <View style={styles.demoBannerTextGroup}>
-                <Text style={styles.demoBannerTitle}>Save Your Progress</Text>
-                <Text style={styles.demoBannerSubtitle}>
-                  Save this workout and start tracking your progress.
-                </Text>
-              </View>
-            </View>
-
-            <PrimaryButton
-              title="Create Free Account"
-              onPress={() => router.push('/(auth)/signup')}
-              icon={<Ionicons name="person-add" size={18} color="#1C1C1E" />}
-              style={styles.signupButton}
-              textStyle={styles.signupButtonText}
-            />
-
-            <TouchableOpacity
-              style={styles.loginLinkButton}
-              activeOpacity={0.7}
-              onPress={() => router.push('/(auth)/login')}
+            {/* Hero Accuracy Card */}
+           {/* Hero Accuracy Card */}
+            <GlassCard
+              style={[
+                styles.heroScoreCard,
+                isCompact ? styles.heroScoreCardCompact : undefined,
+              ]}
+              intensity={60}
             >
-              <Text style={styles.loginLinkText}>
-                Already have an account? <Text style={styles.loginBoldText}>Log In</Text>
+              <Text
+                style={[
+                  styles.scorePercentage,
+                  { color: theme.text },
+                  isCompact ? styles.scorePercentageCompact : undefined,
+                ]}
+              >
+                {accuracy}%
               </Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <View style={styles.actionContainer}>
-            <PrimaryButton
-              title="Try Again"
-              onPress={() =>
-                router.replace({
-                  pathname: '/workout' as any,
-                  params: { mode, difficulty },
-                })
-              }
-              icon={<Ionicons name="refresh" size={18} color="#1C1C1E" />}
-              style={styles.retryButton}
-              textStyle={styles.retryButtonText}
-            />
+              <Text style={[styles.scoreLabel, { color: theme.muted }]}>ACCURACY</Text>
+              <Text style={[styles.scoreSubtext, { color: theme.subtext }]}>
+                {correctCount} of {totalQuestions} correct
+              </Text>
+            </GlassCard>
 
-            <TouchableOpacity
-              style={styles.secondaryButton}
-              activeOpacity={0.7}
-              onPress={() => router.replace('/training' as any)}
+            {/* Two-Column Correct/Incorrect Row */}
+            <View style={styles.metricsRow}>
+              <View style={[styles.coloredMetricCard, { backgroundColor: theme.accentPurple }]}>
+                <Text style={styles.coloredMetricValue}>{correctCount}</Text>
+                <Text style={styles.coloredMetricLabel}>CORRECT</Text>
+              </View>
+
+              <View style={[styles.coloredMetricCard, { backgroundColor: theme.accentYellow }]}>
+                <Text style={styles.coloredMetricValue}>{incorrectCount}</Text>
+                <Text style={styles.coloredMetricLabel}>INCORRECT</Text>
+              </View>
+            </View>
+
+            {/* Performance Section */}
+            <GlassCard
+              style={[
+                styles.performanceCard,
+                isCompact ? styles.performanceCardCompact : undefined,
+              ]}
+              intensity={40}
             >
-              <Text style={styles.secondaryButtonText}>Back to Training</Text>
-            </TouchableOpacity>
+              <View style={styles.performanceItem}>
+                <View style={[styles.performanceIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
+                  <Ionicons name="flash-outline" size={16} color={theme.primary} />
+                </View>
+                <View style={styles.performanceTextGroup}>
+                  <Text style={[styles.performanceItemLabel, { color: theme.muted }]}>Average Pace</Text>
+                  <Text style={[styles.performanceItemValue, { color: theme.text }]}>
+                    {formatAvgTime(averageTimePerQuestionMs)} / question
+                  </Text>
+                </View>
+              </View>
+
+              <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
+              <View style={styles.performanceItem}>
+                <View style={[styles.performanceIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
+                  <Ionicons name="time-outline" size={16} color={theme.text} />
+                </View>
+                <View style={styles.performanceTextGroup}>
+                  <Text style={[styles.performanceItemLabel, { color: theme.muted }]}>Total Duration</Text>
+                  <Text style={[styles.performanceItemValue, { color: theme.text }]}>
+                    {formatTotalTime(totalTimeSpentMs)}
+                  </Text>
+                </View>
+              </View>
+            </GlassCard>
           </View>
-        )}
-      </Animated.View>
+
+          {/* Action Controls Section */}
+          <View style={[styles.actionWrapper, isCompact && styles.actionWrapperCompact]}>
+            {isDemoWorkout ? (
+              <View style={styles.demoActionBox}>
+                <View style={[styles.demoBannerCard, { backgroundColor: theme.card }, isCompact && styles.demoBannerCardCompact]}>
+                  <View style={[styles.sparkleIconBox, { backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : 'rgba(236, 103, 60, 0.12)' }]}>
+                    <Ionicons name="sparkles" size={18} color={theme.primary} />
+                  </View>
+                  <View style={styles.demoBannerTextGroup}>
+                    <Text style={[styles.demoBannerTitle, { color: theme.text }]}>Save Your Progress</Text>
+                    <Text style={[styles.demoBannerSubtitle, { color: theme.subtext }]}>
+                      Save this workout and start tracking your progress.
+                    </Text>
+                  </View>
+                </View>
+
+                <PrimaryButton
+                  title="Create Free Account"
+                  onPress={() => router.push('/(auth)/signup')}
+                  icon={<Ionicons name="person-add" size={18} color="#1C1C1E" />}
+                  style={[styles.actionButton, isCompact && styles.actionButtonCompact]}
+                  textStyle={styles.actionButtonText}
+                />
+
+                <TouchableOpacity
+                  style={styles.loginLinkButton}
+                  activeOpacity={0.7}
+                  onPress={() => router.push('/(auth)/login')}
+                >
+                  <Text style={[styles.loginLinkText, { color: theme.subtext }]}>
+                    Already have an account? <Text style={[styles.loginBoldText, { color: theme.primary }]}>Log In</Text>
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.actionContainer}>
+                <PrimaryButton
+                  title="Try Again"
+                  onPress={() =>
+                    router.replace({
+                      pathname: '/(app)/training' as any,
+                      params: { mode, difficulty },
+                    })
+                  }
+                  icon={<Ionicons name="refresh" size={18} color="#1C1C1E" />}
+                  style={[styles.actionButton, isCompact && styles.actionButtonCompact]}
+                  textStyle={styles.actionButtonText}
+                />
+
+                <TouchableOpacity
+                  style={[
+                    styles.secondaryButton,
+                    { backgroundColor: theme.card },
+                    isCompact && styles.secondaryButtonCompact,
+                  ]}
+                  activeOpacity={0.7}
+                  onPress={() => router.replace('/(app)')}
+                >
+                  <Text style={[styles.secondaryButtonText, { color: theme.text }]}>Back to Training</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </Animated.View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -313,16 +361,23 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#E6E6E6',
   },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
   container: {
     flex: 1,
-    paddingHorizontal: 20,
-    paddingTop: 10,
-    paddingBottom: 16,
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
     justifyContent: 'space-between',
   },
   contentCluster: {
     width: '100%',
     gap: 12,
+  },
+  contentClusterCompact: {
+    gap: 8,
   },
   headerBlock: {
     alignItems: 'center',
@@ -367,15 +422,23 @@ const styles = StyleSheet.create({
   heroScoreCard: {
     width: '100%',
     alignItems: 'center',
-    paddingVertical: 18,
+    paddingVertical: 16,
     borderRadius: 22,
   },
+  heroScoreCardCompact: {
+    paddingVertical: 12,
+    borderRadius: 18,
+  },
   scorePercentage: {
-    fontSize: 54,
+    fontSize: 50,
     fontWeight: '900',
     color: '#1C1C1E',
     letterSpacing: -1,
-    lineHeight: 58,
+    lineHeight: 54,
+  },
+  scorePercentageCompact: {
+    fontSize: 40,
+    lineHeight: 44,
   },
   scoreLabel: {
     fontSize: 11,
@@ -393,18 +456,18 @@ const styles = StyleSheet.create({
   metricsRow: {
     flexDirection: 'row',
     width: '100%',
-    gap: 12,
+    gap: 10,
   },
   coloredMetricCard: {
     flex: 1,
-    paddingVertical: 14,
-    paddingHorizontal: 12,
-    borderRadius: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 10,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
   },
   coloredMetricValue: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: '800',
     color: '#1C1C1E',
     marginBottom: 2,
@@ -417,20 +480,24 @@ const styles = StyleSheet.create({
   },
   performanceCard: {
     width: '100%',
-    borderRadius: 20,
-    paddingVertical: 8,
+    borderRadius: 18,
+    paddingVertical: 6,
     paddingHorizontal: 16,
+  },
+  performanceCardCompact: {
+    paddingVertical: 4,
+    paddingHorizontal: 12,
   },
   performanceItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 8,
     gap: 12,
   },
   performanceIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 30,
+    height: 30,
+    borderRadius: 15,
     backgroundColor: 'rgba(0, 0, 0, 0.04)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -444,7 +511,7 @@ const styles = StyleSheet.create({
     color: '#8E8E93',
   },
   performanceItemValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
     color: '#1C1C1E',
     marginTop: 1,
@@ -453,16 +520,22 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: 'rgba(0, 0, 0, 0.05)',
   },
+  actionWrapper: {
+    marginTop: 16,
+  },
+  actionWrapperCompact: {
+    marginTop: 10,
+  },
   demoActionBox: {
     width: '100%',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   demoBannerCard: {
     width: '100%',
     backgroundColor: '#FFFFFF',
     borderRadius: 18,
-    paddingVertical: 12,
+    paddingVertical: 10,
     paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
@@ -472,11 +545,15 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.03,
     shadowRadius: 6,
     elevation: 1,
+    marginBottom: 4,
+  },
+  demoBannerCardCompact: {
+    paddingVertical: 8,
   },
   sparkleIconBox: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: 'rgba(236, 103, 60, 0.12)',
     alignItems: 'center',
     justifyContent: 'center',
@@ -485,34 +562,42 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   demoBannerTitle: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     color: '#1C1C1E',
-    marginBottom: 2,
+    marginBottom: 1,
   },
   demoBannerSubtitle: {
     fontSize: 11,
     color: '#636366',
     lineHeight: 15,
   },
-  signupButton: {
+  actionButton: {
     width: '100%',
-    height: 52,
-    borderRadius: 26,
+    minHeight: 52,
+    borderRadius: 18,
     backgroundColor: '#F6FE91',
     shadowColor: '#F6FE91',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 2,
   },
-  signupButtonText: {
+  actionButtonCompact: {
+    minHeight: 46,
+  },
+  actionButtonText: {
     color: '#1C1C1E',
     fontSize: 16,
     fontWeight: '800',
   },
   loginLinkButton: {
-    paddingVertical: 4,
+    paddingVertical: 6,
   },
   loginLinkText: {
     fontSize: 13,
-    color: '#4B5563',
+    color: '#636366',
+    fontWeight: '500',
   },
   loginBoldText: {
     color: '#EC673C',
@@ -520,27 +605,23 @@ const styles = StyleSheet.create({
   },
   actionContainer: {
     width: '100%',
-    gap: 10,
-  },
-  retryButton: {
-    width: '100%',
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: '#F6FE91',
-    shadowColor: '#F6FE91',
-  },
-  retryButtonText: {
-    color: '#1C1C1E',
-    fontSize: 16,
-    fontWeight: '800',
+    gap: 8,
   },
   secondaryButton: {
     width: '100%',
-    height: 50,
-    borderRadius: 25,
+    minHeight: 50,
+    borderRadius: 18,
     backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  secondaryButtonCompact: {
+    minHeight: 44,
   },
   secondaryButtonText: {
     fontSize: 15,

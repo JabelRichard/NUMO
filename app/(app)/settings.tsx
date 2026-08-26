@@ -1,4 +1,3 @@
-// app/(app)/settings.tsx
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
@@ -11,6 +10,10 @@ import {
   TextInput,
   Modal,
   Image,
+  KeyboardAvoidingView,
+  Platform,
+  StatusBar,
+  useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Ionicons from '@expo/vector-icons/Ionicons';
@@ -27,6 +30,7 @@ import {
   deleteUserAccount,
 } from '../../src/services/settingsService';
 import { UserSettings, UserGoal, DEFAULT_USER_SETTINGS } from '../../src/types/settings';
+import { useTheme } from '@/src/context/ThemeContext';
 
 const QUESTION_OPTIONS: number[] = [5, 10, 20, 30];
 
@@ -40,6 +44,11 @@ const GOAL_OPTIONS: { id: UserGoal; label: string }[] = [
 export default function SettingsScreen() {
   const { session, signOut } = useAuth();
   const insets = useSafeAreaInsets();
+  const { height, width } = useWindowDimensions();
+  const { theme, themeMode, setThemeMode } = useTheme();
+
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
 
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
@@ -145,7 +154,7 @@ export default function SettingsScreen() {
   };
 
   // --- Avatar Handlers ---
-const handlePickAndUploadAvatar = async () => {
+  const handlePickAndUploadAvatar = async () => {
     if (!userId) return;
 
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -165,7 +174,6 @@ const handlePickAndUploadAvatar = async () => {
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
 
-      // Explicit guard: ensure base64 is a valid string
       if (!asset.base64) {
         Alert.alert('Error', 'Could not process image data.');
         return;
@@ -174,7 +182,6 @@ const handlePickAndUploadAvatar = async () => {
       setIsUploadingAvatar(true);
       const fileExt = asset.uri.split('.').pop() || 'jpg';
 
-      // asset.base64 is strictly narrowed to string here
       const res = await uploadProfileAvatar(userId, asset.base64, fileExt);
       setIsUploadingAvatar(false);
 
@@ -280,166 +287,94 @@ const handlePickAndUploadAvatar = async () => {
 
   if (loading) {
     return (
-      <View style={styles.centerContainer}>
-        <ActivityIndicator size="large" color="#EC673C" />
+      <View style={[styles.centerContainer, { backgroundColor: theme.background }]}>
+        <ActivityIndicator size="large" color={theme.primary} />
       </View>
     );
   }
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+
+      {/* Fixed Header */}
+      <View
+        style={[
+          styles.headerWrapper,
+          {
+            backgroundColor: theme.background,
+            paddingHorizontal: isNarrow ? 16 : 20,
+            paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
+          },
+        ]}
+      >
+        <View style={[styles.header, isCompact && styles.headerCompact]}>
+          <Text style={[styles.headerTitle, { color: theme.text }, isCompact && styles.headerTitleCompact]}>
+            Settings
+          </Text>
+          <Text style={[styles.headerSubtitle, { color: theme.subtext }]}>Manage your NUMO experience</Text>
+        </View>
+      </View>
+
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingBottom: Math.max(insets.bottom, 20) + 90 },
+          {
+            paddingHorizontal: isNarrow ? 16 : 20,
+            paddingTop: 8,
+            paddingBottom: Math.max(insets.bottom, 20) + (isCompact ? 70 : 90),
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>Settings</Text>
-          <Text style={styles.headerSubtitle}>Manage your NUMO experience</Text>
-        </View>
-
-        {/* SECTION 1: WORKOUT */}
-        <Text style={styles.sectionHeader}>WORKOUT</Text>
-        <View style={styles.card}>
-          <View style={styles.settingBlock}>
-            <View style={styles.labelRow}>
-              <Text style={styles.settingLabel}>Daily Questions</Text>
-              {savingKey === 'questions' && <ActivityIndicator size="small" color="#EC673C" />}
-            </View>
-            <Text style={styles.settingDescription}>
-              Number of questions presented in normal daily workouts.
-            </Text>
-            <View style={styles.pillsContainer}>
-              {QUESTION_OPTIONS.map((count) => {
-                const isSelected = settings.daily_question_goal === count;
-                return (
-                  <TouchableOpacity
-                    key={count}
-                    activeOpacity={0.7}
-                    style={[styles.pill, isSelected && styles.pillActive]}
-                    onPress={() => handleUpdateQuestions(count)}
-                  >
-                    <Text style={[styles.pillText, isSelected && styles.pillTextActive]}>
-                      {count}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-
-          <View style={styles.settingBlock}>
-            <View style={styles.labelRow}>
-              <Text style={styles.settingLabel}>Improvement Focus</Text>
-              {savingKey === 'goals' && <ActivityIndicator size="small" color="#EC673C" />}
-            </View>
-            <Text style={styles.settingDescription}>Select skills to prioritize.</Text>
-            <View style={styles.goalGrid}>
-              {GOAL_OPTIONS.map((item) => {
-                const isSelected = settings.goals.includes(item.id);
-                return (
-                  <TouchableOpacity
-                    key={item.id}
-                    activeOpacity={0.7}
-                    style={[styles.goalChip, isSelected && styles.goalChipActive]}
-                    onPress={() => handleToggleGoal(item.id)}
-                  >
-                    <Ionicons
-                      name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
-                      size={16}
-                      color={isSelected ? '#EC673C' : '#666666'}
-                      style={styles.chipIcon}
-                    />
-                    <Text style={[styles.goalChipText, isSelected && styles.goalChipTextActive]}>
-                      {item.label}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-        </View>
-
-        {/* SECTION 2: ACCOUNT */}
-        <Text style={styles.sectionHeader}>ACCOUNT</Text>
-        <View style={styles.card}>
-          {/* Avatar Management Row */}
-          <View style={styles.avatarSectionRow}>
+        <View style={styles.wrapper}>
+          {/* TOP PROFILE HERO (Avatar, Name, Actions) */}
+          <View style={styles.profileHero}>
             <TouchableOpacity
               onPress={handlePickAndUploadAvatar}
-              style={styles.settingsAvatarContainer}
+              style={[
+                styles.heroAvatarContainer,
+                { backgroundColor: theme.pillBg },
+                isCompact && styles.heroAvatarContainerCompact,
+              ]}
               disabled={isUploadingAvatar}
-              activeOpacity={0.8}
+              activeOpacity={0.85}
             >
               {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={styles.settingsAvatarImage} />
+                <Image source={{ uri: avatarUrl }} style={styles.heroAvatarImage} />
               ) : (
-                <View style={styles.settingsAvatarPlaceholder}>
-                  <Text style={styles.settingsAvatarInitials}>
+                <View style={[styles.heroAvatarPlaceholder, { backgroundColor: theme.primary }]}>
+                  <Text style={[styles.heroAvatarInitials, isCompact && styles.heroAvatarInitialsCompact]}>
                     {getInitials(fullName || session?.user?.email || 'NUMO')}
                   </Text>
                 </View>
               )}
-              {isUploadingAvatar && (
+              {isUploadingAvatar ? (
                 <View style={styles.avatarLoadingOverlay}>
                   <ActivityIndicator size="small" color="#FFFFFF" />
+                </View>
+              ) : (
+                <View style={[styles.avatarCameraBadge, { backgroundColor: theme.primary, borderColor: theme.background }]}>
+                  <Ionicons name="camera" size={14} color="#FFFFFF" />
                 </View>
               )}
             </TouchableOpacity>
 
-            <View style={styles.avatarActions}>
-              <TouchableOpacity
-                style={styles.changePhotoBtn}
-                onPress={handlePickAndUploadAvatar}
-                disabled={isUploadingAvatar}
-                activeOpacity={0.7}
-              >
-                <Text style={styles.changePhotoText}>Change Photo</Text>
-              </TouchableOpacity>
-
-              {avatarUrl && (
-                <TouchableOpacity
-                  style={styles.removePhotoBtn}
-                  onPress={handleRemoveAvatar}
-                  disabled={isUploadingAvatar}
-                  activeOpacity={0.7}
-                >
-                  <Text style={styles.removePhotoText}>Remove</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.divider} />
-
-          {/* Full Name Row */}
-          <View style={styles.itemRow}>
-            <View style={styles.itemTextContainer}>
-              <Text style={styles.itemLabel}>Name</Text>
-              {isEditingName ? (
+            {/* Profile Name Display / Edit */}
+            {isEditingName ? (
+              <View style={styles.heroEditNameRow}>
                 <TextInput
                   value={nameInput}
                   onChangeText={setNameInput}
                   placeholder="Enter full name"
-                  placeholderTextColor="#8E8E93"
-                  style={styles.nameTextInput}
+                  placeholderTextColor={theme.muted}
+                  style={[styles.heroNameInput, { color: theme.text, borderColor: theme.primary }]}
                   autoFocus
                 />
-              ) : (
-                <Text style={styles.itemValue}>{fullName || 'Not provided'}</Text>
-              )}
-            </View>
-            {isEditingName ? (
-              <View style={styles.inlineActionRow}>
                 <TouchableOpacity onPress={() => setIsEditingName(false)} style={styles.cancelAction}>
-                  <Text style={styles.cancelActionText}>Cancel</Text>
+                  <Text style={[styles.cancelActionText, { color: theme.muted }]}>Cancel</Text>
                 </TouchableOpacity>
-                <TouchableOpacity onPress={handleSaveName} style={styles.saveAction}>
+                <TouchableOpacity onPress={handleSaveName} style={[styles.saveAction, { backgroundColor: theme.primary }]}>
                   {savingKey === 'name' ? (
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
@@ -448,123 +383,273 @@ const handlePickAndUploadAvatar = async () => {
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity onPress={() => setIsEditingName(true)} style={styles.editAction}>
-                <Text style={styles.editActionText}>Edit</Text>
+              <TouchableOpacity
+                onPress={() => setIsEditingName(true)}
+                activeOpacity={0.7}
+                style={styles.heroNameButton}
+              >
+                <Text style={[styles.heroNameText, { color: theme.text }, isCompact && styles.heroNameTextCompact]}>
+                  {fullName || 'Add Name'}
+                </Text>
+                <Ionicons name="pencil-outline" size={16} color={theme.muted} style={{ marginLeft: 6 }} />
+              </TouchableOpacity>
+            )}
+
+            <Text style={[styles.heroEmailText, { color: theme.subtext }]}>
+              {session?.user?.email || ''}
+            </Text>
+
+            {avatarUrl && (
+              <TouchableOpacity
+                onPress={handleRemoveAvatar}
+                disabled={isUploadingAvatar}
+                activeOpacity={0.7}
+                style={styles.heroRemovePhotoBtn}
+              >
+                <Text style={styles.removePhotoText}>Remove photo</Text>
               </TouchableOpacity>
             )}
           </View>
 
-          <View style={styles.divider} />
+          {/* SECTION 1: ACCOUNT DETAILS */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACCOUNT</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+            {/* Email Address */}
+            <View style={styles.itemRow}>
+              <View style={styles.itemTextContainer}>
+                <Text style={[styles.itemLabel, { color: theme.muted }]}>Email Address</Text>
+                <Text style={[styles.itemValue, { color: theme.text }]}>{session?.user?.email || 'N/A'}</Text>
+              </View>
+            </View>
 
-          {/* Email Address (Read-only) */}
-          <View style={styles.itemRow}>
-            <View style={styles.itemTextContainer}>
-              <Text style={styles.itemLabel}>Email Address</Text>
-              <Text style={styles.itemValue}>{session?.user?.email || 'N/A'}</Text>
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
+            {/* Change Password */}
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() => setPasswordModalVisible(true)}
+            >
+              <View style={styles.navLeft}>
+                <Ionicons name="key-outline" size={18} color={theme.text} style={styles.navIcon} />
+                <Text style={[styles.navLabel, { color: theme.text }]}>Change Password</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
+          </View>
+
+          {/* SECTION 2: WORKOUT */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>WORKOUT</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+            <View style={styles.settingBlock}>
+              <View style={styles.labelRow}>
+                <Text style={[styles.settingLabel, { color: theme.text }]}>Daily Questions</Text>
+                {savingKey === 'questions' && <ActivityIndicator size="small" color={theme.primary} />}
+              </View>
+              <Text style={[styles.settingDescription, { color: theme.subtext }]}>
+                Number of questions presented in normal daily workouts.
+              </Text>
+              <View style={styles.pillsContainer}>
+                {QUESTION_OPTIONS.map((count) => {
+                  const isSelected = settings.daily_question_goal === count;
+                  return (
+                    <TouchableOpacity
+                      key={count}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.pill,
+                        { backgroundColor: theme.pillBg },
+                        isSelected && {
+                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                          borderColor: theme.primary,
+                        },
+                      ]}
+                      onPress={() => handleUpdateQuestions(count)}
+                    >
+                      <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
+                        {count}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
+            <View style={styles.settingBlock}>
+              <View style={styles.labelRow}>
+                <Text style={[styles.settingLabel, { color: theme.text }]}>Improvement Focus</Text>
+                {savingKey === 'goals' && <ActivityIndicator size="small" color={theme.primary} />}
+              </View>
+              <Text style={[styles.settingDescription, { color: theme.subtext }]}>Select skills to prioritize.</Text>
+              <View style={styles.goalGrid}>
+                {GOAL_OPTIONS.map((item) => {
+                  const isSelected = settings.goals.includes(item.id);
+                  return (
+                    <TouchableOpacity
+                      key={item.id}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.goalChip,
+                        { backgroundColor: theme.pillBg },
+                        isSelected && {
+                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                          borderColor: theme.primary,
+                        },
+                      ]}
+                      onPress={() => handleToggleGoal(item.id)}
+                    >
+                      <Ionicons
+                        name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
+                        size={16}
+                        color={isSelected ? theme.primary : theme.muted}
+                        style={styles.chipIcon}
+                      />
+                      <Text style={[styles.goalChipText, { color: theme.text }, isSelected && { color: theme.primary }]}>
+                        {item.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
           </View>
 
-          <View style={styles.divider} />
-
-          {/* Change Password */}
-          <TouchableOpacity
-            style={styles.navRow}
-            activeOpacity={0.7}
-            onPress={() => setPasswordModalVisible(true)}
-          >
-            <View style={styles.navLeft}>
-              <Ionicons name="key-outline" size={18} color="#1C1C1E" style={styles.navIcon} />
-              <Text style={styles.navLabel}>Change Password</Text>
+          {/* SECTION 3: APPEARANCE */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>APPEARANCE</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+            <View style={styles.settingBlock}>
+              <View style={styles.labelRow}>
+                <Text style={[styles.settingLabel, { color: theme.text }]}>Theme Mode</Text>
+              </View>
+              <Text style={[styles.settingDescription, { color: theme.subtext }]}>
+                Choose your preferred interface appearance.
+              </Text>
+              <View style={styles.pillsContainer}>
+                {(['system', 'light', 'dark'] as const).map((mode) => {
+                  const isSelected = themeMode === mode;
+                  return (
+                    <TouchableOpacity
+                      key={mode}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.pill,
+                        { backgroundColor: theme.pillBg },
+                        isSelected && {
+                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                          borderColor: theme.primary,
+                        },
+                      ]}
+                      onPress={() => setThemeMode(mode)}
+                    >
+                      <Text
+                        style={[
+                          styles.pillText,
+                          { color: theme.text },
+                          isSelected && { color: theme.primary },
+                        ]}
+                      >
+                        {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             </View>
-            <Ionicons name="chevron-forward" size={18} color="#8E8E93" />
-          </TouchableOpacity>
+          </View>
 
-          <View style={styles.divider} />
+          {/* SECTION 4: ABOUT */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ABOUT</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() =>
+                setInfoModalContent({
+                  title: 'About NUMO',
+                  body: 'NUMO is an interactive arithmetic engine designed to build speed, accuracy, and everyday mental math confidence.\n\nVersion: 1.0.0\nBuild: 2026.08',
+                })
+              }
+            >
+              <Text style={[styles.navLabel, { color: theme.text }]}>About NUMO</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
 
-          {/* Sign Out */}
-          <TouchableOpacity style={styles.signOutRow} onPress={signOut} activeOpacity={0.7}>
-            <Ionicons name="log-out-outline" size={18} color="#EC673C" style={styles.navIcon} />
-            <Text style={styles.signOutText}>Sign Out</Text>
-          </TouchableOpacity>
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
 
-          <View style={styles.divider} />
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() =>
+                setInfoModalContent({
+                  title: 'Privacy Policy',
+                  body: 'Placeholder Privacy Policy:\n\nNUMO does not sell or distribute personal information. This section will contain full legal disclosures in an upcoming release.',
+                })
+              }
+            >
+              <Text style={[styles.navLabel, { color: theme.text }]}>Privacy Policy</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
 
-          {/* Delete Account (Destructive) */}
-          <TouchableOpacity
-            style={styles.deleteRow}
-            onPress={() => {
-              setDeleteConfirmText('');
-              setDeleteModalVisible(true);
-            }}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="trash-outline" size={18} color="#FF3B30" style={styles.navIcon} />
-            <Text style={styles.deleteText}>Delete Account</Text>
-          </TouchableOpacity>
-        </View>
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
 
-        {/* SECTION 3: ABOUT */}
-        <Text style={styles.sectionHeader}>ABOUT</Text>
-        <View style={styles.card}>
-          <TouchableOpacity
-            style={styles.navRow}
-            activeOpacity={0.7}
-            onPress={() =>
-              setInfoModalContent({
-                title: 'About NUMO',
-                body: 'NUMO is an interactive arithmetic engine designed to build speed, accuracy, and everyday mental math confidence.\n\nVersion: 1.0.0\nBuild: 2026.08',
-              })
-            }
-          >
-            <Text style={styles.navLabel}>About NUMO</Text>
-            <Ionicons name="chevron-forward" size={18} color="#8E8E93" />
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() =>
+                setInfoModalContent({
+                  title: 'Terms of Service',
+                  body: 'Placeholder Terms of Service:\n\nBy accessing NUMO, you agree to fair use and learning guidelines. Formal legal terms will be published prior to general availability.',
+                })
+              }
+            >
+              <Text style={[styles.navLabel, { color: theme.text }]}>Terms of Service</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
+          </View>
 
-          <View style={styles.divider} />
+          {/* SECTION 5: ACTIONS (Sign Out & Delete Account at the bottom) */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACTIONS</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+            {/* Sign Out */}
+            <TouchableOpacity style={styles.signOutRow} onPress={signOut} activeOpacity={0.7}>
+              <Ionicons name="log-out-outline" size={18} color={theme.primary} style={styles.navIcon} />
+              <Text style={[styles.signOutText, { color: theme.primary }]}>Sign Out</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.navRow}
-            activeOpacity={0.7}
-            onPress={() =>
-              setInfoModalContent({
-                title: 'Privacy Policy',
-                body: 'Placeholder Privacy Policy:\n\nNUMO does not sell or distribute personal information. This section will contain full legal disclosures in an upcoming release.',
-              })
-            }
-          >
-            <Text style={styles.navLabel}>Privacy Policy</Text>
-            <Ionicons name="chevron-forward" size={18} color="#8E8E93" />
-          </TouchableOpacity>
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
 
-          <View style={styles.divider} />
-
-          <TouchableOpacity
-            style={styles.navRow}
-            activeOpacity={0.7}
-            onPress={() =>
-              setInfoModalContent({
-                title: 'Terms of Service',
-                body: 'Placeholder Terms of Service:\n\nBy accessing NUMO, you agree to fair use and learning guidelines. Formal legal terms will be published prior to general availability.',
-              })
-            }
-          >
-            <Text style={styles.navLabel}>Terms of Service</Text>
-            <Ionicons name="chevron-forward" size={18} color="#8E8E93" />
-          </TouchableOpacity>
+            {/* Delete Account */}
+            <TouchableOpacity
+              style={styles.deleteRow}
+              onPress={() => {
+                setDeleteConfirmText('');
+                setDeleteModalVisible(true);
+              }}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="trash-outline" size={18} color="#FF3B30" style={styles.navIcon} />
+              <Text style={styles.deleteText}>Delete Account</Text>
+            </TouchableOpacity>
+          </View>
         </View>
       </ScrollView>
 
       {/* Change Password Modal */}
       <Modal visible={passwordModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Change Password</Text>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Change Password</Text>
 
             <TextInput
               secureTextEntry
               placeholder="Current password"
-              placeholderTextColor="#8E8E93"
-              style={styles.modalInput}
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
               value={currentPassword}
               onChangeText={setCurrentPassword}
             />
@@ -572,8 +657,8 @@ const handlePickAndUploadAvatar = async () => {
             <TextInput
               secureTextEntry
               placeholder="New password (min 6 characters)"
-              placeholderTextColor="#8E8E93"
-              style={styles.modalInput}
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
               value={newPassword}
               onChangeText={setNewPassword}
             />
@@ -581,15 +666,15 @@ const handlePickAndUploadAvatar = async () => {
             <TextInput
               secureTextEntry
               placeholder="Confirm new password"
-              placeholderTextColor="#8E8E93"
-              style={styles.modalInput}
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
               value={confirmPassword}
               onChangeText={setConfirmPassword}
             />
 
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={styles.modalCancelButton}
+                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
                 onPress={() => {
                   setPasswordModalVisible(false);
                   setCurrentPassword('');
@@ -597,10 +682,10 @@ const handlePickAndUploadAvatar = async () => {
                   setConfirmPassword('');
                 }}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={styles.modalSubmitButton}
+                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
                 onPress={handlePasswordSubmit}
                 disabled={updatingPassword}
               >
@@ -612,34 +697,37 @@ const handlePickAndUploadAvatar = async () => {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Delete Account Modal */}
       <Modal visible={deleteModalVisible} transparent animationType="fade">
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
             <Text style={[styles.modalTitle, { color: '#FF3B30' }]}>Delete Account</Text>
-            <Text style={styles.deleteWarningText}>
+            <Text style={[styles.deleteWarningText, { color: theme.subtext }]}>
               This action is permanent. Your profile, workout history, calculation statistics, and settings will be permanently erased.
             </Text>
-            <Text style={styles.deleteInstructionText}>
+            <Text style={[styles.deleteInstructionText, { color: theme.text }]}>
               Type <Text style={{ fontWeight: '800' }}>DELETE</Text> to confirm:
             </Text>
             <TextInput
               value={deleteConfirmText}
               onChangeText={setDeleteConfirmText}
               placeholder="Type DELETE"
-              placeholderTextColor="#8E8E93"
-              style={styles.modalInput}
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
               autoCapitalize="characters"
             />
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={styles.modalCancelButton}
+                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
                 onPress={() => setDeleteModalVisible(false)}
               >
-                <Text style={styles.modalCancelText}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -657,20 +745,20 @@ const handlePickAndUploadAvatar = async () => {
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Info / Legal Modal */}
       <Modal visible={infoModalContent !== null} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>{infoModalContent?.title}</Text>
-            <Text style={styles.infoBodyText}>{infoModalContent?.body}</Text>
+          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>{infoModalContent?.title}</Text>
+            <Text style={[styles.infoBodyText, { color: theme.subtext }]}>{infoModalContent?.body}</Text>
             <TouchableOpacity
-              style={styles.infoCloseButton}
+              style={[styles.infoCloseButton, { backgroundColor: theme.text }]}
               onPress={() => setInfoModalContent(null)}
             >
-              <Text style={styles.infoCloseButtonText}>Done</Text>
+              <Text style={[styles.infoCloseButtonText, { color: theme.card }]}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -680,128 +768,427 @@ const handlePickAndUploadAvatar = async () => {
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#E6E6E6' },
-  centerContainer: { flex: 1, backgroundColor: '#E6E6E6', justifyContent: 'center', alignItems: 'center' },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 12 },
-  header: { marginBottom: 24 },
-  headerTitle: { fontSize: 30, fontWeight: '800', color: '#1C1C1E', letterSpacing: -0.5 },
-  headerSubtitle: { fontSize: 14, color: '#666666', marginTop: 4 },
-  sectionHeader: { fontSize: 12, fontWeight: '700', color: '#8E8E93', marginBottom: 8, marginLeft: 4, letterSpacing: 0.8 },
-  card: { backgroundColor: '#FFFFFF', borderRadius: 20, padding: 16, marginBottom: 24 },
-  settingBlock: { paddingVertical: 4 },
-  labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 2 },
-  settingLabel: { fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
-  settingDescription: { fontSize: 13, color: '#666666', marginBottom: 14 },
-  pillsContainer: { flexDirection: 'row', gap: 8 },
-  pill: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#F2F2F7', alignItems: 'center', justifyContent: 'center', borderWidth: 1.5, borderColor: 'transparent' },
-  pillActive: { backgroundColor: '#FFF4F0', borderColor: '#EC673C' },
-  pillText: { fontSize: 16, fontWeight: '700', color: '#1C1C1E' },
-  pillTextActive: { color: '#EC673C' },
-  goalGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  goalChip: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10, paddingHorizontal: 14, borderRadius: 12, backgroundColor: '#F2F2F7', borderWidth: 1.5, borderColor: 'transparent' },
-  goalChipActive: { backgroundColor: '#FFF4F0', borderColor: '#EC673C' },
-  chipIcon: { marginRight: 6 },
-  goalChipText: { fontSize: 13, fontWeight: '600', color: '#1C1C1E' },
-  goalChipTextActive: { color: '#EC673C' },
-  divider: { height: 1, backgroundColor: '#EFEFF4', marginVertical: 12 },
-  
-  // Avatar Styles
-  avatarSectionRow: {
+  container: {
+    flex: 1,
+    backgroundColor: '#E6E6E6',
+  },
+  centerContainer: {
+    flex: 1,
+    backgroundColor: '#E6E6E6',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerWrapper: {
+    width: '100%',
+    backgroundColor: '#E6E6E6',
+    zIndex: 10,
+  },
+  scrollContent: {
+    flexGrow: 1,
+  },
+  wrapper: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
+  },
+  header: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
+    marginBottom: 6,
+  },
+  headerCompact: {
+    marginBottom: 4,
+  },
+  headerTitle: {
+    fontSize: 28,
+    fontWeight: '800',
+    color: '#1C1C1E',
+    letterSpacing: -0.5,
+  },
+  headerTitleCompact: {
+    fontSize: 24,
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: '#666666',
+    marginTop: 2,
+  },
+  profileHero: {
+    alignItems: 'center',
+    marginBottom: 24,
+    marginTop: 8,
+  },
+  heroAvatarContainer: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    position: 'relative',
+    backgroundColor: '#F2F2F7',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  heroAvatarContainerCompact: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    marginBottom: 10,
+  },
+  heroAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 48,
+  },
+  heroAvatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 48,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  heroAvatarInitials: {
+    color: '#FFFFFF',
+    fontSize: 32,
+    fontWeight: '800',
+  },
+  heroAvatarInitialsCompact: {
+    fontSize: 26,
+  },
+  avatarCameraBadge: {
+    position: 'absolute',
+    bottom: 2,
+    right: 2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroNameButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  heroNameText: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+  },
+  heroNameTextCompact: {
+    fontSize: 18,
+  },
+  heroEditNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 4,
+  },
+  heroNameInput: {
+    fontSize: 18,
+    fontWeight: '700',
+    borderBottomWidth: 1.5,
+    paddingVertical: 2,
+    paddingHorizontal: 6,
+    minWidth: 160,
+    textAlign: 'center',
+  },
+  heroEmailText: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  heroRemovePhotoBtn: {
+    marginTop: 6,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+  },
+  sectionHeader: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#8E8E93',
+    marginBottom: 6,
+    marginLeft: 4,
+    letterSpacing: 0.8,
+  },
+  card: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 16,
+    marginBottom: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.03,
+    shadowRadius: 6,
+    elevation: 1,
+  },
+  cardCompact: {
+    padding: 12,
+    marginBottom: 14,
+    borderRadius: 16,
+  },
+  settingBlock: {
+    paddingVertical: 2,
+  },
+  labelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 2,
+  },
+  settingLabel: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  settingDescription: {
+    fontSize: 12,
+    color: '#666666',
+    marginBottom: 10,
+    lineHeight: 16,
+  },
+  pillsContainer: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  pill: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: '#F2F2F7',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  pillText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: '#1C1C1E',
+  },
+  goalGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  goalChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: '#F2F2F7',
+    borderWidth: 1.5,
+    borderColor: 'transparent',
+  },
+  chipIcon: {
+    marginRight: 6,
+  },
+  goalChipText: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  divider: {
+    height: 1,
+    backgroundColor: '#EFEFF4',
+    marginVertical: 10,
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  itemTextContainer: {
+    flex: 1,
+  },
+  itemLabel: {
+    fontSize: 11,
+    color: '#8E8E93',
+    marginBottom: 2,
+  },
+  itemValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  cancelAction: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 8,
+  },
+  cancelActionText: {
+    fontSize: 12,
+    color: '#8E8E93',
+  },
+  saveAction: {
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: '#EC673C',
+  },
+  saveActionText: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  navRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 6,
+  },
+  navLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  navIcon: {
+    marginRight: 10,
+  },
+  navLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  signOutRow: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingVertical: 6,
   },
-  settingsAvatarContainer: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    overflow: 'hidden',
-    backgroundColor: '#F2F2F7',
+  signOutText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#EC673C',
+  },
+  deleteRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  deleteText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FF3B30',
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 20,
   },
-  settingsAvatarImage: {
+  modalContent: {
     width: '100%',
-    height: '100%',
+    maxWidth: 420,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 20,
+    padding: 20,
   },
-  settingsAvatarPlaceholder: {
-    width: '100%',
-    height: '100%',
-    backgroundColor: '#EC673C',
-    justifyContent: 'center',
-    alignItems: 'center',
+  modalContentCompact: {
+    padding: 16,
+    borderRadius: 16,
   },
-  settingsAvatarInitials: {
-    color: '#FFFFFF',
-    fontSize: 20,
+  modalTitle: {
+    fontSize: 18,
     fontWeight: '800',
+    color: '#1C1C1E',
+    marginBottom: 10,
+  },
+  deleteWarningText: {
+    fontSize: 13,
+    color: '#666666',
+    lineHeight: 18,
+    marginBottom: 10,
+  },
+  deleteInstructionText: {
+    fontSize: 12,
+    color: '#1C1C1E',
+    marginBottom: 8,
+  },
+  modalInput: {
+    backgroundColor: '#F2F2F7',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#1C1C1E',
+    marginBottom: 10,
+  },
+  modalButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 6,
+  },
+  modalCancelButton: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#F2F2F7',
+    alignItems: 'center',
+  },
+  modalCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#1C1C1E',
+  },
+  modalSubmitButton: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#EC673C',
+    alignItems: 'center',
+  },
+  modalSubmitText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  modalDeleteButton: {
+    flex: 1,
+    paddingVertical: 11,
+    borderRadius: 12,
+    backgroundColor: '#FF3B30',
+    alignItems: 'center',
+  },
+  modalDeleteButtonText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#FFFFFF',
+  },
+  infoBodyText: {
+    fontSize: 13,
+    color: '#3A3A3C',
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  infoCloseButton: {
+    backgroundColor: '#1C1C1E',
+    paddingVertical: 11,
+    borderRadius: 12,
+    alignItems: 'center',
+  },
+  infoCloseButtonText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '700',
   },
   avatarLoadingOverlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
+    borderRadius: 48,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  avatarActions: {
-    marginLeft: 16,
-    gap: 6,
-  },
-  changePhotoBtn: {
-    backgroundColor: '#F2F2F7',
-    paddingVertical: 6,
-    paddingHorizontal: 14,
-    borderRadius: 8,
-  },
-  changePhotoText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
-  removePhotoBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 14,
   },
   removePhotoText: {
     fontSize: 12,
     fontWeight: '600',
     color: '#FF3B30',
   },
-
-  // Item Rows
-  itemRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 4 },
-  itemTextContainer: { flex: 1 },
-  itemLabel: { fontSize: 12, color: '#8E8E93', marginBottom: 2 },
-  itemValue: { fontSize: 15, fontWeight: '600', color: '#1C1C1E' },
-  nameTextInput: { fontSize: 15, fontWeight: '600', color: '#1C1C1E', borderBottomWidth: 1.5, borderColor: '#EC673C', paddingVertical: 2, marginRight: 10 },
-  inlineActionRow: { flexDirection: 'row', gap: 8 },
-  editAction: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#F2F2F7' },
-  editActionText: { fontSize: 13, fontWeight: '700', color: '#1C1C1E' },
-  saveAction: { paddingVertical: 6, paddingHorizontal: 12, borderRadius: 8, backgroundColor: '#EC673C' },
-  saveActionText: { fontSize: 13, fontWeight: '700', color: '#FFFFFF' },
-  cancelAction: { paddingVertical: 6, paddingHorizontal: 10, borderRadius: 8 },
-  cancelActionText: { fontSize: 13, color: '#8E8E93' },
-  navRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: 6 },
-  navLeft: { flexDirection: 'row', alignItems: 'center' },
-  navIcon: { marginRight: 10 },
-  navLabel: { fontSize: 15, fontWeight: '600', color: '#1C1C1E' },
-  signOutRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
-  signOutText: { fontSize: 15, fontWeight: '700', color: '#EC673C' },
-  deleteRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
-  deleteText: { fontSize: 15, fontWeight: '700', color: '#FF3B30' },
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 24 },
-  modalContent: { width: '100%', backgroundColor: '#FFFFFF', borderRadius: 20, padding: 22 },
-  modalTitle: { fontSize: 20, fontWeight: '800', color: '#1C1C1E', marginBottom: 12 },
-  deleteWarningText: { fontSize: 14, color: '#666666', lineHeight: 20, marginBottom: 12 },
-  deleteInstructionText: { fontSize: 13, color: '#1C1C1E', marginBottom: 10 },
-  modalInput: { backgroundColor: '#F2F2F7', borderRadius: 12, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#1C1C1E', marginBottom: 12 },
-  modalButtonsRow: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  modalCancelButton: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#F2F2F7', alignItems: 'center' },
-  modalCancelText: { fontSize: 15, fontWeight: '600', color: '#1C1C1E' },
-  modalSubmitButton: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#EC673C', alignItems: 'center' },
-  modalSubmitText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF' },
-  modalDeleteButton: { flex: 1, paddingVertical: 12, borderRadius: 12, backgroundColor: '#FF3B30', alignItems: 'center' },
-  modalDeleteButtonText: { fontSize: 15, fontWeight: '700', color: '#FFFFFF' },
-  infoBodyText: { fontSize: 14, color: '#3A3A3C', lineHeight: 22, marginBottom: 20 },
-  infoCloseButton: { backgroundColor: '#1C1C1E', paddingVertical: 12, borderRadius: 12, alignItems: 'center' },
-  infoCloseButtonText: { color: '#FFFFFF', fontSize: 15, fontWeight: '700' },
 });

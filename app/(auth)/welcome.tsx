@@ -5,12 +5,13 @@ import {
   StyleSheet,
   TouchableOpacity,
   Animated,
-  Dimensions,
+  useWindowDimensions,
+  ScrollView,
+  StatusBar,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
-
-const { width } = Dimensions.get('window');
+import { useTheme } from '@/src/context/ThemeContext';
 
 const WORKOUT_STEPS = [
   { equation: '12 + 19', result: '= 31', time: '1.2s', step: 1 },
@@ -21,17 +22,20 @@ const WORKOUT_STEPS = [
 
 export default function WelcomeScreen() {
   const router = useRouter();
+  const { height, width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  const { theme } = useTheme();
   const [currentIndex, setCurrentIndex] = useState(0);
 
-  // Animation values for workout step
+  const isCompact = height < 720;
+  const isNarrow = width < 360;
+
   const fadeEquation = useRef(new Animated.Value(0)).current;
   const fadeResult = useRef(new Animated.Value(0)).current;
   const translateYResult = useRef(new Animated.Value(6)).current;
   const fadeBadge = useRef(new Animated.Value(0)).current;
   const fadeCorrect = useRef(new Animated.Value(0)).current;
   const scaleCard = useRef(new Animated.Value(1)).current;
-
-  // Floating ambient background particles
   const floatAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -58,7 +62,6 @@ export default function WelcomeScreen() {
       if (!isMounted) return;
       setCurrentIndex(index);
 
-      // Reset values
       fadeEquation.setValue(0);
       fadeResult.setValue(0);
       translateYResult.setValue(6);
@@ -66,15 +69,12 @@ export default function WelcomeScreen() {
       fadeCorrect.setValue(0);
 
       Animated.sequence([
-        // Step 1: Equation fades in
         Animated.timing(fadeEquation, {
           toValue: 1,
           duration: 350,
           useNativeDriver: true,
         }),
         Animated.delay(200),
-
-        // Step 2: Answer slides/fades in
         Animated.parallel([
           Animated.timing(fadeResult, {
             toValue: 1,
@@ -88,8 +88,6 @@ export default function WelcomeScreen() {
           }),
         ]),
         Animated.delay(150),
-
-        // Step 3: Speed badge pops & subtle card pulse
         Animated.parallel([
           Animated.spring(fadeBadge, {
             toValue: 1,
@@ -110,16 +108,12 @@ export default function WelcomeScreen() {
           ]),
         ]),
         Animated.delay(200),
-
-        // Step 4: "✓ Correct" pill appears
         Animated.spring(fadeCorrect, {
           toValue: 1,
           friction: 5,
           useNativeDriver: true,
         }),
         Animated.delay(1400),
-
-        // Step 5: Transition out for next workout question
         Animated.parallel([
           Animated.timing(fadeEquation, {
             toValue: 0,
@@ -169,27 +163,42 @@ export default function WelcomeScreen() {
   });
 
   return (
-    <SafeAreaView style={styles.container}>
-      <View style={styles.content}>
-        {/* 1. Header Branding */}
-        <View style={styles.brandContainer}>
-          <Text style={styles.brandLogo}>NUMO</Text>
+    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
+      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          {
+            paddingTop: Math.max(insets.top, 16),
+            paddingBottom: Math.max(insets.bottom, 16),
+            paddingHorizontal: isNarrow ? 18 : 24,
+          },
+        ]}
+        showsVerticalScrollIndicator={false}
+        bounces={false}
+      >
+        {/* Top Header Group */}
+        <View style={styles.topGroup}>
+          <View style={[styles.brandContainer, isCompact && styles.brandContainerCompact]}>
+            <Text style={[styles.brandLogo, { color: theme.primary }, isCompact && styles.brandLogoCompact]}>NUMO</Text>
+          </View>
+
+          <View style={[styles.textContainer, isCompact && styles.textContainerCompact]}>
+            <Text style={[styles.heading, { color: theme.text }, isCompact && styles.headingCompact]}>
+              Train your brain.{"\n"}Master mental math.
+            </Text>
+            <Text style={[styles.subheading, { color: theme.subtext }, isCompact && styles.subheadingCompact]}>
+              Build speed, accuracy, and confidence, one workout at a time.
+            </Text>
+          </View>
         </View>
 
-        {/* 2. Hero Proposition */}
-        <View style={styles.textContainer}>
-          <Text style={styles.heading}>Train your brain.{"\n"}Master mental math.</Text>
-          <Text style={styles.subheading}>
-            Build speed, accuracy, and confidence, one workout at a time.
-          </Text>
-        </View>
-
-        {/* 3. Central Interactive Math Visual */}
-        <View style={styles.showcaseSection}>
+        {/* Central Interactive Math Visual */}
+        <View style={[styles.showcaseSection, isCompact && styles.showcaseSectionCompact]}>
           <Animated.Text
             style={[
               styles.floatingSymbol,
-              { top: -14, left: 14, transform: [{ translateY: floatUp }] },
+              { color: theme.muted, top: -10, left: 10, transform: [{ translateY: floatUp }] },
             ]}
           >
             × 81
@@ -197,7 +206,7 @@ export default function WelcomeScreen() {
           <Animated.Text
             style={[
               styles.floatingSymbol,
-              { top: 12, right: 10, transform: [{ translateY: floatDown }] },
+              { color: theme.muted, top: 8, right: 8, transform: [{ translateY: floatDown }] },
             ]}
           >
             ÷ 144
@@ -205,7 +214,7 @@ export default function WelcomeScreen() {
           <Animated.Text
             style={[
               styles.floatingSymbol,
-              { bottom: -12, left: 24, transform: [{ translateY: floatDown }] },
+              { color: theme.muted, bottom: -10, left: 16, transform: [{ translateY: floatDown }] },
             ]}
           >
             + 27
@@ -213,16 +222,18 @@ export default function WelcomeScreen() {
           <Animated.Text
             style={[
               styles.floatingSymbol,
-              { bottom: 2, right: 28, transform: [{ translateY: floatUp }] },
+              { color: theme.muted, bottom: 0, right: 18, transform: [{ translateY: floatUp }] },
             ]}
           >
             − 16
           </Animated.Text>
 
-          {/* Math Workout Card */}
+          {/* Math Card */}
           <Animated.View
             style={[
               styles.mathCard,
+              { backgroundColor: theme.accentPurple },
+              isCompact && styles.mathCardCompact,
               { transform: [{ scale: scaleCard }] },
             ]}
           >
@@ -231,6 +242,7 @@ export default function WelcomeScreen() {
               <Animated.View
                 style={[
                   styles.correctBadge,
+                  { backgroundColor: theme.accentYellow },
                   {
                     opacity: fadeCorrect,
                     transform: [
@@ -249,9 +261,13 @@ export default function WelcomeScreen() {
             </View>
 
             {/* Dynamic Equation Area */}
-            <View style={styles.equationBody}>
+            <View style={[styles.equationBody, isCompact && styles.equationBodyCompact]}>
               <Animated.Text
-                style={[styles.equationText, { opacity: fadeEquation }]}
+                style={[
+                  styles.equationText,
+                  isCompact && styles.equationTextCompact,
+                  { opacity: fadeEquation },
+                ]}
               >
                 {currentOp.equation}
               </Animated.Text>
@@ -259,6 +275,8 @@ export default function WelcomeScreen() {
               <Animated.Text
                 style={[
                   styles.resultText,
+                  { color: theme.accentYellow },
+                  isCompact && styles.resultTextCompact,
                   {
                     opacity: fadeResult,
                     transform: [{ translateY: translateYResult }],
@@ -308,24 +326,24 @@ export default function WelcomeScreen() {
           </Animated.View>
         </View>
 
-        {/* 4. Concrete Value Card */}
-        <View style={styles.valueCard}>
-          <View style={styles.valueIconPill}>
+        {/* Concrete Value Card */}
+        <View style={[styles.valueCard, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.valueCardCompact]}>
+          <View style={[styles.valueIconPill, { backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF2EB' }]}>
             <Text style={styles.valueIconText}>⚡</Text>
           </View>
           <View style={styles.valueTextGroup}>
-            <Text style={styles.valueTitle}>DAILY WORKOUTS</Text>
-            <Text style={styles.valueBody}>
-              10 questions • 2 mins • Personalized speed tracking
+            <Text style={[styles.valueTitle, { color: theme.primary }]}>DAILY WORKOUTS</Text>
+            <Text style={[styles.valueBody, { color: theme.text }]}>
+              10 questions • 2 mins • Speed tracking
             </Text>
           </View>
         </View>
 
-        {/* 5. Action Controls */}
-        <View style={styles.actionContainer}>
+        {/* Action Controls */}
+        <View style={[styles.actionContainer, isCompact && styles.actionContainerCompact]}>
           <TouchableOpacity
             activeOpacity={0.85}
-            style={styles.primaryButton}
+            style={[styles.primaryButton, { backgroundColor: theme.accentYellow }, isCompact && styles.primaryButtonCompact]}
             onPress={() =>
               router.push({
                 pathname: '/(app)/training',
@@ -336,17 +354,17 @@ export default function WelcomeScreen() {
             <Text style={styles.primaryButtonText}>Start Training →</Text>
           </TouchableOpacity>
 
-          <View style={styles.loginPromptRow}>
-            <Text style={styles.accountText}>Already have an account? </Text>
+          <View style={[styles.loginPromptRow, isCompact && styles.loginPromptRowCompact]}>
+            <Text style={[styles.accountText, { color: theme.subtext }]}>Already have an account? </Text>
             <TouchableOpacity
               activeOpacity={0.7}
               onPress={() => router.push('/(auth)/login')}
             >
-              <Text style={styles.loginLinkText}>Log In</Text>
+              <Text style={[styles.loginLinkText, { color: theme.primary }]}>Log In</Text>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -356,15 +374,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#E6E6E6',
   },
-  content: {
-    flex: 1,
-    paddingHorizontal: 24,
-    justifyContent: 'space-between',
-    paddingVertical: 12,
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center', 
+    gap: 28,
+  },
+  topGroup: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
   },
   brandContainer: {
     alignItems: 'center',
-    marginTop: 4,
+    marginBottom: 32,
+  },
+  brandContainerCompact: {
+    marginBottom: 20,
   },
   brandLogo: {
     fontSize: 28,
@@ -372,37 +397,57 @@ const styles = StyleSheet.create({
     letterSpacing: 4,
     color: '#EC673C',
   },
+  brandLogoCompact: {
+    fontSize: 24,
+    letterSpacing: 3,
+  },
   textContainer: {
     alignItems: 'center',
-    marginVertical: 4,
+    marginBottom: 4,
+  },
+  textContainerCompact: {
+    marginBottom: 2,
   },
   heading: {
-    fontSize: 26,
-    fontWeight: '600',
+    fontSize: 25,
+    fontWeight: '700',
     color: '#1F2937',
     textAlign: 'center',
-    lineHeight: 32,
+    lineHeight: 31,
     letterSpacing: -0.5,
     marginBottom: 6,
   },
+  headingCompact: {
+    fontSize: 21,
+    lineHeight: 26,
+  },
   subheading: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '500',
-    color: '#4B5563',
+    color: '#636366',
     textAlign: 'center',
-    lineHeight: 20,
-    paddingHorizontal: 12,
+    lineHeight: 18,
+    paddingHorizontal: 8,
+  },
+  subheadingCompact: {
+    fontSize: 12,
+    lineHeight: 16,
   },
   showcaseSection: {
     width: '100%',
+    maxWidth: 380,
+    alignSelf: 'center',
     alignItems: 'center',
     justifyContent: 'center',
     position: 'relative',
-    marginVertical: 8,
+    marginVertical: 4,
+  },
+  showcaseSectionCompact: {
+    marginVertical: 2,
   },
   floatingSymbol: {
     position: 'absolute',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
     color: '#9CA3AF',
     zIndex: 1,
@@ -410,25 +455,28 @@ const styles = StyleSheet.create({
   },
   mathCard: {
     width: '100%',
-    maxWidth: 340,
     backgroundColor: '#AFA2FE',
-    borderRadius: 28,
-    padding: 20,
+    borderRadius: 24,
+    padding: 18,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
+    shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.08,
-    shadowRadius: 16,
-    elevation: 4,
+    shadowRadius: 14,
+    elevation: 3,
     zIndex: 2,
+  },
+  mathCardCompact: {
+    padding: 14,
+    borderRadius: 20,
   },
   cardHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 8,
+    marginBottom: 4,
   },
   cardTag: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
     color: '#FFFFFF',
     letterSpacing: 1.5,
@@ -436,36 +484,46 @@ const styles = StyleSheet.create({
   correctBadge: {
     backgroundColor: '#F6FE91',
     paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
+    paddingVertical: 2,
+    borderRadius: 8,
   },
   correctBadgeText: {
     color: '#1F2937',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '800',
   },
   equationBody: {
     alignItems: 'center',
-    paddingVertical: 10,
+    paddingVertical: 8,
+  },
+  equationBodyCompact: {
+    paddingVertical: 4,
   },
   equationText: {
-    fontSize: 34,
+    fontSize: 30,
     fontWeight: '900',
     color: '#FFFFFF',
     letterSpacing: -0.5,
   },
+  equationTextCompact: {
+    fontSize: 24,
+  },
   resultText: {
-    fontSize: 32,
+    fontSize: 28,
     fontWeight: '900',
     color: '#F6FE91',
     marginTop: 2,
-    marginBottom: 8,
+    marginBottom: 6,
+  },
+  resultTextCompact: {
+    fontSize: 22,
+    marginBottom: 4,
   },
   speedBadge: {
     backgroundColor: '#FFFFFF',
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 14,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    borderRadius: 12,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
@@ -474,25 +532,25 @@ const styles = StyleSheet.create({
   },
   speedBadgeText: {
     color: '#1F2937',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
   },
   progressContainer: {
-    marginTop: 10,
-    paddingTop: 12,
+    marginTop: 8,
+    paddingTop: 8,
     borderTopWidth: 1,
     borderTopColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
   },
   dotsRow: {
     flexDirection: 'row',
-    gap: 5,
-    marginBottom: 6,
+    gap: 4,
+    marginBottom: 4,
   },
   dot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
+    width: 5,
+    height: 5,
+    borderRadius: 2.5,
   },
   dotActive: {
     backgroundColor: '#FFFFFF',
@@ -501,89 +559,104 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.3)',
   },
   progressText: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
     color: 'rgba(255, 255, 255, 0.9)',
     letterSpacing: 0.5,
   },
   valueCard: {
     width: '100%',
-    maxWidth: 340,
+    maxWidth: 380,
     alignSelf: 'center',
     backgroundColor: '#FFFFFF',
-    borderRadius: 20,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
+    borderRadius: 18,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
     flexDirection: 'row',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#EFEFEF',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
     shadowRadius: 6,
     elevation: 2,
   },
+  valueCardCompact: {
+    paddingVertical: 8,
+  },
   valueIconPill: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#FFF2EB',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 10,
   },
   valueIconText: {
-    fontSize: 16,
+    fontSize: 14,
   },
   valueTextGroup: {
     flex: 1,
   },
   valueTitle: {
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '800',
     color: '#EC673C',
-    letterSpacing: 1,
-    marginBottom: 2,
+    letterSpacing: 0.8,
+    marginBottom: 1,
   },
   valueBody: {
-    fontSize: 12,
+    fontSize: 11,
     color: '#374151',
     fontWeight: '600',
   },
   actionContainer: {
     width: '100%',
-    paddingBottom: 6,
+    maxWidth: 380,
+    alignSelf: 'center',
   },
+  actionContainerCompact: {},
   primaryButton: {
     backgroundColor: '#F6FE91',
-    paddingVertical: 18,
-    borderRadius: 22,
+    minHeight: 52,
+    paddingVertical: 14,
+    borderRadius: 18,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.06,
-    shadowRadius: 8,
+    shadowRadius: 6,
     elevation: 2,
+  },
+  primaryButtonCompact: {
+    minHeight: 46,
+    paddingVertical: 11,
   },
   primaryButtonText: {
     color: '#1F2937',
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
   },
   loginPromptRow: {
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 14,
+    marginTop: 10,
+  },
+  loginPromptRowCompact: {
+    marginTop: 8,
   },
   accountText: {
-    color: '#4B5563',
-    fontSize: 14,
+    color: '#636366',
+    fontSize: 13,
     fontWeight: '500',
   },
   loginLinkText: {
     color: '#EC673C',
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '800',
   },
 });
