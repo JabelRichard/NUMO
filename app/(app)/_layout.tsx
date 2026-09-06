@@ -62,27 +62,20 @@ export default function AppLayout() {
         }}
       />
 
-      {/* 3. Stats (Disabled) */}
-      <Tabs.Screen
-        name="stats"
-        listeners={{
-          tabPress: (e) => {
-            e.preventDefault();
-            handleComingSoon('Stats');
-          },
-        }}
-        options={{
-          title: 'Stats',
-          tabBarItemStyle: styles.disabledTab,
-          tabBarIcon: () => (
-            <Ionicons
-              name="stats-chart-outline"
-              size={22}
-              color="rgba(255, 255, 255, 0.35)"
-            />
-          ),
-        }}
+     {/* 3. Stats */}
+<Tabs.Screen
+  name="statistics"
+  options={{
+    title: 'Stats',
+    tabBarIcon: ({ color, focused }) => (
+      <Ionicons
+        name={focused ? 'stats-chart' : 'stats-chart-outline'}
+        size={22}
+        color={color}
       />
+    ),
+  }}
+/>
 
       {/* 4. Compete (Disabled) */}
       <Tabs.Screen

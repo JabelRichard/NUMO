@@ -1,56 +1,60 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useRouter, useSegments } from 'expo-router';
 import { useAuth } from '../context/AuthContext';
 import { getUserSettings } from '../services/settingsService';
 
-export function useProtectedRoute() {
+export function useProtectedRoute(isSplashDone: boolean = true) {
   const { session, isLoading } = useAuth();
   const segments = useSegments();
   const router = useRouter();
-  const [checkingSettings, setCheckingSettings] = useState(false);
+  const isNavigatingRef = useRef(false);
 
   useEffect(() => {
-    if (isLoading || checkingSettings) return;
+    // Only evaluate once splash is done and auth is known
+    if (isLoading || !isSplashDone || isNavigatingRef.current) return;
 
     const inAuthGroup = segments[0] === '(auth)';
     const isOnboarding = (segments as string[]).includes('onboarding');
     const currentPath = segments.join('/');
 
-    // Allow unauthenticated demo sessions on training and results
     const isDemoAccessibleRoute =
-      currentPath.includes('training') || 
-      currentPath.includes('workout') || 
+      currentPath.includes('training') ||
+      currentPath.includes('workout') ||
       currentPath.includes('results');
 
     async function evaluateRouting() {
-      if (!session) {
-        // 1. Unauthenticated user trying to access protected routes -> redirect to Welcome
-        if (!inAuthGroup && !isDemoAccessibleRoute) {
-          router.replace('/(auth)/welcome');
-        }
-      } else {
-        // 2. Authenticated user: verify onboarding status
-        try {
-          setCheckingSettings(true);
+      try {
+        if (!session) {
+          // Guest user trying to access main app
+          if (!inAuthGroup && !isDemoAccessibleRoute) {
+            isNavigatingRef.current = true;
+            router.replace('/(auth)/welcome');
+          }
+        } else {
+          // Logged in user: Check onboarding
           const settings = await getUserSettings(session.user.id);
 
-          if (!settings.has_completed_onboarding) {
-            // User hasn't finished onboarding yet -> send them to onboarding screen
+          if (!settings?.has_completed_onboarding) {
             if (!isOnboarding) {
+              isNavigatingRef.current = true;
               router.replace('/(auth)/onboarding');
             }
           } else {
-            // User has completed onboarding -> block auth & onboarding screens, allow main app
             if (inAuthGroup) {
-              router.replace('/');
+              isNavigatingRef.current = true;
+              router.replace('/(app)');
             }
           }
-        } finally {
-          setCheckingSettings(false);
         }
+      } catch (err) {
+        console.error('Error during route protection:', err);
+      } finally {
+        setTimeout(() => {
+          isNavigatingRef.current = false;
+        }, 300);
       }
     }
 
     evaluateRouting();
-  }, [session, isLoading, segments]);
+  }, [session, isLoading, isSplashDone, segments]);
 }
