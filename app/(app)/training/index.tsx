@@ -12,24 +12,90 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { CORE_PROGRAMS, FUTURE_PROGRAMS } from '../../../src/data/trainingPrograms';
+import NetInfo from '@react-native-community/netinfo';
+import { FUTURE_PROGRAMS } from '../../../src/data/trainingPrograms';
 import { ProgramCard } from '../../../src/components/ProgramCard';
-import { GlassCard } from '../../../src/components/GlassCard';
+import { OfflineNotice } from '../../../src/components/OfflineNotice';
 import { useTheme } from '@/src/context/ThemeContext';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
+
+interface OperationData {
+  id: string;
+  title: string;
+  subtitle: string;
+  icon: keyof typeof Ionicons.glyphMap;
+}
+
+const OPERATIONS: OperationData[] = [
+  {
+    id: 'addition',
+    title: 'Addition',
+    subtitle: 'Sums & carries',
+    icon: 'add',
+  },
+  {
+    id: 'subtraction',
+    title: 'Subtraction',
+    subtitle: 'Differences & deduction',
+    icon: 'remove',
+  },
+  {
+    id: 'multiplication',
+    title: 'Multiplication',
+    subtitle: 'Times tables & scaling',
+    icon: 'close',
+  },
+  {
+    id: 'division',
+    title: 'Division',
+    subtitle: 'Quotients & factors',
+    icon: 'stats-chart',
+  },
+  {
+    id: 'adaptive_mix',
+    title: 'Mixed Challenge',
+    subtitle: 'All operations combined',
+    icon: 'sparkles',
+  },
+];
+
+const DIFFICULTIES: { level: Difficulty; label: string }[] = [
+  { level: 'easy', label: 'Easy' },
+  { level: 'medium', label: 'Medium' },
+  { level: 'hard', label: 'Hard' },
+];
 
 export default function TrainingSelectionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { theme } = useTheme();
-  const params = useLocalSearchParams<{ mode?: string; difficulty?: Difficulty }>();
-  const [showOthers, setShowOthers] = useState(false);
 
+  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
+  const params = useLocalSearchParams<{ mode?: string; difficulty?: Difficulty }>();
   const isNarrow = width < 360;
 
-  // Auto-redirect if launched directly in demo mode from the Welcome screen
+  // Offline connection state
+  const [isOffline, setIsOffline] = useState(false);
+
+  // Selected state for bottom sheet modal - defaults to 'easy'
+  const [selectedOperation, setSelectedOperation] = useState<OperationData | null>(null);
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>(
+    params.difficulty || 'easy'
+  );
+  const [showOthers, setShowOthers] = useState(false);
+
+  // Network connectivity listener
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
   useEffect(() => {
     if (params.mode === 'demo') {
       router.replace({
@@ -43,101 +109,78 @@ export default function TrainingSelectionScreen() {
     }
   }, [params.mode]);
 
-  // Map storing chosen difficulty per program ID (defaults to 'easy')
-  const [difficulties, setDifficulties] = useState<Record<string, Difficulty>>({});
-
-  // State for active dropdown modal picker
-  const [activePickerId, setActivePickerId] = useState<string | null>(null);
-
-  const getDifficulty = (id: string): Difficulty => difficulties[id] || 'easy';
-
-  const setProgramDifficulty = (id: string, level: Difficulty) => {
-    setDifficulties((prev) => ({ ...prev, [id]: level }));
-    setActivePickerId(null);
+  const handleRetryConnection = async () => {
+    const state = await NetInfo.fetch();
+    const offline = state.isConnected === false || state.isInternetReachable === false;
+    setIsOffline(offline);
   };
 
-  const handleSelectProgram = (programId: string) => {
-    const selectedDifficulty = getDifficulty(programId);
+  // High-contrast dynamic colors
+  const screenBg = isDark ? '#0A0F0B' : '#F1ECE9';
+  const cardBg = isDark ? '#141C15' : '#FFFFFF';
+  const cardElevated = isDark ? '#1B241C' : '#F8F6F4';
+  const primaryText = isDark ? '#F1ECE9' : '#0A0F0B';
+  const secondaryText = isDark ? 'rgba(241, 236, 233, 0.65)' : 'rgba(10, 15, 11, 0.55)';
+  const borderSubtle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
+  const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
+  const accentGreen = '#BCE3AA';
+  const accentLilac = '#F2CAEC';
+
+  // If offline, block the screen completely
+  if (isOffline) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+        <StatusBar
+          barStyle={isDark ? 'light-content' : 'dark-content'}
+          backgroundColor={screenBg}
+        />
+        <OfflineNotice onRetry={handleRetryConnection} />
+      </SafeAreaView>
+    );
+  }
+
+  const handleOpenDifficulty = (op: OperationData) => {
+    setSelectedOperation(op);
+    setSelectedDifficulty('easy');
+  };
+
+  const handleDismissModal = () => {
+    setSelectedOperation(null);
+    setSelectedDifficulty('easy');
+  };
+
+  const handleContinueToWorkout = () => {
+    if (!selectedOperation) return;
+    const mode = selectedOperation.id;
+    const diff = selectedDifficulty;
+
+    handleDismissModal();
+
     router.push({
       pathname: '/workout' as any,
-      params: { mode: programId, difficulty: selectedDifficulty },
+      params: { mode, difficulty: diff },
     });
   };
 
-  const getDifficultyLabel = (diff: Difficulty): string => {
-    switch (diff) {
-      case 'easy':
-        return 'Easy';
-      case 'medium':
-        return 'Medium';
-      case 'hard':
-        return 'Hard';
-      default:
-        return 'Easy';
-    }
-  };
-
-  // Color theme per difficulty option
-  const getDifficultyTheme = (diff: Difficulty) => {
-    switch (diff) {
-      case 'easy':
-        return {
-          color: '#4CAF50',
-          bg: theme.isDark ? 'rgba(76, 175, 80, 0.22)' : 'rgba(76, 175, 80, 0.15)',
-          border: 'rgba(76, 175, 80, 0.3)',
-        };
-      case 'medium':
-        return {
-          color: '#EC673C',
-          bg: theme.isDark ? 'rgba(236, 103, 60, 0.22)' : 'rgba(236, 103, 60, 0.15)',
-          border: 'rgba(236, 103, 60, 0.3)',
-        };
-      case 'hard':
-        return {
-          color: '#EE5839',
-          bg: theme.isDark ? 'rgba(238, 88, 57, 0.25)' : 'rgba(238, 88, 57, 0.18)',
-          border: 'rgba(238, 88, 57, 0.35)',
-        };
-    }
-  };
-
-  // Maps operation IDs to original colors and icons
-  const getOperationConfig = (id: string) => {
-    switch (id.toLowerCase()) {
-      case 'addition':
-        return { icon: 'add' as const, color: '#AFA2FE' };
-      case 'subtraction':
-        return { icon: 'remove' as const, color: '#EC673C' };
-      case 'multiplication':
-        return { icon: 'close' as const, color: '#F6FE91' };
-      case 'division':
-        return { icon: 'stats-chart' as const, color: '#4CAF50' };
-      case 'adaptive_mix':
-      case 'mixed':
-        return { icon: 'sparkles' as const, color: '#EE5839' };
-      default:
-        return { icon: 'flash' as const, color: theme.text };
-    }
-  };
-
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top']}>
-      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={screenBg}
+      />
 
       {/* Header Bar */}
-      <View style={[styles.header, { backgroundColor: theme.background }]}>
+      <View style={styles.header}>
         <View style={styles.headerInner}>
           <TouchableOpacity
-            style={[styles.backButton, { backgroundColor: theme.card }]}
+            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
-            <Ionicons name="arrow-back" size={20} color={theme.text} />
+            <Ionicons name="arrow-back" size={20} color={primaryText} />
           </TouchableOpacity>
-          <View>
-            <Text style={[styles.headerTitle, { color: theme.text }]}>Workout</Text>
-            <Text style={[styles.headerSubtitle, { color: theme.muted }]}>Choose an operation</Text>
-          </View>
+          <Text style={[styles.headerTitle, { color: primaryText }]}>Workout</Text>
+          <View style={styles.headerPlaceholder} />
         </View>
       </View>
 
@@ -146,121 +189,89 @@ export default function TrainingSelectionScreen() {
           styles.scrollContent,
           {
             paddingHorizontal: isNarrow ? 16 : 20,
-            paddingTop: Math.max(insets.top > 0 ? 8 : 12, 10),
             paddingBottom: Math.max(insets.bottom, 20) + 90,
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.responsiveWrapper}>
-          {/* Quick Start Banner */}
-          <TouchableOpacity
-            activeOpacity={0.9}
-            onPress={() => handleSelectProgram('adaptive_mix')}
-          >
-            <View style={[styles.quickStartBanner, { backgroundColor: theme.primary, shadowColor: theme.primary }]}>
-              <View style={styles.quickStartLeft}>
-                <View style={styles.quickStartIconRing}>
-                  <Ionicons name="sparkles" size={22} color="#FFF" />
-                </View>
-                <View>
-                  <Text style={styles.quickStartTitle}>Quick Start</Text>
-                  <Text style={styles.quickStartSubtitle}>
-                    Adaptive mix • {getDifficultyLabel(getDifficulty('adaptive_mix'))}
-                  </Text>
-                </View>
-              </View>
-              <Ionicons name="arrow-forward" size={22} color="#FFF" />
+          {/* Header Title Section */}
+          <View style={styles.titleSection}>
+            <View
+              style={[
+                styles.tagBadge,
+                { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : accentLilac },
+              ]}
+            >
+              <Text style={[styles.tagBadgeText, { color: isDark ? accentGreen : '#0A0F0B' }]}>
+                PRACTICE
+              </Text>
             </View>
-          </TouchableOpacity>
+            <Text style={[styles.mainHeading, { color: primaryText }]}>
+              Choose your workout
+            </Text>
+            <Text style={[styles.subHeading, { color: secondaryText }]}>
+              Master one skill or challenge all four.
+            </Text>
+          </View>
 
-          {/* Section: Core Operations inside Glass Card */}
-          <Text style={[styles.sectionLabel, { color: theme.muted }]}>Core operations</Text>
-          <GlassCard style={styles.groupedGlassCard} intensity={45}>
-            {CORE_PROGRAMS.map((program, index) => {
-              const currentDiff = getDifficulty(program.id);
-              const diffTheme = getDifficultyTheme(currentDiff);
-              const opConfig = getOperationConfig(program.id);
-              const descriptionText =
-                (program as any).subtitle || (program as any).description || '';
+          {/* Grouped Operations Card */}
+          <View style={[styles.groupedCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+            {OPERATIONS.map((op, index) => {
+              const iconBg = index % 2 === 0 ? accentGreen : accentLilac;
 
               return (
-                <React.Fragment key={program.id}>
-                  <View style={styles.programCardRow}>
-                    {/* Left Main Area: Tap to Start Workout */}
-                    <TouchableOpacity
-                      style={styles.programInfoLeft}
-                      activeOpacity={0.7}
-                      onPress={() => handleSelectProgram(program.id)}
-                    >
-                      <View style={[styles.iconCircle, { backgroundColor: opConfig.color }]}>
-                        <Ionicons
-                          name={opConfig.icon}
-                          size={20}
-                          color={program.id === 'multiplication' ? '#1C1C1E' : '#FFFFFF'}
-                        />
-                      </View>
-                      <View style={styles.textStack}>
-                        <Text style={[styles.programTitle, { color: theme.text }]}>{program.title}</Text>
-                        {descriptionText ? (
-                          <Text style={[styles.programSubtitle, { color: theme.muted }]}>{descriptionText}</Text>
-                        ) : null}
-                      </View>
-                    </TouchableOpacity>
+                <React.Fragment key={op.id}>
+                  <TouchableOpacity
+                    style={styles.programCardRow}
+                    activeOpacity={0.7}
+                    onPress={() => handleOpenDifficulty(op)}
+                  >
+                    <View style={[styles.iconCircle, { backgroundColor: iconBg }]}>
+                      <Ionicons name={op.icon} size={20} color="#0A0F0B" />
+                    </View>
 
-                    {/* Right Area: Colored Difficulty Pill */}
-                    <TouchableOpacity
-                      style={[
-                        styles.dropdownButton,
-                        {
-                          backgroundColor: diffTheme.bg,
-                          borderColor: diffTheme.border,
-                        },
-                      ]}
-                      activeOpacity={0.7}
-                      onPress={() => setActivePickerId(program.id)}
-                    >
-                      <Text style={[styles.dropdownButtonText, { color: diffTheme.color }]}>
-                        {getDifficultyLabel(currentDiff)}
+                    <View style={styles.textStack}>
+                      <Text style={[styles.programTitle, { color: primaryText }]}>{op.title}</Text>
+                      <Text style={[styles.programSubtitle, { color: secondaryText }]}>
+                        {op.subtitle}
                       </Text>
-                      <Ionicons name="chevron-down" size={14} color={diffTheme.color} />
-                    </TouchableOpacity>
-                  </View>
+                    </View>
 
-                  {index < CORE_PROGRAMS.length - 1 && (
-                    <View style={[styles.cardDivider, { backgroundColor: theme.divider }]} />
+                    <Ionicons name="chevron-forward" size={18} color={secondaryText} />
+                  </TouchableOpacity>
+
+                  {index < OPERATIONS.length - 1 && (
+                    <View style={[styles.cardDivider, { backgroundColor: dividerColor }]} />
                   )}
                 </React.Fragment>
               );
             })}
-          </GlassCard>
+          </View>
 
-          {/* Section: Future Programs Accordion */}
-          <GlassCard style={styles.othersHeaderCard} intensity={40}>
+          {/* More Modes Section */}
+          <View style={[styles.othersHeaderCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
             <TouchableOpacity
               style={styles.othersTouchable}
               activeOpacity={0.7}
               onPress={() => setShowOthers(!showOthers)}
             >
               <View style={styles.othersTextGroup}>
-                <Text style={[styles.othersTitle, { color: theme.text }]}>Other programs</Text>
-                <Text style={[styles.othersSubtitle, { color: theme.muted }]}>
-                  Speed Challenge, AI Coach & more
+                <Text style={[styles.othersTitle, { color: primaryText }]}>More modes</Text>
+                <Text style={[styles.othersSubtitle, { color: secondaryText }]}>
+                  Speed runs & AI coach
                 </Text>
               </View>
-              <View style={[styles.othersChevronCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.05)' }]}>
-                <Ionicons
-                  name={showOthers ? 'chevron-up' : 'chevron-down'}
-                  size={18}
-                  color={theme.text}
-                />
-              </View>
+              <Ionicons
+                name={showOthers ? 'chevron-up' : 'chevron-down'}
+                size={18}
+                color={secondaryText}
+              />
             </TouchableOpacity>
 
-            {/* Expandable Future Modules List */}
-            {showOthers ? (
+            {showOthers && (
               <View style={styles.futureList}>
-                <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+                <View style={[styles.divider, { backgroundColor: dividerColor }]} />
                 {FUTURE_PROGRAMS.map((program, index) => (
                   <ProgramCard
                     key={program.id}
@@ -269,76 +280,107 @@ export default function TrainingSelectionScreen() {
                   />
                 ))}
               </View>
-            ) : null}
-          </GlassCard>
+            )}
+          </View>
         </View>
       </ScrollView>
 
-      {/* Glassmorphic Modal Picker */}
+      {/* Slide-Up Bottom Sheet Modal */}
       <Modal
-        visible={activePickerId !== null}
+        visible={selectedOperation !== null}
         transparent
-        animationType="fade"
-        onRequestClose={() => setActivePickerId(null)}
+        animationType="slide"
+        onRequestClose={handleDismissModal}
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setActivePickerId(null)}
-        >
-          <GlassCard style={styles.glassModalMenu} intensity={70}>
-            <Text style={[styles.modalHeaderTitle, { color: theme.muted }]}>Select Difficulty</Text>
+        <View style={styles.sheetBackdrop}>
+          <TouchableOpacity
+            style={styles.sheetBackdropDismiss}
+            activeOpacity={1}
+            onPress={handleDismissModal}
+          />
 
-            {(['easy', 'medium', 'hard'] as Difficulty[]).map((level) => {
-              const isSelected = activePickerId
-                ? getDifficulty(activePickerId) === level
-                : false;
-              const levelTheme = getDifficultyTheme(level);
+          <View
+            style={[
+              styles.sheetContainer,
+              {
+                backgroundColor: isDark ? '#141C15' : '#FFFFFF',
+                borderTopColor: borderSubtle,
+                paddingBottom: Math.max(insets.bottom, 20) + 16,
+              },
+            ]}
+          >
+            {/* Grab Handle */}
+            <View
+              style={[
+                styles.sheetHandle,
+                { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.12)' },
+              ]}
+            />
 
-              return (
-                <TouchableOpacity
-                  key={level}
-                  style={[
-                    styles.modalMenuItem,
-                    {
-                      backgroundColor: isSelected ? levelTheme.bg : 'transparent',
-                      borderColor: isSelected ? levelTheme.border : 'transparent',
-                    },
-                  ]}
-                  activeOpacity={0.7}
-                  onPress={() => {
-                    if (activePickerId) {
-                      setProgramDifficulty(activePickerId, level);
-                    }
-                  }}
-                >
-                  <View style={styles.modalItemLabelRow}>
-                    <View
-                      style={[
-                        styles.colorDot,
-                        { backgroundColor: levelTheme.color },
-                      ]}
-                    />
+            {/* Modal Title */}
+            <View style={styles.sheetHeader}>
+              <Text style={[styles.sheetTitle, { color: primaryText }]}>
+                {selectedOperation?.title}
+              </Text>
+            </View>
+
+            {/* Difficulty Options (Easy pre-selected by default) */}
+            <View style={styles.difficultyList}>
+              {DIFFICULTIES.map(({ level, label }) => {
+                const isSelected = selectedDifficulty === level;
+                return (
+                  <TouchableOpacity
+                    key={level}
+                    style={[
+                      styles.diffCard,
+                      {
+                        backgroundColor: isSelected
+                          ? isDark
+                            ? 'rgba(188, 227, 170, 0.15)'
+                            : 'rgba(188, 227, 170, 0.35)'
+                          : cardElevated,
+                        borderColor: isSelected ? accentGreen : borderSubtle,
+                      },
+                    ]}
+                    activeOpacity={0.8}
+                    onPress={() => setSelectedDifficulty(level)}
+                  >
                     <Text
                       style={[
-                        styles.modalMenuItemText,
+                        styles.diffCardTitle,
+                        { color: primaryText, fontWeight: isSelected ? '800' : '600' },
+                      ]}
+                    >
+                      {label}
+                    </Text>
+
+                    <View
+                      style={[
+                        styles.checkCircle,
                         {
-                          color: isSelected ? levelTheme.color : theme.text,
-                          fontWeight: isSelected ? '800' : '600',
+                          borderColor: isSelected ? accentGreen : borderSubtle,
+                          backgroundColor: isSelected ? accentGreen : 'transparent',
                         },
                       ]}
                     >
-                      {getDifficultyLabel(level)}
-                    </Text>
-                  </View>
-                  {isSelected ? (
-                    <Ionicons name="checkmark" size={18} color={levelTheme.color} />
-                  ) : null}
-                </TouchableOpacity>
-              );
-            })}
-          </GlassCard>
-        </TouchableOpacity>
+                      {isSelected && <Ionicons name="checkmark" size={14} color="#0A0F0B" />}
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+
+            {/* Action Button */}
+            <TouchableOpacity
+              style={[styles.continueButton, { backgroundColor: accentGreen }]}
+              activeOpacity={0.85}
+              onPress={handleContinueToWorkout}
+            >
+              <Text style={styles.continueButtonText}>START</Text>
+              <Ionicons name="arrow-forward" size={18} color="#0A0F0B" />
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -347,12 +389,11 @@ export default function TrainingSelectionScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#E6E6E6',
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 12,
-    paddingBottom: 16,
+    paddingTop: 8,
+    paddingBottom: 12,
   },
   headerInner: {
     width: '100%',
@@ -360,137 +401,109 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 16,
+    justifyContent: 'space-between',
   },
   backButton: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#FFFFFF',
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 6,
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
     elevation: 2,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '800',
-    color: '#1C1C1E',
+    fontSize: 18,
+    fontWeight: '600',
+    letterSpacing: -0.4,
   },
-  headerSubtitle: {
-    fontSize: 13,
-    color: '#8E8E93',
+  headerPlaceholder: {
+    width: 40,
   },
   scrollContent: {
     flexGrow: 1,
+    paddingTop: 10,
   },
   responsiveWrapper: {
     width: '100%',
     maxWidth: 480,
     alignSelf: 'center',
   },
-  quickStartBanner: {
-    backgroundColor: '#EC673C',
-    borderRadius: 24,
-    padding: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 24,
-    shadowColor: '#EC673C',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  quickStartLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 14,
-  },
-  quickStartIconRing: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  quickStartTitle: {
-    fontSize: 18,
-    fontWeight: '800',
-    color: '#FFFFFF',
-  },
-  quickStartSubtitle: {
-    fontSize: 13,
-    color: 'rgba(255, 255, 255, 0.85)',
-    marginTop: 2,
-  },
-  sectionLabel: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#8E8E93',
-    marginBottom: 10,
-    marginLeft: 4,
-  },
-  groupedGlassCard: {
-    borderRadius: 24,
-    paddingVertical: 4,
-    paddingHorizontal: 0,
+  titleSection: {
     marginBottom: 20,
+  },
+  tagBadge: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+    marginBottom: 10,
+  },
+  tagBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '600',
+    letterSpacing: 0.8,
+  },
+  mainHeading: {
+    fontSize: 27,
+    fontWeight: '600',
+    letterSpacing: -0.6,
+    marginBottom: 4,
+  },
+  subHeading: {
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  groupedCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingVertical: 2,
+    marginBottom: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
   },
   programCardRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
+    paddingVertical: 13,
     paddingHorizontal: 16,
   },
-  programInfoLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingRight: 12,
-  },
   iconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 42,
+    height: 42,
+    borderRadius: 21,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 12,
+    marginRight: 14,
   },
   textStack: {
     flex: 1,
   },
   programTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1C1C1E',
+    fontSize: 15.5,
+    fontWeight: '600',
+    letterSpacing: -0.2,
   },
   programSubtitle: {
-    fontSize: 12,
-    color: '#8E8E93',
+    fontSize: 12.5,
+    fontWeight: '500',
     marginTop: 2,
   },
-  dropdownButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 14,
-    borderWidth: 1,
-  },
-  dropdownButtonText: {
-    fontSize: 13,
-    fontWeight: '700',
+  cardDivider: {
+    height: 1,
+    marginHorizontal: 16,
   },
   othersHeaderCard: {
-    borderRadius: 24,
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1,
   },
   othersTouchable: {
     flexDirection: 'row',
@@ -501,78 +514,95 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   othersTitle: {
-    fontSize: 17,
+    fontSize: 15.5,
     fontWeight: '700',
-    color: '#1C1C1E',
   },
   othersSubtitle: {
-    fontSize: 13,
-    color: '#8E8E93',
+    fontSize: 12,
     marginTop: 2,
   },
-  othersChevronCircle: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: 'rgba(0, 0, 0, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
   futureList: {
-    marginTop: 8,
+    marginTop: 12,
   },
   divider: {
     height: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.08)',
-    marginBottom: 8,
+    marginBottom: 10,
   },
-  cardDivider: {
-    height: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.06)',
-    marginHorizontal: 16,
-  },
-  modalOverlay: {
+  sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.35)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 24,
+    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    justifyContent: 'flex-end',
   },
-  glassModalMenu: {
+  sheetBackdropDismiss: {
+    flex: 1,
+  },
+  sheetContainer: {
     width: '100%',
-    maxWidth: 280,
-    borderRadius: 24,
-    padding: 16,
+    maxWidth: 500,
+    alignSelf: 'center',
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    borderTopWidth: 1,
+    paddingHorizontal: 22,
+    paddingTop: 10,
   },
-  modalHeaderTitle: {
-    fontSize: 12,
-    fontWeight: '800',
-    color: '#8E8E93',
-    letterSpacing: 1,
-    marginBottom: 12,
+  sheetHandle: {
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  sheetHeader: {
+    marginBottom: 16,
+  },
+  sheetTitle: {
+    fontSize: 21,
+    fontWeight: '600',
+    letterSpacing: -0.4,
     textAlign: 'center',
   },
-  modalMenuItem: {
+  difficultyList: {
+    gap: 8,
+    marginBottom: 18,
+  },
+  diffCard: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 12,
+    paddingVertical: 14,
     paddingHorizontal: 16,
     borderRadius: 16,
-    borderWidth: 1,
-    marginBottom: 6,
+    borderWidth: 1.5,
   },
-  modalItemLabelRow: {
+  diffCardTitle: {
+    fontSize: 15,
+  },
+  checkCircle: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  continueButton: {
+    height: 54,
+    borderRadius: 27,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    justifyContent: 'center',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  colorDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-  },
-  modalMenuItemText: {
+  continueButtonText: {
     fontSize: 15,
+    fontWeight: '600',
+    color: '#0A0F0B',
+    letterSpacing: 1,
   },
 });

@@ -13,11 +13,14 @@ import {
   KeyboardAvoidingView,
   Platform,
   StatusBar,
+  Switch,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as ImagePicker from 'expo-image-picker';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../src/context/AuthContext';
 import {
   getUserSettings,
@@ -29,19 +32,34 @@ import {
   updateAccountPasswordWithOldPassword,
   deleteUserAccount,
 } from '../../src/services/settingsService';
-import { UserSettings, UserGoal, DEFAULT_USER_SETTINGS } from '../../src/types/settings';
+import { UserSettings, DEFAULT_USER_SETTINGS } from '../../src/types/settings';
 import { useTheme } from '@/src/context/ThemeContext';
 
-const QUESTION_OPTIONS: number[] = [5, 10, 20, 30];
+// Options
+const QUESTION_OPTIONS: number[] = [5, 10, 30, 50];
+const DURATION_OPTIONS: { mins: number; label: string }[] = [
+  { mins: 2, label: '2 mins' },
+  { mins: 5, label: '5 mins' },
+  { mins: 10, label: '10 mins' },
+];
+const FREQUENCY_OPTIONS: string[] = ['3 days per week', '5 days per week', 'Every day'];
 
-const GOAL_OPTIONS: { id: UserGoal; label: string }[] = [
-  { id: 'speed', label: 'Speed' },
-  { id: 'accuracy', label: 'Accuracy' },
-  { id: 'mental_math', label: 'Mental Math' },
-  { id: 'consistency', label: 'Consistency' },
+// Presets (First 3 slots)
+const PRESET_REMINDER_TIMES = [
+  { label: '8:00 AM', value: '08:00' },
+  { label: '12:30 PM', value: '12:30' },
+  { label: '6:00 PM', value: '18:00' },
 ];
 
+const PREF_KEYS = {
+  NOTIFICATIONS: '@numo_notifications_enabled',
+  REMINDER_TIME: '@numo_reminder_time',
+  DAILY_MINUTES: '@numo_daily_goal_minutes',
+  FREQUENCY: '@numo_training_frequency',
+};
+
 export default function SettingsScreen() {
+  const router = useRouter();
   const { session, signOut } = useAuth();
   const insets = useSafeAreaInsets();
   const { height, width } = useWindowDimensions();
@@ -50,9 +68,23 @@ export default function SettingsScreen() {
   const isCompact = height < 720;
   const isNarrow = width < 360;
 
+  // DB Settings
   const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
   const [loading, setLoading] = useState<boolean>(true);
   const [savingKey, setSavingKey] = useState<string | null>(null);
+
+  // Accordion Expandable States
+  const [expandedSection, setExpandedSection] = useState<'questions' | 'duration' | 'frequency' | null>(null);
+
+  // Local Device Preferences
+  const [dailyGoalMinutes, setDailyGoalMinutes] = useState<number>(5);
+  const [trainingFrequency, setTrainingFrequency] = useState<string>('5 days per week');
+  const [notificationsEnabled, setNotificationsEnabled] = useState<boolean>(true);
+  const [reminderTime, setReminderTime] = useState<string>('08:00');
+
+  // Custom Time Input Modal
+  const [customTimeModalVisible, setCustomTimeModalVisible] = useState<boolean>(false);
+  const [customTimeInput, setCustomTimeInput] = useState<string>('');
 
   // Avatar & Profile State
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
@@ -73,11 +105,10 @@ export default function SettingsScreen() {
   const [deleteConfirmText, setDeleteConfirmText] = useState<string>('');
   const [isDeletingAccount, setIsDeletingAccount] = useState<boolean>(false);
 
-  // Info / Legal Modal State
-  const [infoModalContent, setInfoModalContent] = useState<{
-    title: string;
-    body: string;
-  } | null>(null);
+  // Info / Feedback Modal State
+  const [infoModalContent, setInfoModalContent] = useState<{ title: string; body: string } | null>(null);
+  const [feedbackModalVisible, setFeedbackModalVisible] = useState<boolean>(false);
+  const [feedbackText, setFeedbackText] = useState<string>('');
 
   const userId = session?.user?.id;
 
@@ -92,13 +123,25 @@ export default function SettingsScreen() {
         getUserProfile(userId),
       ]);
       setSettings(settingsData);
-      
+
       const name = profileData.full_name || session?.user?.user_metadata?.full_name || '';
       const avatar = profileData.avatar_url || session?.user?.user_metadata?.avatar_url || null;
-      
+
       setFullName(name);
       setNameInput(name);
       setAvatarUrl(avatar);
+
+      const [storedNotifs, storedTime, storedMins, storedFreq] = await Promise.all([
+        AsyncStorage.getItem(PREF_KEYS.NOTIFICATIONS),
+        AsyncStorage.getItem(PREF_KEYS.REMINDER_TIME),
+        AsyncStorage.getItem(PREF_KEYS.DAILY_MINUTES),
+        AsyncStorage.getItem(PREF_KEYS.FREQUENCY),
+      ]);
+
+      if (storedNotifs !== null) setNotificationsEnabled(storedNotifs === 'true');
+      if (storedTime !== null) setReminderTime(storedTime);
+      if (storedMins !== null) setDailyGoalMinutes(parseInt(storedMins, 10) || 5);
+      if (storedFreq !== null) setTrainingFrequency(storedFreq);
     } catch {
       Alert.alert('Error', 'Could not load your settings.');
     } finally {
@@ -110,7 +153,58 @@ export default function SettingsScreen() {
     loadSettings();
   }, [loadSettings]);
 
-  // --- Workout Handlers ---
+  const toggleAccordion = (section: 'questions' | 'duration' | 'frequency') => {
+    setExpandedSection((prev) => (prev === section ? null : section));
+  };
+
+  // --- Handlers ---
+  const handleToggleNotifications = async (val: boolean) => {
+    setNotificationsEnabled(val);
+    try {
+      await AsyncStorage.setItem(PREF_KEYS.NOTIFICATIONS, val ? 'true' : 'false');
+    } catch (e) {
+      console.error('Failed saving notification preference', e);
+    }
+  };
+
+  const handleUpdateReminderTime = async (timeStr: string) => {
+    setReminderTime(timeStr);
+    try {
+      await AsyncStorage.setItem(PREF_KEYS.REMINDER_TIME, timeStr);
+    } catch (e) {
+      console.error('Failed saving reminder time', e);
+    }
+  };
+
+  const handleSaveCustomTime = async () => {
+    const trimmed = customTimeInput.trim();
+    if (!trimmed) {
+      Alert.alert('Time Required', 'Please enter a valid time (e.g., 07:15 AM or 20:30).');
+      return;
+    }
+    await handleUpdateReminderTime(trimmed);
+    setCustomTimeModalVisible(false);
+    setCustomTimeInput('');
+  };
+
+  const handleUpdateDuration = async (mins: number) => {
+    setDailyGoalMinutes(mins);
+    try {
+      await AsyncStorage.setItem(PREF_KEYS.DAILY_MINUTES, mins.toString());
+    } catch (e) {
+      console.error('Failed saving duration', e);
+    }
+  };
+
+  const handleUpdateFrequency = async (freq: string) => {
+    setTrainingFrequency(freq);
+    try {
+      await AsyncStorage.setItem(PREF_KEYS.FREQUENCY, freq);
+    } catch (e) {
+      console.error('Failed saving frequency', e);
+    }
+  };
+
   const handleUpdateQuestions = async (count: number) => {
     if (!userId || settings.daily_question_goal === count) return;
     const prev = settings.daily_question_goal;
@@ -121,45 +215,15 @@ export default function SettingsScreen() {
     setSavingKey(null);
     if (!res.success) {
       setSettings((p) => ({ ...p, daily_question_goal: prev }));
-      Alert.alert('Save Failed', 'Could not update your question count.');
+      Alert.alert('Save Failed', 'Could not update question count.');
     }
   };
 
-  const handleToggleGoal = async (goal: UserGoal) => {
-    if (!userId) return;
-
-    const currentGoals = settings.goals.filter((g): g is UserGoal => g !== 'balanced');
-    let nextGoals: UserGoal[];
-
-    if (currentGoals.includes(goal)) {
-      nextGoals = currentGoals.filter((g) => g !== goal);
-      if (nextGoals.length === 0) {
-        nextGoals = ['balanced'];
-      }
-    } else {
-      nextGoals = [...currentGoals, goal];
-    }
-
-    const prevGoals = settings.goals;
-    setSettings((p) => ({ ...p, goals: nextGoals }));
-    setSavingKey('goals');
-
-    const res = await saveUserSettings(userId, { goals: nextGoals });
-    setSavingKey(null);
-
-    if (!res.success) {
-      setSettings((p) => ({ ...p, goals: prevGoals }));
-      Alert.alert('Save Failed', 'Could not update goals.');
-    }
-  };
-
-  // --- Avatar Handlers ---
   const handlePickAndUploadAvatar = async () => {
     if (!userId) return;
-
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Please grant permission to access your photo library.');
+      Alert.alert('Permission Required', 'Please grant permission to access your photos.');
       return;
     }
 
@@ -173,23 +237,17 @@ export default function SettingsScreen() {
 
     if (!result.canceled && result.assets && result.assets.length > 0) {
       const asset = result.assets[0];
-
-      if (!asset.base64) {
-        Alert.alert('Error', 'Could not process image data.');
-        return;
-      }
+      if (!asset.base64) return;
 
       setIsUploadingAvatar(true);
       const fileExt = asset.uri.split('.').pop() || 'jpg';
-
       const res = await uploadProfileAvatar(userId, asset.base64, fileExt);
       setIsUploadingAvatar(false);
 
       if (res.success && res.avatarUrl) {
         setAvatarUrl(res.avatarUrl);
-        Alert.alert('Success', 'Profile photo updated successfully!');
       } else {
-        Alert.alert('Upload Failed', res.error || 'Could not upload profile photo.');
+        Alert.alert('Upload Failed', res.error || 'Could not upload photo.');
       }
     }
   };
@@ -207,7 +265,6 @@ export default function SettingsScreen() {
     }
   };
 
-  // --- Account Handlers ---
   const handleSaveName = async () => {
     if (!userId || !nameInput.trim()) return;
     setSavingKey('name');
@@ -224,28 +281,16 @@ export default function SettingsScreen() {
 
   const handlePasswordSubmit = async () => {
     const email = session?.user?.email;
-    if (!email) {
-      Alert.alert('Error', 'User session email not found.');
-      return;
-    }
-
-    if (!currentPassword) {
+    if (!email || !currentPassword) {
       Alert.alert('Required', 'Please enter your current password.');
       return;
     }
-
     if (newPassword.length < 6) {
       Alert.alert('Invalid Password', 'New password must be at least 6 characters.');
       return;
     }
-
     if (newPassword !== confirmPassword) {
       Alert.alert('Mismatch', 'New passwords do not match.');
-      return;
-    }
-
-    if (currentPassword === newPassword) {
-      Alert.alert('Same Password', 'New password must be different from current password.');
       return;
     }
 
@@ -258,7 +303,7 @@ export default function SettingsScreen() {
       setCurrentPassword('');
       setNewPassword('');
       setConfirmPassword('');
-      Alert.alert('Success', 'Your password has been changed successfully.');
+      Alert.alert('Success', 'Password changed successfully.');
     } else {
       Alert.alert('Error', res.error || 'Failed to change password.');
     }
@@ -267,20 +312,26 @@ export default function SettingsScreen() {
   const handleDeleteAccount = async () => {
     if (deleteConfirmText !== 'DELETE') return;
     setIsDeletingAccount(true);
-
     const res = await deleteUserAccount();
     setIsDeletingAccount(false);
 
     if (!res.success) {
-      Alert.alert('Deletion Failed', res.error || 'Could not delete your account. Please try again.');
+      Alert.alert('Deletion Failed', res.error || 'Could not delete your account.');
     } else {
       setDeleteModalVisible(false);
     }
   };
 
+  const handleSendFeedbackSubmit = () => {
+    if (!feedbackText.trim()) return;
+    Alert.alert('Thank You!', 'Your feedback has been received.');
+    setFeedbackText('');
+    setFeedbackModalVisible(false);
+  };
+
   const getInitials = (name: string): string => {
     const parts = name.trim().split(' ').filter(Boolean);
-    if (parts.length === 0) return 'M';
+    if (parts.length === 0) return 'N';
     if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
@@ -293,11 +344,17 @@ export default function SettingsScreen() {
     );
   }
 
+  const isLight = !theme.isDark;
+
+  // Determine if active reminder time is a preset or custom
+  const isPresetSelected = PRESET_REMINDER_TIMES.some((p) => p.value === reminderTime);
+  const customDisplayLabel = !isPresetSelected ? reminderTime : 'Custom';
+
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
       <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Fixed Header */}
+      {/* HEADER: Centered Title with Back Button */}
       <View
         style={[
           styles.headerWrapper,
@@ -308,11 +365,18 @@ export default function SettingsScreen() {
           },
         ]}
       >
-        <View style={[styles.header, isCompact && styles.headerCompact]}>
-          <Text style={[styles.headerTitle, { color: theme.text }, isCompact && styles.headerTitleCompact]}>
-            Settings
-          </Text>
-          <Text style={[styles.headerSubtitle, { color: theme.subtext }]}>Manage your NUMO experience</Text>
+        <View style={styles.headerBar}>
+          <TouchableOpacity
+            style={[styles.headerBackButton, { backgroundColor: isLight ? '#FFFFFF' : theme.card }]}
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="arrow-back" size={20} color={theme.text} />
+          </TouchableOpacity>
+
+          <Text style={[styles.headerCenteredTitle, { color: theme.text }]}>Settings</Text>
+
+          <View style={styles.headerPlaceholder} />
         </View>
       </View>
 
@@ -322,207 +386,344 @@ export default function SettingsScreen() {
           {
             paddingHorizontal: isNarrow ? 16 : 20,
             paddingTop: 8,
-            paddingBottom: Math.max(insets.bottom, 20) + (isCompact ? 70 : 90),
+            paddingBottom: Math.max(insets.bottom, 20) + (isCompact ? 60 : 80),
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.wrapper}>
-          {/* TOP PROFILE HERO (Avatar, Name, Actions) */}
-          <View style={styles.profileHero}>
-            <TouchableOpacity
-              onPress={handlePickAndUploadAvatar}
-              style={[
-                styles.heroAvatarContainer,
-                { backgroundColor: theme.pillBg },
-                isCompact && styles.heroAvatarContainerCompact,
-              ]}
-              disabled={isUploadingAvatar}
-              activeOpacity={0.85}
-            >
-              {avatarUrl ? (
-                <Image source={{ uri: avatarUrl }} style={styles.heroAvatarImage} />
-              ) : (
-                <View style={[styles.heroAvatarPlaceholder, { backgroundColor: theme.primary }]}>
-                  <Text style={[styles.heroAvatarInitials, isCompact && styles.heroAvatarInitialsCompact]}>
-                    {getInitials(fullName || session?.user?.email || 'NUMO')}
-                  </Text>
-                </View>
-              )}
-              {isUploadingAvatar ? (
-                <View style={styles.avatarLoadingOverlay}>
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                </View>
-              ) : (
-                <View style={[styles.avatarCameraBadge, { backgroundColor: theme.primary, borderColor: theme.background }]}>
-                  <Ionicons name="camera" size={14} color="#FFFFFF" />
-                </View>
-              )}
-            </TouchableOpacity>
-
-            {/* Profile Name Display / Edit */}
-            {isEditingName ? (
-              <View style={styles.heroEditNameRow}>
-                <TextInput
-                  value={nameInput}
-                  onChangeText={setNameInput}
-                  placeholder="Enter full name"
-                  placeholderTextColor={theme.muted}
-                  style={[styles.heroNameInput, { color: theme.text, borderColor: theme.primary }]}
-                  autoFocus
-                />
-                <TouchableOpacity onPress={() => setIsEditingName(false)} style={styles.cancelAction}>
-                  <Text style={[styles.cancelActionText, { color: theme.muted }]}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity onPress={handleSaveName} style={[styles.saveAction, { backgroundColor: theme.primary }]}>
-                  {savingKey === 'name' ? (
-                    <ActivityIndicator size="small" color="#FFFFFF" />
-                  ) : (
-                    <Text style={styles.saveActionText}>Save</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <TouchableOpacity
-                onPress={() => setIsEditingName(true)}
-                activeOpacity={0.7}
-                style={styles.heroNameButton}
-              >
-                <Text style={[styles.heroNameText, { color: theme.text }, isCompact && styles.heroNameTextCompact]}>
-                  {fullName || 'Add Name'}
-                </Text>
-                <Ionicons name="pencil-outline" size={16} color={theme.muted} style={{ marginLeft: 6 }} />
-              </TouchableOpacity>
-            )}
-
-            <Text style={[styles.heroEmailText, { color: theme.subtext }]}>
-              {session?.user?.email || ''}
-            </Text>
-
-            {avatarUrl && (
-              <TouchableOpacity
-                onPress={handleRemoveAvatar}
-                disabled={isUploadingAvatar}
-                activeOpacity={0.7}
-                style={styles.heroRemovePhotoBtn}
-              >
-                <Text style={styles.removePhotoText}>Remove photo</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* SECTION 1: ACCOUNT DETAILS */}
+          {/* SECTION 1: ACCOUNT (Profile Compact Card) */}
           <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACCOUNT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
-            {/* Email Address */}
-            <View style={styles.itemRow}>
-              <View style={styles.itemTextContainer}>
-                <Text style={[styles.itemLabel, { color: theme.muted }]}>Email Address</Text>
-                <Text style={[styles.itemValue, { color: theme.text }]}>{session?.user?.email || 'N/A'}</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={styles.profileRow}>
+              {/* Compact Avatar */}
+              <TouchableOpacity
+                onPress={handlePickAndUploadAvatar}
+                activeOpacity={0.8}
+                style={[styles.compactAvatar, { backgroundColor: theme.pillBg }]}
+                disabled={isUploadingAvatar}
+              >
+                {avatarUrl ? (
+                  <Image source={{ uri: avatarUrl }} style={styles.compactAvatarImage} />
+                ) : (
+                  <View style={[styles.compactAvatarPlaceholder, { backgroundColor: theme.primary }]}>
+                    <Text style={styles.compactAvatarInitials}>
+                      {getInitials(fullName || session?.user?.email || 'NUMO')}
+                    </Text>
+                  </View>
+                )}
+                {isUploadingAvatar ? (
+                  <View style={styles.avatarLoadingOverlay}>
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  </View>
+                ) : (
+                  <View style={[styles.avatarMiniBadge, { backgroundColor: theme.primary }]}>
+                    <Ionicons name="camera" size={10} color="#FFFFFF" />
+                  </View>
+                )}
+              </TouchableOpacity>
+
+              {/* Name & Email Stack */}
+              <View style={styles.profileTextColumn}>
+                {isEditingName ? (
+                  <View style={styles.inlineEditRow}>
+                    <TextInput
+                      value={nameInput}
+                      onChangeText={setNameInput}
+                      placeholder="Full Name"
+                      placeholderTextColor={theme.muted}
+                      style={[styles.inlineNameInput, { color: theme.text, borderColor: theme.primary }]}
+                      autoFocus
+                    />
+                    <TouchableOpacity onPress={handleSaveName} style={[styles.inlineSaveBtn, { backgroundColor: theme.primary }]}>
+                      {savingKey === 'name' ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.inlineSaveText}>Save</Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => setIsEditingName(false)} style={styles.inlineCancelBtn}>
+                      <Text style={[styles.inlineCancelText, { color: theme.muted }]}>✕</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    onPress={() => setIsEditingName(true)}
+                    activeOpacity={0.7}
+                    style={styles.profileNameRow}
+                  >
+                    <Text style={[styles.profileNameText, { color: theme.text }]} numberOfLines={1}>
+                      {fullName || 'Add Name'}
+                    </Text>
+                    <Ionicons name="pencil-outline" size={14} color={theme.muted} style={{ marginLeft: 6 }} />
+                  </TouchableOpacity>
+                )}
+
+                <Text style={[styles.profileEmailText, { color: theme.subtext }]} numberOfLines={1}>
+                  {session?.user?.email || 'No email associated'}
+                </Text>
+
+                {avatarUrl && (
+                  <TouchableOpacity onPress={handleRemoveAvatar} activeOpacity={0.7} style={{ marginTop: 4 }}>
+                    <Text style={styles.removePhotoText}>Remove photo</Text>
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
+          </View>
+
+          {/* SECTION 2: WORKOUT PREFERENCES (Dropdown Accordions) */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>WORKOUT PREFERENCES</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            {/* Accordion Item 1: Questions per Workout */}
+            <TouchableOpacity
+              style={styles.accordionHeaderRow}
+              activeOpacity={0.7}
+              onPress={() => toggleAccordion('questions')}
+            >
+              <Text style={[styles.accordionTitle, { color: theme.text }]}>Questions per Workout</Text>
+              <View style={styles.accordionValueRight}>
+                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
+                  {settings.daily_question_goal} questions
+                </Text>
+                <Ionicons
+                  name={expandedSection === 'questions' ? 'chevron-down' : 'chevron-forward'}
+                  size={18}
+                  color={theme.muted}
+                />
+              </View>
+            </TouchableOpacity>
+
+            {expandedSection === 'questions' && (
+              <View style={styles.accordionBody}>
+                <View style={styles.pillsContainer}>
+                  {QUESTION_OPTIONS.map((count) => {
+                    const isSelected = settings.daily_question_goal === count;
+                    return (
+                      <TouchableOpacity
+                        key={count}
+                        activeOpacity={0.7}
+                        style={[
+                          styles.pill,
+                          { backgroundColor: theme.pillBg },
+                          isSelected && {
+                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                            borderColor: theme.primary,
+                          },
+                        ]}
+                        onPress={() => handleUpdateQuestions(count)}
+                      >
+                        <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
+                          {count}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
 
             <View style={[styles.divider, { backgroundColor: theme.divider }]} />
 
-            {/* Change Password */}
+            {/* Accordion Item 2: Target Duration */}
             <TouchableOpacity
-              style={styles.navRow}
+              style={styles.accordionHeaderRow}
               activeOpacity={0.7}
-              onPress={() => setPasswordModalVisible(true)}
+              onPress={() => toggleAccordion('duration')}
             >
-              <View style={styles.navLeft}>
-                <Ionicons name="key-outline" size={18} color={theme.text} style={styles.navIcon} />
-                <Text style={[styles.navLabel, { color: theme.text }]}>Change Password</Text>
+              <Text style={[styles.accordionTitle, { color: theme.text }]}>Target Duration</Text>
+              <View style={styles.accordionValueRight}>
+                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
+                  {dailyGoalMinutes} mins
+                </Text>
+                <Ionicons
+                  name={expandedSection === 'duration' ? 'chevron-down' : 'chevron-forward'}
+                  size={18}
+                  color={theme.muted}
+                />
               </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
             </TouchableOpacity>
+
+            {expandedSection === 'duration' && (
+              <View style={styles.accordionBody}>
+                <View style={styles.pillsContainer}>
+                  {DURATION_OPTIONS.map((opt) => {
+                    const isSelected = dailyGoalMinutes === opt.mins;
+                    return (
+                      <TouchableOpacity
+                        key={opt.mins}
+                        activeOpacity={0.7}
+                        style={[
+                          styles.pill,
+                          { backgroundColor: theme.pillBg },
+                          isSelected && {
+                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                            borderColor: theme.primary,
+                          },
+                        ]}
+                        onPress={() => handleUpdateDuration(opt.mins)}
+                      >
+                        <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
+                          {opt.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
+
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
+            {/* Accordion Item 3: Weekly Frequency */}
+            <TouchableOpacity
+              style={styles.accordionHeaderRow}
+              activeOpacity={0.7}
+              onPress={() => toggleAccordion('frequency')}
+            >
+              <Text style={[styles.accordionTitle, { color: theme.text }]}>Weekly Frequency</Text>
+              <View style={styles.accordionValueRight}>
+                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
+                  {trainingFrequency.replace(' per week', '/wk')}
+                </Text>
+                <Ionicons
+                  name={expandedSection === 'frequency' ? 'chevron-down' : 'chevron-forward'}
+                  size={18}
+                  color={theme.muted}
+                />
+              </View>
+            </TouchableOpacity>
+
+            {expandedSection === 'frequency' && (
+              <View style={styles.accordionBody}>
+                <View style={styles.pillsContainer}>
+                  {FREQUENCY_OPTIONS.map((freq) => {
+                    const isSelected = trainingFrequency === freq;
+                    return (
+                      <TouchableOpacity
+                        key={freq}
+                        activeOpacity={0.7}
+                        style={[
+                          styles.pill,
+                          { backgroundColor: theme.pillBg },
+                          isSelected && {
+                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                            borderColor: theme.primary,
+                          },
+                        ]}
+                        onPress={() => handleUpdateFrequency(freq)}
+                      >
+                        <Text style={[styles.pillTextSmall, { color: theme.text }, isSelected && { color: theme.primary }]}>
+                          {freq.replace(' per week', '/wk')}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+            )}
           </View>
 
-          {/* SECTION 2: WORKOUT */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>WORKOUT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
-            <View style={styles.settingBlock}>
-              <View style={styles.labelRow}>
-                <Text style={[styles.settingLabel, { color: theme.text }]}>Daily Questions</Text>
-                {savingKey === 'questions' && <ActivityIndicator size="small" color={theme.primary} />}
+          {/* SECTION 3: REMINDERS & NOTIFICATIONS */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>REMINDERS & NOTIFICATIONS</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={styles.switchRow}>
+              <View style={{ flex: 1, marginRight: 12 }}>
+                <Text style={[styles.accordionTitle, { color: theme.text }]}>Reminders & Notifications</Text>
+                <Text style={[styles.settingDescription, { color: theme.subtext, marginBottom: 0 }]}>
+                  Daily workout prompts, streak alerts, and updates.
+                </Text>
               </View>
-              <Text style={[styles.settingDescription, { color: theme.subtext }]}>
-                Number of questions presented in normal daily workouts.
-              </Text>
-              <View style={styles.pillsContainer}>
-                {QUESTION_OPTIONS.map((count) => {
-                  const isSelected = settings.daily_question_goal === count;
-                  return (
+
+              <Switch
+                value={notificationsEnabled}
+                onValueChange={handleToggleNotifications}
+                trackColor={{
+                  false: isLight ? '#D1D1D6' : '#3A3A3C',
+                  true: theme.primary,
+                }}
+                thumbColor="#FFFFFF"
+                ios_backgroundColor={isLight ? '#D1D1D6' : '#3A3A3C'}
+              />
+            </View>
+
+            {notificationsEnabled && (
+              <>
+                <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+                <View style={styles.settingBlock}>
+                  <Text style={[styles.settingLabel, { color: theme.text, marginBottom: 4 }]}>Preferred Time</Text>
+                  <Text style={[styles.settingDescription, { color: theme.subtext }]}>
+                    Choose a preset or enter any custom time you prefer.
+                  </Text>
+                  <View style={styles.pillsContainer}>
+                    {/* 3 Presets */}
+                    {PRESET_REMINDER_TIMES.map((time) => {
+                      const isSelected = reminderTime === time.value;
+                      return (
+                        <TouchableOpacity
+                          key={time.value}
+                          activeOpacity={0.7}
+                          style={[
+                            styles.pill,
+                            { backgroundColor: theme.pillBg },
+                            isSelected && {
+                              backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
+                              borderColor: theme.primary,
+                            },
+                          ]}
+                          onPress={() => handleUpdateReminderTime(time.value)}
+                        >
+                          <Text
+                            style={[
+                              styles.pillTextSmall,
+                              { color: theme.text },
+                              isSelected && { color: theme.primary },
+                            ]}
+                          >
+                            {time.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+
+                    {/* 4th Slot: Custom Time Input Option */}
                     <TouchableOpacity
-                      key={count}
                       activeOpacity={0.7}
                       style={[
                         styles.pill,
                         { backgroundColor: theme.pillBg },
-                        isSelected && {
+                        !isPresetSelected && {
                           backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
                           borderColor: theme.primary,
                         },
                       ]}
-                      onPress={() => handleUpdateQuestions(count)}
+                      onPress={() => {
+                        setCustomTimeInput(!isPresetSelected ? reminderTime : '');
+                        setCustomTimeModalVisible(true);
+                      }}
                     >
-                      <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
-                        {count}
+                      <Text
+                        style={[
+                          styles.pillTextSmall,
+                          { color: theme.text },
+                          !isPresetSelected && { color: theme.primary },
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {customDisplayLabel}
                       </Text>
                     </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
-
-            <View style={styles.settingBlock}>
-              <View style={styles.labelRow}>
-                <Text style={[styles.settingLabel, { color: theme.text }]}>Improvement Focus</Text>
-                {savingKey === 'goals' && <ActivityIndicator size="small" color={theme.primary} />}
-              </View>
-              <Text style={[styles.settingDescription, { color: theme.subtext }]}>Select skills to prioritize.</Text>
-              <View style={styles.goalGrid}>
-                {GOAL_OPTIONS.map((item) => {
-                  const isSelected = settings.goals.includes(item.id);
-                  return (
-                    <TouchableOpacity
-                      key={item.id}
-                      activeOpacity={0.7}
-                      style={[
-                        styles.goalChip,
-                        { backgroundColor: theme.pillBg },
-                        isSelected && {
-                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                          borderColor: theme.primary,
-                        },
-                      ]}
-                      onPress={() => handleToggleGoal(item.id)}
-                    >
-                      <Ionicons
-                        name={isSelected ? 'checkmark-circle' : 'ellipse-outline'}
-                        size={16}
-                        color={isSelected ? theme.primary : theme.muted}
-                        style={styles.chipIcon}
-                      />
-                      <Text style={[styles.goalChipText, { color: theme.text }, isSelected && { color: theme.primary }]}>
-                        {item.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
+                  </View>
+                </View>
+              </>
+            )}
           </View>
 
-          {/* SECTION 3: APPEARANCE */}
+          {/* SECTION 4: APPEARANCE */}
           <Text style={[styles.sectionHeader, { color: theme.muted }]}>APPEARANCE</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <View style={styles.settingBlock}>
-              <View style={styles.labelRow}>
-                <Text style={[styles.settingLabel, { color: theme.text }]}>Theme Mode</Text>
-              </View>
+              <Text style={[styles.accordionTitle, { color: theme.text, marginBottom: 4 }]}>Theme Mode</Text>
               <Text style={[styles.settingDescription, { color: theme.subtext }]}>
                 Choose your preferred interface appearance.
               </Text>
@@ -559,16 +760,45 @@ export default function SettingsScreen() {
             </View>
           </View>
 
-          {/* SECTION 4: ABOUT */}
+          {/* SECTION 5: SUPPORT & FEEDBACK */}
+          <Text style={[styles.sectionHeader, { color: theme.muted }]}>SUPPORT</Text>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() =>
+                setInfoModalContent({
+                  title: 'Help Center',
+                  body: 'Need assistance with workouts, streak tracking, or your account?\n\nContact support directly at:\nsupport@numo.app',
+                })
+              }
+            >
+              <Text style={[styles.navLabel, { color: theme.text }]}>Help center</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
+
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() => setFeedbackModalVisible(true)}
+            >
+              <Text style={[styles.navLabel, { color: theme.text }]}>Send feedback</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
+          </View>
+
+          {/* SECTION 6: ABOUT */}
           <Text style={[styles.sectionHeader, { color: theme.muted }]}>ABOUT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
             <TouchableOpacity
               style={styles.navRow}
               activeOpacity={0.7}
               onPress={() =>
                 setInfoModalContent({
                   title: 'About NUMO',
-                  body: 'NUMO is an interactive arithmetic engine designed to build speed, accuracy, and everyday mental math confidence.\n\nVersion: 1.0.0\nBuild: 2026.08',
+                  body: 'NUMO is an interactive arithmetic engine designed to build speed, accuracy, and everyday mental math confidence.\n\nVersion: 1.0.0\nBuild: 2026.09',
                 })
               }
             >
@@ -584,7 +814,7 @@ export default function SettingsScreen() {
               onPress={() =>
                 setInfoModalContent({
                   title: 'Privacy Policy',
-                  body: 'Placeholder Privacy Policy:\n\nNUMO does not sell or distribute personal information. This section will contain full legal disclosures in an upcoming release.',
+                  body: 'NUMO does not sell or distribute personal information. All your calculations remain private.',
                 })
               }
             >
@@ -600,7 +830,7 @@ export default function SettingsScreen() {
               onPress={() =>
                 setInfoModalContent({
                   title: 'Terms of Service',
-                  body: 'Placeholder Terms of Service:\n\nBy accessing NUMO, you agree to fair use and learning guidelines. Formal legal terms will be published prior to general availability.',
+                  body: 'By accessing NUMO, you agree to fair use and learning guidelines.',
                 })
               }
             >
@@ -609,10 +839,23 @@ export default function SettingsScreen() {
             </TouchableOpacity>
           </View>
 
-          {/* SECTION 5: ACTIONS (Sign Out & Delete Account at the bottom) */}
+          {/* SECTION 7: ACTIONS */}
           <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACTIONS</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }, isCompact && styles.cardCompact]}>
-            {/* Sign Out */}
+          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <TouchableOpacity
+              style={styles.navRow}
+              activeOpacity={0.7}
+              onPress={() => setPasswordModalVisible(true)}
+            >
+              <View style={styles.navLeft}>
+                <Ionicons name="key-outline" size={18} color={theme.text} style={styles.navIcon} />
+                <Text style={[styles.navLabel, { color: theme.text }]}>Change Password</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            </TouchableOpacity>
+
+            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+
             <TouchableOpacity style={styles.signOutRow} onPress={signOut} activeOpacity={0.7}>
               <Ionicons name="log-out-outline" size={18} color={theme.primary} style={styles.navIcon} />
               <Text style={[styles.signOutText, { color: theme.primary }]}>Sign Out</Text>
@@ -620,7 +863,6 @@ export default function SettingsScreen() {
 
             <View style={[styles.divider, { backgroundColor: theme.divider }]} />
 
-            {/* Delete Account */}
             <TouchableOpacity
               style={styles.deleteRow}
               onPress={() => {
@@ -636,13 +878,55 @@ export default function SettingsScreen() {
         </View>
       </ScrollView>
 
+      {/* Custom Time Selection Modal */}
+      <Modal visible={customTimeModalVisible} transparent animationType="fade">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Set Custom Time</Text>
+            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
+              Enter your ideal daily reminder time (e.g., 07:15 AM, 2:30 PM, or 21:00).
+            </Text>
+
+            <TextInput
+              placeholder="e.g. 07:30 AM"
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              value={customTimeInput}
+              onChangeText={setCustomTimeInput}
+              autoFocus
+            />
+
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                onPress={() => {
+                  setCustomTimeModalVisible(false);
+                  setCustomTimeInput('');
+                }}
+              >
+                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
+                onPress={handleSaveCustomTime}
+              >
+                <Text style={styles.modalSubmitText}>Set Time</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Change Password Modal */}
       <Modal visible={passwordModalVisible} transparent animationType="fade">
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>Change Password</Text>
 
             <TextInput
@@ -700,15 +984,53 @@ export default function SettingsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
+      {/* Send Feedback Modal */}
+      <Modal visible={feedbackModalVisible} transparent animationType="fade">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
+            <Text style={[styles.modalTitle, { color: theme.text }]}>Send Feedback</Text>
+            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
+              We are constantly working to improve NUMO. Let us know how we can make mental math training better for you.
+            </Text>
+            <TextInput
+              value={feedbackText}
+              onChangeText={setFeedbackText}
+              placeholder="Tell us what you think..."
+              placeholderTextColor={theme.muted}
+              style={[styles.modalInput, styles.modalTextArea, { backgroundColor: theme.pillBg, color: theme.text }]}
+              multiline
+              numberOfLines={4}
+            />
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                onPress={() => setFeedbackModalVisible(false)}
+              >
+                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
+                onPress={handleSendFeedbackSubmit}
+              >
+                <Text style={styles.modalSubmitText}>Submit</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
       {/* Delete Account Modal */}
       <Modal visible={deleteModalVisible} transparent animationType="fade">
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
             <Text style={[styles.modalTitle, { color: '#FF3B30' }]}>Delete Account</Text>
-            <Text style={[styles.deleteWarningText, { color: theme.subtext }]}>
+            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
               This action is permanent. Your profile, workout history, calculation statistics, and settings will be permanently erased.
             </Text>
             <Text style={[styles.deleteInstructionText, { color: theme.text }]}>
@@ -748,10 +1070,10 @@ export default function SettingsScreen() {
         </KeyboardAvoidingView>
       </Modal>
 
-      {/* Info / Legal Modal */}
+      {/* Info Modal */}
       <Modal visible={infoModalContent !== null} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card }, isCompact && styles.modalContentCompact]}>
+          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
             <Text style={[styles.modalTitle, { color: theme.text }]}>{infoModalContent?.title}</Text>
             <Text style={[styles.infoBodyText, { color: theme.subtext }]}>{infoModalContent?.body}</Text>
             <TouchableOpacity
@@ -770,18 +1092,45 @@ export default function SettingsScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#E6E6E6',
   },
   centerContainer: {
     flex: 1,
-    backgroundColor: '#E6E6E6',
     justifyContent: 'center',
     alignItems: 'center',
   },
   headerWrapper: {
     width: '100%',
-    backgroundColor: '#E6E6E6',
     zIndex: 10,
+  },
+  headerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
+  },
+  headerBackButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+  },
+  headerCenteredTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    letterSpacing: -0.3,
+    textAlign: 'center',
+  },
+  headerPlaceholder: {
+    width: 38,
   },
   scrollContent: {
     flexGrow: 1,
@@ -791,166 +1140,165 @@ const styles = StyleSheet.create({
     maxWidth: 480,
     alignSelf: 'center',
   },
-  header: {
-    width: '100%',
-    maxWidth: 480,
-    alignSelf: 'center',
-    marginBottom: 6,
-  },
-  headerCompact: {
-    marginBottom: 4,
-  },
-  headerTitle: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: '#1C1C1E',
-    letterSpacing: -0.5,
-  },
-  headerTitleCompact: {
-    fontSize: 24,
-  },
-  headerSubtitle: {
-    fontSize: 13,
-    color: '#666666',
-    marginTop: 2,
-  },
-  profileHero: {
-    alignItems: 'center',
-    marginBottom: 24,
-    marginTop: 8,
-  },
-  heroAvatarContainer: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
-    position: 'relative',
-    backgroundColor: '#F2F2F7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 12,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  heroAvatarContainerCompact: {
-    width: 80,
-    height: 80,
-    borderRadius: 40,
-    marginBottom: 10,
-  },
-  heroAvatarImage: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 48,
-  },
-  heroAvatarPlaceholder: {
-    width: '100%',
-    height: '100%',
-    borderRadius: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  heroAvatarInitials: {
-    color: '#FFFFFF',
-    fontSize: 32,
-    fontWeight: '800',
-  },
-  heroAvatarInitialsCompact: {
-    fontSize: 26,
-  },
-  avatarCameraBadge: {
-    position: 'absolute',
-    bottom: 2,
-    right: 2,
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    borderWidth: 2,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroNameButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  heroNameText: {
-    fontSize: 22,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  heroNameTextCompact: {
-    fontSize: 18,
-  },
-  heroEditNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 4,
-  },
-  heroNameInput: {
-    fontSize: 18,
-    fontWeight: '700',
-    borderBottomWidth: 1.5,
-    paddingVertical: 2,
-    paddingHorizontal: 6,
-    minWidth: 160,
-    textAlign: 'center',
-  },
-  heroEmailText: {
-    fontSize: 13,
-    marginTop: 2,
-  },
-  heroRemovePhotoBtn: {
-    marginTop: 6,
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-  },
   sectionHeader: {
     fontSize: 12,
     fontWeight: '700',
-    color: '#8E8E93',
     marginBottom: 6,
     marginLeft: 4,
     letterSpacing: 0.8,
   },
   card: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 20,
     padding: 16,
-    marginBottom: 20,
+    marginBottom: 18,
+    borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.03,
     shadowRadius: 6,
     elevation: 1,
   },
-  cardCompact: {
-    padding: 12,
-    marginBottom: 14,
-    borderRadius: 16,
+
+  /* Profile Compact Card */
+  profileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
-  settingBlock: {
-    paddingVertical: 2,
+  compactAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    position: 'relative',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
   },
-  labelRow: {
+  compactAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 27,
+  },
+  compactAvatarPlaceholder: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 27,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  compactAvatarInitials: {
+    color: '#FFFFFF',
+    fontSize: 20,
+    fontWeight: '800',
+  },
+  avatarMiniBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  profileTextColumn: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  profileNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 2,
+  },
+  profileNameText: {
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  profileEmailText: {
+    fontSize: 13,
+    fontWeight: '500',
+  },
+  inlineEditRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 4,
+  },
+  inlineNameInput: {
+    fontSize: 15,
+    fontWeight: '700',
+    borderBottomWidth: 1.5,
+    paddingVertical: 1,
+    paddingHorizontal: 4,
+    flex: 1,
+  },
+  inlineSaveBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 6,
+  },
+  inlineSaveText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  inlineCancelBtn: {
+    paddingHorizontal: 6,
+  },
+  inlineCancelText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  removePhotoText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#FF3B30',
+  },
+
+  /* Accordion Styles */
+  accordionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 2,
+    paddingVertical: 8,
+  },
+  accordionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  accordionValueRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  accordionValueText: {
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  accordionBody: {
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+
+  /* General Settings Blocks */
+  settingBlock: {
+    paddingVertical: 2,
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
   },
   settingLabel: {
     fontSize: 15,
     fontWeight: '700',
-    color: '#1C1C1E',
   },
   settingDescription: {
     fontSize: 12,
-    color: '#666666',
-    marginBottom: 10,
+    marginBottom: 8,
     lineHeight: 16,
   },
   pillsContainer: {
@@ -961,84 +1309,26 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 10,
     borderRadius: 12,
-    backgroundColor: '#F2F2F7',
     alignItems: 'center',
     justifyContent: 'center',
     borderWidth: 1.5,
     borderColor: 'transparent',
   },
   pillText: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '700',
-    color: '#1C1C1E',
   },
-  goalGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  goalChip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: '#F2F2F7',
-    borderWidth: 1.5,
-    borderColor: 'transparent',
-  },
-  chipIcon: {
-    marginRight: 6,
-  },
-  goalChipText: {
-    fontSize: 13,
-    fontWeight: '600',
-    color: '#1C1C1E',
+  pillTextSmall: {
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   divider: {
     height: 1,
-    backgroundColor: '#EFEFF4',
     marginVertical: 10,
   },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  itemTextContainer: {
-    flex: 1,
-  },
-  itemLabel: {
-    fontSize: 11,
-    color: '#8E8E93',
-    marginBottom: 2,
-  },
-  itemValue: {
-    fontSize: 14,
-    fontWeight: '600',
-    color: '#1C1C1E',
-  },
-  cancelAction: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 8,
-  },
-  cancelActionText: {
-    fontSize: 12,
-    color: '#8E8E93',
-  },
-  saveAction: {
-    paddingVertical: 4,
-    paddingHorizontal: 10,
-    borderRadius: 8,
-    backgroundColor: '#EC673C',
-  },
-  saveActionText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: '#FFFFFF',
-  },
+
+  /* Navigation & Action Rows */
   navRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1053,9 +1343,8 @@ const styles = StyleSheet.create({
     marginRight: 10,
   },
   navLabel: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '600',
-    color: '#1C1C1E',
   },
   signOutRow: {
     flexDirection: 'row',
@@ -1063,9 +1352,8 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   signOutText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
-    color: '#EC673C',
   },
   deleteRow: {
     flexDirection: 'row',
@@ -1073,10 +1361,12 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   deleteText: {
-    fontSize: 14,
+    fontSize: 15,
     fontWeight: '700',
     color: '#FF3B30',
   },
+
+  /* Modals */
   modalOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.5)',
@@ -1087,38 +1377,32 @@ const styles = StyleSheet.create({
   modalContent: {
     width: '100%',
     maxWidth: 420,
-    backgroundColor: '#FFFFFF',
     borderRadius: 20,
     padding: 20,
-  },
-  modalContentCompact: {
-    padding: 16,
-    borderRadius: 16,
   },
   modalTitle: {
     fontSize: 18,
     fontWeight: '800',
-    color: '#1C1C1E',
-    marginBottom: 10,
+    marginBottom: 6,
   },
-  deleteWarningText: {
+  modalDescription: {
     fontSize: 13,
-    color: '#666666',
     lineHeight: 18,
-    marginBottom: 10,
+    marginBottom: 12,
+  },
+  modalTextArea: {
+    height: 90,
+    textAlignVertical: 'top',
   },
   deleteInstructionText: {
     fontSize: 12,
-    color: '#1C1C1E',
     marginBottom: 8,
   },
   modalInput: {
-    backgroundColor: '#F2F2F7',
     borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
     fontSize: 14,
-    color: '#1C1C1E',
     marginBottom: 10,
   },
   modalButtonsRow: {
@@ -1130,19 +1414,16 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingVertical: 11,
     borderRadius: 12,
-    backgroundColor: '#F2F2F7',
     alignItems: 'center',
   },
   modalCancelText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#1C1C1E',
   },
   modalSubmitButton: {
     flex: 1,
     paddingVertical: 11,
     borderRadius: 12,
-    backgroundColor: '#EC673C',
     alignItems: 'center',
   },
   modalSubmitText: {
@@ -1164,31 +1445,23 @@ const styles = StyleSheet.create({
   },
   infoBodyText: {
     fontSize: 13,
-    color: '#3A3A3C',
     lineHeight: 20,
     marginBottom: 16,
   },
   infoCloseButton: {
-    backgroundColor: '#1C1C1E',
     paddingVertical: 11,
     borderRadius: 12,
     alignItems: 'center',
   },
   infoCloseButtonText: {
-    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
   },
   avatarLoadingOverlay: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
-    borderRadius: 48,
+    borderRadius: 27,
     justifyContent: 'center',
     alignItems: 'center',
-  },
-  removePhotoText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: '#FF3B30',
   },
 });

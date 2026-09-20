@@ -1,7 +1,9 @@
 import { useEffect, useRef } from 'react';
 import { useRouter, useSegments } from 'expo-router';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
-import { getUserSettings } from '../services/settingsService';
+import { getUserSettings, saveUserSettings } from '../services/settingsService';
+import { supabase } from '../config/supabase';
 
 export function useProtectedRoute(isSplashDone: boolean = true) {
   const { session, isLoading } = useAuth();
@@ -31,15 +33,54 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
             router.replace('/(auth)/welcome');
           }
         } else {
-          // Logged in user: Check onboarding
-          const settings = await getUserSettings(session.user.id);
+          const userId = session.user.id;
 
-          if (!settings?.has_completed_onboarding) {
+          // 1. SYNC DRAFT: If the user just verified their email, apply the pending onboarding draft
+          const draftStr = await AsyncStorage.getItem('@numo_onboarding_draft');
+          if (draftStr) {
+            try {
+              const { settings, session: baselineSession } = JSON.parse(draftStr);
+
+              // Update profiles table using your existing service
+              await saveUserSettings(userId, {
+                daily_question_goal: settings?.daily_question_goal ?? 10,
+                goals: settings?.goals ?? ['speed'],
+                has_completed_onboarding: true,
+              });
+
+              // Insert baseline workout stats into workout_sessions
+              if (baselineSession) {
+                await supabase.from('workout_sessions').insert({
+                  user_id: userId,
+                  operations: baselineSession.operations,
+                  difficuty: baselineSession.difficuty,
+                  total_questions: baselineSession.total_questions,
+                  correct_answers: baselineSession.correct_answers,
+                  incorrect_answers: baselineSession.incorrect_answers,
+                  accuracy: baselineSession.accuracy,
+                  avarage_time_per_question: baselineSession.avarage_time_per_question,
+                });
+              }
+
+              await AsyncStorage.removeItem('@numo_onboarding_draft');
+              await AsyncStorage.setItem('@numo_onboarding_completed', 'true');
+            } catch (syncErr) {
+              console.error('Error applying onboarding draft post-verification:', syncErr);
+            }
+          }
+
+          // 2. CHECK STATUS: Check local flag first, then Supabase settings
+          const localCompleted = await AsyncStorage.getItem('@numo_onboarding_completed');
+          const settings = await getUserSettings(userId);
+          const hasCompleted = localCompleted === 'true' || Boolean(settings?.has_completed_onboarding);
+
+          if (!hasCompleted) {
             if (!isOnboarding) {
               isNavigatingRef.current = true;
               router.replace('/(auth)/onboarding');
             }
           } else {
+            // Already completed onboarding -> ensure they are out of the auth stack
             if (inAuthGroup) {
               isNavigatingRef.current = true;
               router.replace('/(app)');

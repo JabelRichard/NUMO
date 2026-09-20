@@ -10,7 +10,7 @@ export const AuthBackground = () => {
   const circleBottomSize = width * 0.85;
 
   return (
-    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+    <View style={StyleSheet.absoluteFill} pointerEvents="none">
       {/* Top Left Gradient Blob */}
       <View
         style={[

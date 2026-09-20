@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, StyleSheet } from 'react-native';
+import { Alert, StyleSheet, Platform } from 'react-native';
 import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,21 +13,31 @@ export default function AppLayout() {
     Alert.alert(feature, 'This feature is coming soon to NUMO!');
   };
 
+  const isDark = theme.isDark;
+
+  // Instagram / TikTok style:
+  // Active is solid deep black (#000000) in light mode, pure crisp white in dark mode.
+  // Inactive is neutral secondary gray (#8E8E93).
+  const barBackground = isDark ? '#0A0F0B' : '#FFFFFF';
+  const activeColor = isDark ? '#FFFFFF' : '#000000';
+  const inactiveColor = isDark ? 'rgba(255, 255, 255, 0.45)' : '#8E8E93';
+  const borderTopColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)';
+
   return (
     <Tabs
       screenOptions={{
         headerShown: false,
         tabBarShowLabel: true,
-        tabBarActiveTintColor: theme.primary,
-        tabBarInactiveTintColor: theme.isDark
-          ? 'rgba(255, 255, 255, 0.45)'
-          : 'rgba(255, 255, 255, 0.45)',
+        tabBarActiveTintColor: activeColor,
+        tabBarInactiveTintColor: inactiveColor,
         tabBarLabelStyle: styles.label,
         tabBarStyle: [
           styles.tabBar,
           {
-            backgroundColor: theme.isDark ? '#1C1C1E' : '#1C1C1E',
-            bottom: Math.max(insets.bottom, 16),
+            backgroundColor: barBackground,
+            borderTopColor: borderTopColor,
+            height: 52 + (insets.bottom > 0 ? insets.bottom : 10),
+            paddingBottom: insets.bottom > 0 ? insets.bottom : 8,
           },
         ],
       }}
@@ -40,7 +50,7 @@ export default function AppLayout() {
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? 'home' : 'home-outline'}
-              size={22}
+              size={24}
               color={color}
             />
           ),
@@ -54,28 +64,28 @@ export default function AppLayout() {
           title: 'Workout',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
-              name={focused ? 'calculator' : 'calculator-outline'}
-              size={22}
+              name={focused ? 'grid' : 'grid-outline'}
+              size={23}
               color={color}
             />
           ),
         }}
       />
 
-     {/* 3. Stats */}
-<Tabs.Screen
-  name="statistics"
-  options={{
-    title: 'Stats',
-    tabBarIcon: ({ color, focused }) => (
-      <Ionicons
-        name={focused ? 'stats-chart' : 'stats-chart-outline'}
-        size={22}
-        color={color}
+      {/* 3. Stats */}
+      <Tabs.Screen
+        name="statistics"
+        options={{
+          title: 'Stats',
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons
+              name={focused ? 'stats-chart' : 'stats-chart-outline'}
+              size={23}
+              color={color}
+            />
+          ),
+        }}
       />
-    ),
-  }}
-/>
 
       {/* 4. Compete (Disabled) */}
       <Tabs.Screen
@@ -89,11 +99,11 @@ export default function AppLayout() {
         options={{
           title: 'Compete',
           tabBarItemStyle: styles.disabledTab,
-          tabBarIcon: () => (
+          tabBarIcon: ({ color }) => (
             <Ionicons
               name="trophy-outline"
-              size={22}
-              color="rgba(255, 255, 255, 0.35)"
+              size={23}
+              color={color}
             />
           ),
         }}
@@ -106,15 +116,15 @@ export default function AppLayout() {
           title: 'Settings',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
-              name={focused ? 'settings' : 'settings-outline'}
-              size={22}
+              name={focused ? 'person' : 'person-outline'}
+              size={23}
               color={color}
             />
           ),
         }}
       />
 
-      {/* Hide full-screen screens from the tab bar dock */}
+      {/* Full-screen screens without the tab bar */}
       <Tabs.Screen
         name="workout"
         options={{ href: null, tabBarStyle: { display: 'none' } }}
@@ -130,24 +140,19 @@ export default function AppLayout() {
 const styles = StyleSheet.create({
   tabBar: {
     position: 'absolute',
-    marginHorizontal: 14,
-    backgroundColor: '#1C1C1E',
-    borderRadius: 36,
-    height: 64,
-    paddingTop: 8,
-    paddingBottom: 8,
-    borderTopWidth: 0,
-    elevation: 8,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
-    zIndex: 999,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingTop: 6,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    elevation: 0,
+    shadowOpacity: 0,
   },
   label: {
-    fontSize: 10,
-    fontWeight: '700',
+    fontSize: 10.5,
+    fontWeight: '600',
     marginTop: 2,
+    letterSpacing: -0.1,
   },
   disabledTab: {
     opacity: 0.35,

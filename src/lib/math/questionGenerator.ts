@@ -19,17 +19,11 @@ const OPERATOR_SYMBOLS: Record<CoreOperation, string> = {
   division: '÷',
 };
 
-// Configurable Number Ranges by Difficulty
+// Configurable Number Ranges by Difficulty for Medium and Hard
 const DIFFICULTY_RANGES: Record<
-  DifficultyLevel,
+  'medium' | 'hard',
   Record<CoreOperation, { min1: number; max1: number; min2: number; max2: number }>
 > = {
-  easy: {
-    addition: { min1: 5, max1: 30, min2: 5, max2: 30 },
-    subtraction: { min1: 10, max1: 40, min2: 1, max2: 20 },
-    multiplication: { min1: 2, max1: 10, min2: 2, max2: 10 },
-    division: { min1: 2, max1: 10, min2: 2, max2: 10 }, // Used for quotient & divisor
-  },
   medium: {
     addition: { min1: 25, max1: 99, min2: 15, max2: 85 },
     subtraction: { min1: 45, max1: 150, min2: 15, max2: 95 },
@@ -47,16 +41,10 @@ const DIFFICULTY_RANGES: Record<
 export class QuestionGenerator {
   private history: Set<string> = new Set();
 
-  /**
-   * Resets question history for a new session
-   */
   public resetHistory(): void {
     this.history.clear();
   }
 
-  /**
-   * Generates a single unique math question based on parameters
-   */
   public generateQuestion(
     op: OperationType,
     difficulty: DifficultyLevel = 'easy'
@@ -75,7 +63,6 @@ export class QuestionGenerator {
       resolvedOp = op;
     }
 
-    const ranges = DIFFICULTY_RANGES[difficulty][resolvedOp];
     let num1 = 0;
     let num2 = 0;
     let answer = 0;
@@ -83,31 +70,60 @@ export class QuestionGenerator {
     let maxAttempts = 25;
 
     while (maxAttempts > 0) {
-      if (resolvedOp === 'addition') {
-        num1 = getRandomInt(ranges.min1, ranges.max1);
-        num2 = getRandomInt(ranges.min2, ranges.max2);
-        answer = num1 + num2;
-      } else if (resolvedOp === 'subtraction') {
-        const valA = getRandomInt(ranges.min1, ranges.max1);
-        const valB = getRandomInt(ranges.min2, ranges.max2);
-        // Ensure result is strictly positive
-        num1 = Math.max(valA, valB);
-        num2 = Math.min(valA, valB);
-        if (num1 === num2) num1 += getRandomInt(1, 10);
-        answer = num1 - num2;
-      } else if (resolvedOp === 'multiplication') {
-        num1 = getRandomInt(ranges.min1, ranges.max1);
-        num2 = getRandomInt(ranges.min2, ranges.max2);
-        answer = num1 * num2;
-      } else if (resolvedOp === 'division') {
-        // Generate divisor and quotient to guarantee integer dividends without decimals
-        const divisor = getRandomInt(ranges.min2, ranges.max2);
-        const quotient = getRandomInt(ranges.min1, ranges.max1);
-        const dividend = divisor * quotient;
+      if (difficulty === 'easy') {
+        if (resolvedOp === 'addition') {
+          // 50% chance: 1-digit + 1-digit (e.g. 1+2)
+          // 50% chance: 2-digit + 1-digit (e.g. 12+3)
+          const isTwoDigit = Math.random() < 0.5;
+          num1 = isTwoDigit ? getRandomInt(10, 99) : getRandomInt(1, 9);
+          num2 = getRandomInt(1, 9);
+          answer = num1 + num2;
+        } else if (resolvedOp === 'subtraction') {
+          // 50% chance: 1-digit - 1-digit (e.g. 8-3)
+          // 50% chance: 2-digit - 1-digit (e.g. 15-4)
+          const isTwoDigit = Math.random() < 0.5;
+          num1 = isTwoDigit ? getRandomInt(10, 50) : getRandomInt(2, 9);
+          num2 = getRandomInt(1, Math.min(num1 - 1, 9)); // Keep result positive and single-digit subtrahend
+          answer = num1 - num2;
+        } else if (resolvedOp === 'multiplication') {
+          // Single-digit multiplication (e.g. 3 x 4, up to 9 x 9)
+          num1 = getRandomInt(1, 9);
+          num2 = getRandomInt(1, 9);
+          answer = num1 * num2;
+        } else if (resolvedOp === 'division') {
+          // Clean single-digit quotient & divisor (e.g. 12 ÷ 3 = 4)
+          const divisor = getRandomInt(2, 9);
+          const quotient = getRandomInt(1, 9);
+          num1 = divisor * quotient;
+          num2 = divisor;
+          answer = quotient;
+        }
+      } else {
+        // Medium and Hard ranges
+        const ranges = DIFFICULTY_RANGES[difficulty][resolvedOp];
 
-        num1 = dividend;
-        num2 = divisor;
-        answer = quotient;
+        if (resolvedOp === 'addition') {
+          num1 = getRandomInt(ranges.min1, ranges.max1);
+          num2 = getRandomInt(ranges.min2, ranges.max2);
+          answer = num1 + num2;
+        } else if (resolvedOp === 'subtraction') {
+          const valA = getRandomInt(ranges.min1, ranges.max1);
+          const valB = getRandomInt(ranges.min2, ranges.max2);
+          num1 = Math.max(valA, valB);
+          num2 = Math.min(valA, valB);
+          if (num1 === num2) num1 += getRandomInt(1, 10);
+          answer = num1 - num2;
+        } else if (resolvedOp === 'multiplication') {
+          num1 = getRandomInt(ranges.min1, ranges.max1);
+          num2 = getRandomInt(ranges.min2, ranges.max2);
+          answer = num1 * num2;
+        } else if (resolvedOp === 'division') {
+          const divisor = getRandomInt(ranges.min2, ranges.max2);
+          const quotient = getRandomInt(ranges.min1, ranges.max1);
+          num1 = divisor * quotient;
+          num2 = divisor;
+          answer = quotient;
+        }
       }
 
       signature = `${resolvedOp}_${num1}_${num2}`;
@@ -134,9 +150,6 @@ export class QuestionGenerator {
     };
   }
 
-  /**
-   * Generates a batch of unique questions for a training session
-   */
   public generateSession(config: GeneratorConfig): MathQuestion[] {
     const { operation, difficulty = 'easy', questionCount = 20 } = config;
     this.resetHistory();

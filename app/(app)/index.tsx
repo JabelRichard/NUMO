@@ -1,9 +1,8 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  ScrollView,
   TouchableOpacity,
   StatusBar,
   Image,
@@ -18,17 +17,46 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../src/context/AuthContext';
-import { GlassCard } from '../../src/components/GlassCard';
-import { PrimaryButton } from '../../src/components/PrimaryButton';
-import {
-  getWeeklyStats,
-  getRecentWorkouts,
-  WorkoutSessionRecord,
-  WeeklyStats,
-} from '../../src/services/workoutService';
 import { getUserProfile } from '../../src/services/settingsService';
+import { getRecentWorkouts, getWeeklyStats, WorkoutSessionRecord } from '../../src/services/workoutService';
 import { useTheme } from '@/src/context/ThemeContext';
+import { OfflineNotice } from '../../src/components/OfflineNotice';
+
+type Difficulty = 'easy' | 'medium' | 'hard';
+
+interface StaticCircleProps {
+  icon: keyof typeof Ionicons.glyphMap;
+  size: number;
+  iconSize: number;
+  bg: string;
+  fg: string;
+}
+
+function StaticCircle({
+  icon,
+  size,
+  iconSize,
+  bg,
+  fg,
+}: StaticCircleProps) {
+  return (
+    <View
+      style={[
+        styles.operationCircle,
+        {
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          backgroundColor: bg,
+        },
+      ]}
+    >
+      <Ionicons name={icon} size={iconSize} color={fg} />
+    </View>
+  );
+}
 
 export default function DashboardScreen() {
   const router = useRouter();
@@ -39,68 +67,101 @@ export default function DashboardScreen() {
 
   const isNarrow = width < 360;
 
-  const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>({
-    solvedCount: 0,
-    totalTimeMs: 0,
-    avgTimePerQuestionMs: 0,
-  });
-
-  const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSessionRecord[]>([]);
+  const isInitialMount = useRef(true);
+  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
   const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
+  const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSessionRecord[]>([]);
+  const [totalSolved, setTotalSolved] = useState<number>(0);
 
-  const opacity = useSharedValue(0);
-  const translateY = useSharedValue(20);
+  // Entrance animations for the overall screen
+  const contentOpacity = useSharedValue(0);
+  const contentTranslateY = useSharedValue(16);
 
   useEffect(() => {
-    opacity.value = withTiming(1, {
-      duration: 600,
-      easing: Easing.out(Easing.quad),
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+      if (!offline && isOffline) {
+        loadDashboardState();
+      }
     });
-    translateY.value = withTiming(0, {
-      duration: 600,
-      easing: Easing.out(Easing.quad),
-    });
-  }, []);
+
+    return () => unsubscribe();
+  }, [isOffline]);
+
+  const loadDashboardState = useCallback(async () => {
+    const net = await NetInfo.fetch();
+    if (net.isConnected === false || net.isInternetReachable === false) {
+      setIsOffline(true);
+      setIsLoading(false);
+      return;
+    }
+
+    if (isInitialMount.current) {
+      setIsLoading(true);
+    }
+
+    try {
+      const [workouts, stats] = await Promise.all([
+        getRecentWorkouts(),
+        getWeeklyStats(),
+      ]);
+
+      if (session?.user?.id) {
+        const prof = await getUserProfile(session.user.id);
+        setProfile(prof || {});
+      }
+
+      setRecentWorkouts(workouts || []);
+      setTotalSolved(stats?.solvedCount || 0);
+      setIsOffline(false);
+      setIsLoading(false);
+      isInitialMount.current = false;
+
+      contentOpacity.value = withTiming(1, {
+        duration: 450,
+        easing: Easing.out(Easing.quad),
+      });
+      contentTranslateY.value = withTiming(0, {
+        duration: 450,
+        easing: Easing.out(Easing.quad),
+      });
+    } catch (error) {
+      setIsOffline(true);
+      setIsLoading(false);
+      isInitialMount.current = false;
+    }
+  }, [session?.user?.id]);
 
   useFocusEffect(
     useCallback(() => {
-      let isMounted = true;
-
-      async function loadDashboardData() {
-        const [stats, recent] = await Promise.all([
-          getWeeklyStats(),
-          getRecentWorkouts(),
-        ]);
-
-        if (session?.user?.id) {
-          const prof = await getUserProfile(session.user.id);
-          if (isMounted) setProfile(prof);
-        }
-
-        if (isMounted) {
-          setWeeklyStats(stats);
-          setRecentWorkouts(recent);
-        }
-      }
-
-      loadDashboardData();
-
-      return () => {
-        isMounted = false;
-      };
-    }, [session?.user?.id])
+      loadDashboardState();
+    }, [loadDashboardState])
   );
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateY: translateY.value }],
+  const containerAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: contentOpacity.value,
+    transform: [{ translateY: contentTranslateY.value }],
   }));
+
+  const isDark = theme.isDark;
+  const screenBg = isDark ? '#0A0F0B' : theme.background || '#F1ECE9';
+  const textColor = theme.text;
+  const textSubtle = theme.muted;
+  const cardBg = theme.card;
+  const accentGreen = '#BCE3AA';
+  const accentLilac = '#F2CAEC';
+
+  const bottomBarPadding = Math.max(insets.bottom, 16) + 85;
 
   const displayName =
     profile.full_name ||
     session?.user?.user_metadata?.full_name ||
     session?.user?.email?.split('@')[0] ||
-    'Math Champion';
+    'Champion';
+
+  const firstName = displayName.trim().split(' ')[0] || 'Champion';
 
   const avatarUrl =
     profile.avatar_url ||
@@ -114,228 +175,206 @@ export default function DashboardScreen() {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
-  const formatWeeklyTime = (ms: number): string => {
-    if (!ms || ms === 0) return '0m';
-    const totalSecs = Math.floor(ms / 1000);
-    const mins = Math.floor(totalSecs / 60);
-    const secs = totalSecs % 60;
-    if (mins > 0) return `${mins}m`;
-    return `${secs}s`;
-  };
+  if (isOffline) {
+    return <OfflineNotice onRetry={loadDashboardState} isRetrying={isLoading} />;
+  }
 
-  const formatAvgTime = (ms: number): string => {
-    if (!ms || ms === 0) return '—';
-    const seconds = (ms / 1000).toFixed(1);
-    return `${seconds}s`;
-  };
+  const isNewUser = !isLoading && recentWorkouts.length === 0 && totalSolved === 0;
 
-  const formatRelativeDate = (isoString: string): string => {
-    const date = new Date(isoString);
+  const hasWorkedOutToday = (() => {
+    if (recentWorkouts.length === 0) return false;
+    const latestDate = new Date(recentWorkouts[0].completed_at);
     const now = new Date();
+    return (
+      latestDate.getDate() === now.getDate() &&
+      latestDate.getMonth() === now.getMonth() &&
+      latestDate.getFullYear() === now.getFullYear()
+    );
+  })();
 
-    const isToday =
-      date.getDate() === now.getDate() &&
-      date.getMonth() === now.getMonth() &&
-      date.getFullYear() === now.getFullYear();
+  const determineAdaptiveDifficulty = (): Difficulty => {
+    if (recentWorkouts.length === 0) return 'easy';
 
-    if (isToday) return 'Today';
+    const sample = recentWorkouts.slice(0, 5);
+    const avgAccuracy = sample.reduce((acc, curr) => acc + (curr.accuracy || 0), 0) / sample.length;
+    const avgTimePerQuestionMs = sample.reduce((acc, curr) => acc + (curr.average_time_per_question || 0), 0) / sample.length;
 
-    const yesterday = new Date(now);
-    yesterday.setDate(now.getDate() - 1);
-    const isYesterday =
-      date.getDate() === yesterday.getDate() &&
-      date.getMonth() === yesterday.getMonth() &&
-      date.getFullYear() === yesterday.getFullYear();
-
-    if (isYesterday) return 'Yesterday';
-
-    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  };
-
-  const getOperationIcon = (op: string) => {
-    switch (op.toLowerCase()) {
-      case 'addition':
-        return 'add-circle-outline';
-      case 'subtraction':
-        return 'remove-circle-outline';
-      case 'multiplication':
-        return 'close-circle-outline';
-      case 'division':
-        return 'stats-chart-outline';
-      default:
-        return 'sparkles-outline';
+    if (avgAccuracy >= 85 && avgTimePerQuestionMs <= 3500) {
+      return 'hard';
     }
+    if (avgAccuracy >= 70) {
+      return 'medium';
+    }
+    return 'easy';
   };
 
-  const formatOperationTitle = (op: string) => {
-    switch (op.toLowerCase()) {
-      case 'addition':
-        return 'Addition';
-      case 'subtraction':
-        return 'Subtraction';
-      case 'multiplication':
-        return 'Multiplication';
-      case 'division':
-        return 'Division';
-      case 'adaptive_mix':
-      case 'mixed':
-        return 'Mixed Challenge';
-      default:
-        return op.charAt(0).toUpperCase() + op.slice(1);
-    }
+  const handleStartWorkout = () => {
+    const recommendedDifficulty = determineAdaptiveDifficulty();
+
+    router.push({
+      pathname: '/workout' as any,
+      params: {
+        mode: 'adaptive_mix',
+        difficulty: recommendedDifficulty,
+        source: 'numo_chooses',
+      },
+    });
   };
+
+  let badgeText = "TODAY'S WORKOUT";
+  let headingText = "Ready for today's workout?";
+  let subheadingText = "Adaptive mental math challenge chosen for you. Tap START to begin!";
+  let buttonText = "Start Training";
+
+  if (isNewUser) {
+    badgeText = `WELCOME, ${firstName.toUpperCase()}`;
+    headingText = "Are you ready for your first workout?";
+    subheadingText = "Start your mental math journey today. Tap START to begin!";
+    buttonText = "Start Training";
+  } else if (hasWorkedOutToday) {
+    badgeText = "GREAT WORK TODAY";
+    headingText = "Mind Sharp & Focused";
+    subheadingText = "Daily goal reached. NUMO is ready whenever you want another round.";
+    buttonText = "Train Again";
+  }
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top']}>
-      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+    <SafeAreaView
+      style={[styles.safeArea, { backgroundColor: screenBg }]}
+      edges={['top', 'bottom']}
+    >
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={screenBg}
+      />
 
-      {/* Fixed Sticky Header: NUMO & Profile Avatar */}
+      {/* Header Bar */}
       <View
         style={[
-          styles.headerWrapper,
+          styles.headerRow,
           {
-            backgroundColor: theme.background,
-            paddingHorizontal: isNarrow ? 16 : 20,
+            paddingHorizontal: isNarrow ? 18 : 24,
             paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
           },
         ]}
       >
-        <View style={styles.headerRow}>
-          <Text style={[styles.appTitle, { color: theme.text }]}>NUMO</Text>
+        <Text style={[styles.brandTitle, { color: textColor }]}>NUMO</Text>
 
-          <TouchableOpacity
-            style={[styles.avatarButton, { backgroundColor: theme.card }]}
-            activeOpacity={0.8}
-            onPress={() => router.push('/(app)/settings')}
-          >
-            {avatarUrl ? (
-              <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
-            ) : (
-              <View style={[styles.avatarInner, { backgroundColor: theme.primary }]}>
-                <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
-              </View>
-            )}
-          </TouchableOpacity>
-        </View>
+        <TouchableOpacity
+          style={[styles.avatarButton, { backgroundColor: cardBg }]}
+          activeOpacity={0.8}
+          onPress={() => router.push('/(app)/settings')}
+        >
+          {avatarUrl ? (
+            <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
+          ) : (
+            <View style={[styles.avatarInner, { backgroundColor: accentGreen }]}>
+              <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
       </View>
 
-      <Animated.View style={[{ flex: 1 }, animatedStyle]}>
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContent,
-            {
-              paddingHorizontal: isNarrow ? 16 : 20,
-              paddingTop: 10,
-              paddingBottom: Math.max(insets.bottom, 20) + 90,
-            },
-          ]}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.responsiveContainer}>
-            {/* Hero Card */}
-            <GlassCard style={styles.heroCard} intensity={60}>
-              <View style={[styles.heroBadge, { backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : 'rgba(236, 103, 60, 0.12)' }]}>
-                <Text style={[styles.heroBadgeText, { color: theme.primary }]}>DAILY GOAL</Text>
-              </View>
-              <Text style={[styles.heroTitle, { color: theme.text }]}>
-                Ready for today's mental workout?
-              </Text>
-              <Text style={[styles.heroSubtitle, { color: theme.subtext }]}>
-                Keep your brain sharp with a quick 3-minute challenge.
-              </Text>
-              <PrimaryButton
-                title="Start Training"
-                onPress={() => router.push('/(app)/training' as any)}
-                icon={<Ionicons name="arrow-forward" size={20} color="#FFF" />}
-                style={styles.heroButton}
-              />
-            </GlassCard>
-
-            {/* Quick Statistics Section */}
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>Weekly Overview</Text>
-            </View>
-            <View style={styles.statsRow}>
-              <View style={[styles.coloredStatCard, { backgroundColor: theme.accentPurple }]}>
-                <Text style={styles.coloredStatValue}>
-                  {weeklyStats.solvedCount}
-                </Text>
-                <Text style={styles.coloredStatLabel}>Solved</Text>
-              </View>
-
-              <View style={[styles.coloredStatCard, { backgroundColor: theme.primary }]}>
-                <Text style={[styles.coloredStatValue, { color: '#FFFFFF' }]}>
-                  {formatWeeklyTime(weeklyStats.totalTimeMs)}
-                </Text>
-                <Text style={[styles.coloredStatLabel, { color: 'rgba(255, 255, 255, 0.8)' }]}>
-                  Time
-                </Text>
-              </View>
-
-              <View style={[styles.coloredStatCard, { backgroundColor: theme.accentYellow }]}>
-                <Text style={styles.coloredStatValue}>
-                  {formatAvgTime(weeklyStats.avgTimePerQuestionMs)}
-                </Text>
-                <Text style={styles.coloredStatLabel}>Avg/Q</Text>
-              </View>
-            </View>
-
-            {/* Recent Workouts Section */}
-            <View style={styles.sectionHeader}>
-              <Text style={[styles.sectionTitle, { color: theme.text }]}>Recent Workouts</Text>
-            </View>
-
-            {recentWorkouts.length > 0 ? (
-              <GlassCard style={styles.recentListCard} intensity={40}>
-                {recentWorkouts.map((item, index) => {
-                  const avgSecs = (item.average_time_per_question / 1000).toFixed(1);
-                  return (
-                    <View key={item.id}>
-                      <View style={styles.workoutRow}>
-                        <View style={[styles.workoutIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
-                          <Ionicons
-                            name={getOperationIcon(item.operation) as any}
-                            size={22}
-                            color={theme.text}
-                          />
-                        </View>
-
-                        <View style={styles.workoutInfo}>
-                          <Text style={[styles.workoutTitle, { color: theme.text }]}>
-                            {formatOperationTitle(item.operation)}
-                          </Text>
-                          <Text style={[styles.workoutSubtitle, { color: theme.muted }]}>
-                            {item.correct_answers}/{item.total_questions} · {Math.round(item.accuracy)}% · {avgSecs}s/Q
-                          </Text>
-                        </View>
-
-                        <Text style={[styles.workoutDate, { color: theme.muted }]}>
-                          {formatRelativeDate(item.completed_at)}
-                        </Text>
-                      </View>
-                      {index < recentWorkouts.length - 1 ? (
-                        <View style={[styles.rowDivider, { backgroundColor: theme.divider }]} />
-                      ) : null}
-                    </View>
-                  );
-                })}
-              </GlassCard>
-            ) : (
-              <GlassCard style={styles.activityCard} intensity={35}>
-                <View style={styles.emptyActivityContainer}>
-                  <View style={[styles.emptyIconCircle, { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0, 0, 0, 0.04)' }]}>
-                    <Ionicons name="time-outline" size={28} color={theme.muted} />
-                  </View>
-                  <Text style={[styles.emptyTitle, { color: theme.text }]}>No workouts yet</Text>
-                  <Text style={[styles.emptySubtitle, { color: theme.muted }]}>
-                    Complete your first mental session to start building your
-                    workout history.
-                  </Text>
-                </View>
-              </GlassCard>
-            )}
+      {/* Main Habit Stage */}
+      <Animated.View style={[styles.mainContainer, containerAnimatedStyle]}>
+        
+        {/* Upper Text Stage */}
+        <View style={styles.upperStage}>
+          <View
+            style={[
+              styles.tagBadge,
+              {
+                backgroundColor: isDark
+                  ? 'rgba(188, 227, 170, 0.18)'
+                  : accentLilac,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.tagBadgeText,
+                { color: isDark ? accentGreen : '#0A0F0B' },
+              ]}
+            >
+              {badgeText}
+            </Text>
           </View>
-        </ScrollView>
+
+          <Text style={[styles.clarityHeading, { color: textColor }]}>
+            {headingText}
+          </Text>
+
+          <Text style={[styles.claritySubheading, { color: textSubtle }]}>
+            {subheadingText}
+          </Text>
+        </View>
+
+        {/* Center Stage: Enlarged Static Operation Circles */}
+        <View style={styles.centerStageWrapper}>
+          <View style={styles.circlesCluster}>
+            
+            {/* Top Row: Addition & Multiplication */}
+            <View style={styles.circlesRow}>
+              <StaticCircle
+                icon="add"
+                size={74}
+                iconSize={34}
+                bg={isDark ? 'rgba(188, 227, 170, 0.18)' : '#FFFFFF'}
+                fg={isDark ? accentGreen : '#0A0F0B'}
+              />
+              <StaticCircle
+                icon="close"
+                size={78}
+                iconSize={36}
+                bg={isDark ? 'rgba(242, 202, 236, 0.22)' : accentLilac}
+                fg={isDark ? accentLilac : '#0A0F0B'}
+              />
+            </View>
+
+            {/* Center Focal Point: Mixed Challenge */}
+            <View style={styles.circlesRow}>
+              <StaticCircle
+                icon="shuffle"
+                size={84}
+                iconSize={38}
+                bg={isDark ? 'rgba(188, 227, 170, 0.28)' : accentGreen}
+                fg={isDark ? accentGreen : '#0A0F0B'}
+              />
+            </View>
+
+            {/* Bottom Row: Subtraction & Division */}
+            <View style={styles.circlesRow}>
+              <StaticCircle
+                icon="remove"
+                size={72}
+                iconSize={32}
+                bg={isDark ? 'rgba(255, 255, 255, 0.09)' : '#FFFFFF'}
+                fg={textColor}
+              />
+              <StaticCircle
+                icon="stats-chart"
+                size={76}
+                iconSize={34}
+                bg={isDark ? 'rgba(242, 202, 236, 0.18)' : '#FFFFFF'}
+                fg={isDark ? accentLilac : '#0A0F0B'}
+              />
+            </View>
+
+          </View>
+        </View>
+
+        {/* Start Button */}
+        <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
+          <TouchableOpacity
+            style={[styles.startButton, { backgroundColor: accentGreen }]}
+            activeOpacity={0.85}
+            onPress={handleStartWorkout}
+          >
+            <Text style={styles.startButtonText}>{buttonText}</Text>
+            <Ionicons name="arrow-forward" size={22} color="#0A0F0B" />
+          </TouchableOpacity>
+        </View>
+
       </Animated.View>
     </SafeAreaView>
   );
@@ -344,208 +383,137 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#E6E6E6',
-  },
-  headerWrapper: {
-    width: '100%',
-    paddingBottom: 10,
-    backgroundColor: '#E6E6E6',
-    zIndex: 10,
   },
   headerRow: {
     width: '100%',
-    maxWidth: 480,
+    maxWidth: 440,
     alignSelf: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    paddingBottom: 4,
+    zIndex: 2,
   },
-  appTitle: {
+  brandTitle: {
     fontSize: 22,
-    fontWeight: '400',
-    color: '#1C1C1E',
+    fontWeight: '800',
     letterSpacing: -0.5,
   },
   avatarButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: '#FFFFFF',
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     padding: 2,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowRadius: 6,
+    elevation: 2,
   },
   avatarImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 22,
+    borderRadius: 20,
   },
   avatarInner: {
     flex: 1,
-    borderRadius: 22,
-    backgroundColor: '#EC673C',
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
   },
   avatarText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  responsiveContainer: {
-    width: '100%',
-    maxWidth: 480,
-    alignSelf: 'center',
-  },
-  heroCard: {
-    marginBottom: 28,
-  },
-  heroBadge: {
-    alignSelf: 'flex-start',
-    backgroundColor: 'rgba(236, 103, 60, 0.12)',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  heroBadgeText: {
-    color: '#EC673C',
-    fontSize: 11,
-    fontWeight: '700',
-    letterSpacing: 0.8,
-  },
-  heroTitle: {
-    fontSize: 25,
-    fontWeight: '500',
-    color: '#1C1C1E',
-    lineHeight: 28,
-    marginBottom: 8,
-  },
-  heroSubtitle: {
-    fontSize: 14,
-    color: '#636366',
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  heroButton: {
-    width: '100%',
-  },
-  sectionHeader: {
-    marginBottom: 12,
-  },
-  sectionTitle: {
-    fontSize: 18,
-    fontWeight: '700',
-    color: '#1C1C1E',
-  },
-  statsRow: {
-    flexDirection: 'row',
-    gap: 12,
-    marginBottom: 28,
-  },
-  coloredStatCard: {
-    flex: 1,
-    minWidth: 80,
-    paddingVertical: 18,
-    paddingHorizontal: 14,
-    borderRadius: 20,
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  coloredStatValue: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: '#1C1C1E',
-    marginBottom: 4,
-  },
-  coloredStatLabel: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: 'rgba(0, 0, 0, 0.55)',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  activityCard: {
-    minHeight: 140,
-    justifyContent: 'center',
-  },
-  emptyActivityContainer: {
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  emptyIconCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(0, 0, 0, 0.04)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 12,
-  },
-  emptyTitle: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: '#1C1C1E',
-    marginBottom: 4,
-  },
-  emptySubtitle: {
-    fontSize: 13,
-    color: '#8E8E93',
-    textAlign: 'center',
-    lineHeight: 18,
-    paddingHorizontal: 16,
-  },
-  recentListCard: {
-    borderRadius: 24,
-    paddingVertical: 6,
-    paddingHorizontal: 16,
-  },
-  workoutRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 12,
-  },
-  workoutIconCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(0, 0, 0, 0.04)',
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  workoutInfo: {
-    flex: 1,
-  },
-  workoutTitle: {
+    color: '#0A0F0B',
     fontSize: 15,
-    fontWeight: '700',
-    color: '#1C1C1E',
+    fontWeight: '600',
   },
-  workoutSubtitle: {
-    fontSize: 12,
-    color: '#8E8E93',
-    marginTop: 2,
-    fontWeight: '500',
+  mainContainer: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 440,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    justifyContent: 'space-between',
+    zIndex: 1,
   },
-  workoutDate: {
+  upperStage: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingTop: 36,
+  },
+  tagBadge: {
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 14,
+    marginBottom: 12,
+  },
+  tagBadgeText: {
     fontSize: 12,
     fontWeight: '600',
-    color: '#8E8E93',
+    letterSpacing: 1,
   },
-  rowDivider: {
-    height: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.05)',
+  clarityHeading: {
+    fontSize: 32,
+    fontWeight: '700',
+    textAlign: 'center',
+    lineHeight: 40,
+    letterSpacing: -0.8,
+  },
+  claritySubheading: {
+    fontSize: 15,
+    fontWeight: '500',
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 22,
+    paddingHorizontal: 14,
+  },
+  centerStageWrapper: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 240,
+  },
+  circlesCluster: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 16,
+  },
+  circlesRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 24,
+  },
+  operationCircle: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  actionWrapper: {
+    width: '100%',
+    alignItems: 'center',
+  },
+  startButton: {
+    width: '100%',
+    height: 64,
+    borderRadius: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.14,
+    shadowRadius: 14,
+    elevation: 4,
+  },
+  startButtonText: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#0A0F0B',
+    letterSpacing: 1.2,
   },
 });

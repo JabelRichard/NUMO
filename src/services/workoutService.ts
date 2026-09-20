@@ -180,7 +180,6 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
 
     if (error || !data) {
       console.error("Failed to sync pending demo workout to Supabase:", error);
-      // Restore locally if failed
       await setPendingDemoSession(
         pendingSession.attempts,
         pendingSession.mode,
@@ -206,9 +205,11 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
   try {
     const {
       data: { user },
+      error: authError,
     } = await supabase.auth.getUser();
-    if (!user)
-      return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
+
+    if (authError) throw authError;
+    if (!user) return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
 
     const now = new Date();
     const dayOfWeek = now.getDay();
@@ -223,30 +224,22 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
       .eq("user_id", user.id)
       .gte("completed_at", startOfWeek.toISOString());
 
-    if (error || !data || data.length === 0) {
+    if (error) throw error;
+    if (!data || data.length === 0) {
       return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
     }
 
-    const solvedCount = data.reduce(
-      (acc: number, row) => acc + row.correct_answers,
-      0
-    );
-    const totalTimeMs = data.reduce(
-      (acc: number, row) => acc + row.total_time,
-      0
-    );
-    const totalQuestions = data.reduce(
-      (acc: number, row) => acc + row.total_questions,
-      0
-    );
+    const solvedCount = data.reduce((acc: number, row) => acc + row.correct_answers, 0);
+    const totalTimeMs = data.reduce((acc: number, row) => acc + row.total_time, 0);
+    const totalQuestions = data.reduce((acc: number, row) => acc + row.total_questions, 0);
 
-    const avgTimePerQuestionMs =
-      totalQuestions > 0 ? totalTimeMs / totalQuestions : 0;
+    const avgTimePerQuestionMs = totalQuestions > 0 ? totalTimeMs / totalQuestions : 0;
 
     return { solvedCount, totalTimeMs, avgTimePerQuestionMs };
   } catch (err) {
     console.error("Failed to fetch weekly stats:", err);
-    return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
+    // Throw the error up so screens know the connection failed
+    throw err;
   }
 }
 
@@ -257,7 +250,10 @@ export async function getRecentWorkouts(): Promise<WorkoutSessionRecord[]> {
   try {
     const {
       data: { user },
+      error: authError,
     } = await supabase.auth.getUser();
+
+    if (authError) throw authError;
     if (!user) return [];
 
     const { data, error } = await supabase
@@ -267,11 +263,11 @@ export async function getRecentWorkouts(): Promise<WorkoutSessionRecord[]> {
       .order("completed_at", { ascending: false })
       .limit(4);
 
-    if (error || !data) return [];
-
-    return data as WorkoutSessionRecord[];
+    if (error) throw error;
+    return (data || []) as WorkoutSessionRecord[];
   } catch (err) {
     console.error("Failed to fetch recent workouts:", err);
-    return [];
+    // Throw the error up so screens know the connection failed
+    throw err;
   }
 }
