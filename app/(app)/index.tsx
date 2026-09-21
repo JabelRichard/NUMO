@@ -13,6 +13,8 @@ import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
+  withRepeat,
+  withSequence,
   Easing,
 } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
@@ -58,6 +60,130 @@ function StaticCircle({
   );
 }
 
+function DashboardSkeleton({
+  screenBg,
+  isDark,
+  bottomBarPadding,
+}: {
+  screenBg: string;
+  isDark: boolean;
+  bottomBarPadding: number;
+}) {
+  const pulseOpacity = useSharedValue(0.35);
+
+  useEffect(() => {
+    pulseOpacity.value = withRepeat(
+      withSequence(
+        withTiming(0.85, { duration: 900, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0.35, { duration: 900, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1,
+      true
+    );
+  }, [pulseOpacity]);
+
+  const animatedSkeletonStyle = useAnimatedStyle(() => ({
+    opacity: pulseOpacity.value,
+  }));
+
+  const placeholderBg = isDark
+    ? 'rgba(255, 255, 255, 0.08)'
+    : 'rgba(10, 15, 11, 0.06)';
+  const accentSkeletonBg = isDark
+    ? 'rgba(188, 227, 170, 0.12)'
+    : 'rgba(188, 227, 170, 0.35)';
+
+  return (
+    <View style={[styles.mainContainer, { backgroundColor: screenBg }]}>
+      {/* Upper Stage Skeleton */}
+      <View style={styles.upperStage}>
+        {/* Tag Badge Placeholder */}
+        <Animated.View
+          style={[
+            styles.skeletonBadge,
+            { backgroundColor: accentSkeletonBg },
+            animatedSkeletonStyle,
+          ]}
+        />
+        {/* Title Headline Placeholder */}
+        <Animated.View
+          style={[
+            styles.skeletonTitle,
+            { backgroundColor: placeholderBg },
+            animatedSkeletonStyle,
+          ]}
+        />
+        {/* Subtitle Placeholder */}
+        <Animated.View
+          style={[
+            styles.skeletonSubtitle,
+            { backgroundColor: placeholderBg },
+            animatedSkeletonStyle,
+          ]}
+        />
+      </View>
+
+      {/* Center Cluster Skeleton */}
+      <View style={styles.centerStageWrapper}>
+        <View style={styles.circlesCluster}>
+          <View style={styles.circlesRow}>
+            <Animated.View
+              style={[
+                styles.operationCircle,
+                { width: 74, height: 74, borderRadius: 37, backgroundColor: placeholderBg },
+                animatedSkeletonStyle,
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.operationCircle,
+                { width: 78, height: 78, borderRadius: 39, backgroundColor: placeholderBg },
+                animatedSkeletonStyle,
+              ]}
+            />
+          </View>
+          <View style={styles.circlesRow}>
+            <Animated.View
+              style={[
+                styles.operationCircle,
+                { width: 84, height: 84, borderRadius: 42, backgroundColor: accentSkeletonBg },
+                animatedSkeletonStyle,
+              ]}
+            />
+          </View>
+          <View style={styles.circlesRow}>
+            <Animated.View
+              style={[
+                styles.operationCircle,
+                { width: 72, height: 72, borderRadius: 36, backgroundColor: placeholderBg },
+                animatedSkeletonStyle,
+              ]}
+            />
+            <Animated.View
+              style={[
+                styles.operationCircle,
+                { width: 76, height: 76, borderRadius: 38, backgroundColor: placeholderBg },
+                animatedSkeletonStyle,
+              ]}
+            />
+          </View>
+        </View>
+      </View>
+
+      {/* Bottom Button Skeleton */}
+      <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
+        <Animated.View
+          style={[
+            styles.skeletonButton,
+            { backgroundColor: accentSkeletonBg },
+            animatedSkeletonStyle,
+          ]}
+        />
+      </View>
+    </View>
+  );
+}
+
 export default function DashboardScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -74,21 +200,8 @@ export default function DashboardScreen() {
   const [recentWorkouts, setRecentWorkouts] = useState<WorkoutSessionRecord[]>([]);
   const [totalSolved, setTotalSolved] = useState<number>(0);
 
-  // Entrance animations for the overall screen
   const contentOpacity = useSharedValue(0);
   const contentTranslateY = useSharedValue(16);
-
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-      if (!offline && isOffline) {
-        loadDashboardState();
-      }
-    });
-
-    return () => unsubscribe();
-  }, [isOffline]);
 
   const loadDashboardState = useCallback(async () => {
     const net = await NetInfo.fetch();
@@ -127,12 +240,24 @@ export default function DashboardScreen() {
         duration: 450,
         easing: Easing.out(Easing.quad),
       });
-    } catch (error) {
+    } catch {
       setIsOffline(true);
       setIsLoading(false);
       isInitialMount.current = false;
     }
-  }, [session?.user?.id]);
+  }, [session?.user?.id, contentOpacity, contentTranslateY]);
+
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+      if (!offline && isOffline) {
+        loadDashboardState();
+      }
+    });
+
+    return () => unsubscribe();
+  }, [isOffline, loadDashboardState]);
 
   useFocusEffect(
     useCallback(() => {
@@ -212,11 +337,13 @@ export default function DashboardScreen() {
     const recommendedDifficulty = determineAdaptiveDifficulty();
 
     router.push({
-      pathname: '/workout' as any,
+      pathname: '/(app)/workout' as any,
       params: {
         mode: 'adaptive_mix',
         difficulty: recommendedDifficulty,
         source: 'numo_chooses',
+        sessionKey: Date.now().toString(),
+        reset: 'true',
       },
     });
   };
@@ -275,107 +402,111 @@ export default function DashboardScreen() {
         </TouchableOpacity>
       </View>
 
-      {/* Main Habit Stage */}
-      <Animated.View style={[styles.mainContainer, containerAnimatedStyle]}>
-        
-        {/* Upper Text Stage */}
-        <View style={styles.upperStage}>
-          <View
-            style={[
-              styles.tagBadge,
-              {
-                backgroundColor: isDark
-                  ? 'rgba(188, 227, 170, 0.18)'
-                  : accentLilac,
-              },
-            ]}
-          >
-            <Text
+      {/* Render Skeleton Loader during loading, else render dashboard */}
+      {isLoading ? (
+        <DashboardSkeleton
+          screenBg={screenBg}
+          isDark={isDark}
+          bottomBarPadding={bottomBarPadding}
+        />
+      ) : (
+        <Animated.View style={[styles.mainContainer, containerAnimatedStyle]}>
+          {/* Upper Text Stage */}
+          <View style={styles.upperStage}>
+            <View
               style={[
-                styles.tagBadgeText,
-                { color: isDark ? accentGreen : '#0A0F0B' },
+                styles.tagBadge,
+                {
+                  backgroundColor: isDark
+                    ? 'rgba(188, 227, 170, 0.18)'
+                    : accentLilac,
+                },
               ]}
             >
-              {badgeText}
+              <Text
+                style={[
+                  styles.tagBadgeText,
+                  { color: isDark ? accentGreen : '#0A0F0B' },
+                ]}
+              >
+                {badgeText}
+              </Text>
+            </View>
+
+            <Text style={[styles.clarityHeading, { color: textColor }]}>
+              {headingText}
+            </Text>
+
+            <Text style={[styles.claritySubheading, { color: textSubtle }]}>
+              {subheadingText}
             </Text>
           </View>
 
-          <Text style={[styles.clarityHeading, { color: textColor }]}>
-            {headingText}
-          </Text>
+          {/* Center Stage: Operation Circles */}
+          <View style={styles.centerStageWrapper}>
+            <View style={styles.circlesCluster}>
+              {/* Top Row: Addition & Multiplication */}
+              <View style={styles.circlesRow}>
+                <StaticCircle
+                  icon="add"
+                  size={74}
+                  iconSize={34}
+                  bg={isDark ? 'rgba(188, 227, 170, 0.18)' : '#FFFFFF'}
+                  fg={isDark ? accentGreen : '#0A0F0B'}
+                />
+                <StaticCircle
+                  icon="close"
+                  size={78}
+                  iconSize={36}
+                  bg={isDark ? 'rgba(242, 202, 236, 0.22)' : accentLilac}
+                  fg={isDark ? accentLilac : '#0A0F0B'}
+                />
+              </View>
 
-          <Text style={[styles.claritySubheading, { color: textSubtle }]}>
-            {subheadingText}
-          </Text>
-        </View>
+              {/* Center Focal Point: Mixed Challenge */}
+              <View style={styles.circlesRow}>
+                <StaticCircle
+                  icon="shuffle"
+                  size={84}
+                  iconSize={38}
+                  bg={isDark ? 'rgba(188, 227, 170, 0.28)' : accentGreen}
+                  fg={isDark ? accentGreen : '#0A0F0B'}
+                />
+              </View>
 
-        {/* Center Stage: Enlarged Static Operation Circles */}
-        <View style={styles.centerStageWrapper}>
-          <View style={styles.circlesCluster}>
-            
-            {/* Top Row: Addition & Multiplication */}
-            <View style={styles.circlesRow}>
-              <StaticCircle
-                icon="add"
-                size={74}
-                iconSize={34}
-                bg={isDark ? 'rgba(188, 227, 170, 0.18)' : '#FFFFFF'}
-                fg={isDark ? accentGreen : '#0A0F0B'}
-              />
-              <StaticCircle
-                icon="close"
-                size={78}
-                iconSize={36}
-                bg={isDark ? 'rgba(242, 202, 236, 0.22)' : accentLilac}
-                fg={isDark ? accentLilac : '#0A0F0B'}
-              />
+              {/* Bottom Row: Subtraction & Division */}
+              <View style={styles.circlesRow}>
+                <StaticCircle
+                  icon="remove"
+                  size={72}
+                  iconSize={32}
+                  bg={isDark ? 'rgba(255, 255, 255, 0.09)' : '#FFFFFF'}
+                  fg={textColor}
+                />
+                <StaticCircle
+                  icon="stats-chart"
+                  size={76}
+                  iconSize={34}
+                  bg={isDark ? 'rgba(242, 202, 236, 0.18)' : '#FFFFFF'}
+                  fg={isDark ? accentLilac : '#0A0F0B'}
+                />
+              </View>
             </View>
-
-            {/* Center Focal Point: Mixed Challenge */}
-            <View style={styles.circlesRow}>
-              <StaticCircle
-                icon="shuffle"
-                size={84}
-                iconSize={38}
-                bg={isDark ? 'rgba(188, 227, 170, 0.28)' : accentGreen}
-                fg={isDark ? accentGreen : '#0A0F0B'}
-              />
-            </View>
-
-            {/* Bottom Row: Subtraction & Division */}
-            <View style={styles.circlesRow}>
-              <StaticCircle
-                icon="remove"
-                size={72}
-                iconSize={32}
-                bg={isDark ? 'rgba(255, 255, 255, 0.09)' : '#FFFFFF'}
-                fg={textColor}
-              />
-              <StaticCircle
-                icon="stats-chart"
-                size={76}
-                iconSize={34}
-                bg={isDark ? 'rgba(242, 202, 236, 0.18)' : '#FFFFFF'}
-                fg={isDark ? accentLilac : '#0A0F0B'}
-              />
-            </View>
-
           </View>
-        </View>
 
-        {/* Start Button */}
-        <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
-          <TouchableOpacity
-            style={[styles.startButton, { backgroundColor: accentGreen }]}
-            activeOpacity={0.85}
-            onPress={handleStartWorkout}
-          >
-            <Text style={styles.startButtonText}>{buttonText}</Text>
-            <Ionicons name="arrow-forward" size={22} color="#0A0F0B" />
-          </TouchableOpacity>
-        </View>
-
-      </Animated.View>
+          {/* Start Button */}
+          <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
+            <TouchableOpacity
+              style={[styles.startButton, { backgroundColor: accentGreen }]}
+              activeOpacity={0.85}
+              onPress={handleStartWorkout}
+            >
+              <Text style={styles.startButtonText}>{buttonText}</Text>
+              <Ionicons name="arrow-forward" size={22} color="#0A0F0B" />
+            </TouchableOpacity>
+          </View>
+        </Animated.View>
+      )}
     </SafeAreaView>
   );
 }
@@ -515,5 +646,28 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: '#0A0F0B',
     letterSpacing: 1.2,
+  },
+  /* Skeleton Element Styles */
+  skeletonBadge: {
+    width: 140,
+    height: 28,
+    borderRadius: 14,
+    marginBottom: 16,
+  },
+  skeletonTitle: {
+    width: 240,
+    height: 34,
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+  skeletonSubtitle: {
+    width: 200,
+    height: 18,
+    borderRadius: 8,
+  },
+  skeletonButton: {
+    width: '100%',
+    height: 64,
+    borderRadius: 32,
   },
 });

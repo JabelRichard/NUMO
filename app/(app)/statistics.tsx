@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import {
   View,
   Text,
@@ -6,24 +6,30 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  StatusBar,
   useWindowDimensions,
-  LayoutChangeEvent,
 } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Svg, {
-  Circle,
-  Path,
-  Defs,
-  LinearGradient as SvgLinearGradient,
-  Stop,
-} from 'react-native-svg';
+import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../src/context/AuthContext';
-import { useTheme } from '../../src/context/ThemeContext';
-import { fetchAllWorkouts, calculateStats } from '../../src/services/statsService';
+import { useTheme } from '@/src/context/ThemeContext';
+import { fetchAllWorkouts } from '../../src/services/statsService';
+import { OfflineNotice } from '../../src/components/OfflineNotice';
 
-type TimeRange = 'week' | 'month' | 'year';
+const PALETTE = {
+  primary: '#BCE3AA',         // Soft pastel sage
+  accentLilac: '#F2CAEC',     // Soft orchid
+  backgroundLight: '#F1ECE9', // Warm alabaster neutral
+  dark: '#0A0F0B',            // Deep obsidian
+  cardLight: '#FFFFFF',
+  cardDark: '#141C15',
+  borderLight: 'rgba(10, 15, 11, 0.08)',
+  borderDark: 'rgba(255, 255, 255, 0.08)',
+  textSubtleLight: 'rgba(10, 15, 11, 0.55)',
+  textSubtleDark: 'rgba(241, 236, 233, 0.65)',
+};
 
 const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const MONTH_NAMES = [
@@ -32,12 +38,6 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
-const RANGE_LABELS: Record<TimeRange, string> = {
-  week: 'This Week',
-  month: 'This Month',
-  year: 'This Year',
-};
-
 export default function StatisticsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -45,29 +45,59 @@ export default function StatisticsScreen() {
   const { user } = useAuth();
   const { theme } = useTheme();
 
+  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const isNarrow = width < 360;
 
-  const [currentDate, setCurrentDate] = useState(new Date());
-  const [selectedDay, setSelectedDay] = useState(new Date().getDate());
-  const [selectedRange, setSelectedRange] = useState<TimeRange>('week');
-  const [isDropdownOpen, setIsDropdownOpen] = useState(false);
+  // Offline connection state
+  const [isOffline, setIsOffline] = useState(false);
   const [loading, setLoading] = useState(true);
   const [workouts, setWorkouts] = useState<any[]>([]);
-  const [chartWidth, setChartWidth] = useState(Math.max(width - 72, 260));
 
-  const year = currentDate.getFullYear();
-  const month = currentDate.getMonth();
+  // Calendar dates
+  const today = useMemo(() => new Date(), []);
+  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
+  const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate());
 
-  // Load workouts: isInitial controls whether the full screen spinner is shown
-  const loadStats = useCallback(async (isInitial = false) => {
+  const calYear = currentCalendarDate.getFullYear();
+  const calMonth = currentCalendarDate.getMonth();
+
+  const isCurrentViewingMonth =
+    calYear === today.getFullYear() && calMonth === today.getMonth();
+
+  // Network connectivity listener
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const handleRetryConnection = async () => {
+    const state = await NetInfo.fetch();
+    const offline = state.isConnected === false || state.isInternetReachable === false;
+    setIsOffline(offline);
+    if (!offline) {
+      loadData(true);
+    }
+  };
+
+  const loadData = useCallback(async (showLoading = false) => {
     if (!user?.id) {
       setLoading(false);
       return;
     }
-    if (isInitial) setLoading(true);
+    if (showLoading) setLoading(true);
     try {
-      const data = await fetchAllWorkouts(user.id);
-      setWorkouts(data || []);
+      const result: any = await fetchAllWorkouts(user.id);
+      if (Array.isArray(result)) {
+        setWorkouts(result);
+      } else if (result && typeof result === 'object') {
+        setWorkouts(result.data || []);
+      } else {
+        setWorkouts([]);
+      }
     } catch (err) {
       console.error('Failed to load stats:', err);
     } finally {
@@ -75,830 +105,986 @@ export default function StatisticsScreen() {
     }
   }, [user?.id]);
 
-  // AUTO-REFRESH: Runs every time the user navigates back to or focuses this screen
   useFocusEffect(
     useCallback(() => {
-      loadStats(false);
-    }, [loadStats])
+      loadData(false);
+    }, [loadData])
   );
 
-  const statsData = useMemo(() => calculateStats(workouts, year, month), [workouts, year, month]);
-
+  // Month navigation: never auto-select Day 1
   const handlePrevMonth = () => {
-    setCurrentDate(new Date(year, month - 1, 1));
-    setSelectedDay(1);
+    const nextDate = new Date(calYear, calMonth - 1, 1);
+    setCurrentCalendarDate(nextDate);
+    if (nextDate.getFullYear() === today.getFullYear() && nextDate.getMonth() === today.getMonth()) {
+      setSelectedDay(today.getDate());
+    } else {
+      setSelectedDay(null);
+    }
   };
 
   const handleNextMonth = () => {
-    setCurrentDate(new Date(year, month + 1, 1));
-    setSelectedDay(1);
-  };
-
-  // Calendar Grid Calculation
-  const { gridCells, dotSize } = useMemo(() => {
-    const totalDaysInMonth = new Date(year, month + 1, 0).getDate();
-    const firstDayIndex = (new Date(year, month, 1).getDay() + 6) % 7;
-    const cells: { day: number; active: boolean }[] = [];
-
-    for (let i = 0; i < firstDayIndex; i++) {
-      cells.push({ day: 0, active: false });
-    }
-    for (let d = 1; d <= totalDaysInMonth; d++) {
-      cells.push({ day: d, active: Boolean(statsData.dailyMap[d]) });
-    }
-
-    const calculatedSize = Math.floor((width - 40 - 6 * 10) / 7);
-    return { gridCells: cells, dotSize: Math.max(calculatedSize, 32) };
-  }, [year, month, statsData.dailyMap, width]);
-
-  const activeDaySummary = statsData.dailyMap[selectedDay] || {
-    workoutsCount: 0,
-    problemsSolved: 0,
-    avgSpeed: 0,
-    accuracy: 0,
-  };
-
-  const selectedWeekday = WEEKDAY_ABBR[new Date(year, month, selectedDay).getDay()];
-
-  // 1. Filter real data according to Supabase schema
-  const rangeStats = useMemo(() => {
-    const now = new Date();
-    const currentList: any[] = [];
-    const prevList: any[] = [];
-
-    let currentStart = new Date();
-    let prevStart = new Date();
-    let prevEnd = new Date();
-
-    if (selectedRange === 'week') {
-      const dayOfWeek = (now.getDay() + 6) % 7;
-      currentStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - dayOfWeek, 0, 0, 0);
-      prevEnd = new Date(currentStart.getTime() - 1);
-      prevStart = new Date(currentStart.getTime() - 7 * 24 * 60 * 60 * 1000);
-    } else if (selectedRange === 'month') {
-      currentStart = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
-      prevEnd = new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59);
-      prevStart = new Date(now.getFullYear(), now.getMonth() - 1, 1, 0, 0, 0);
+    const nextDate = new Date(calYear, calMonth + 1, 1);
+    setCurrentCalendarDate(nextDate);
+    if (nextDate.getFullYear() === today.getFullYear() && nextDate.getMonth() === today.getMonth()) {
+      setSelectedDay(today.getDate());
     } else {
-      currentStart = new Date(now.getFullYear(), 0, 1, 0, 0, 0);
-      prevEnd = new Date(now.getFullYear() - 1, 11, 31, 23, 59, 59);
-      prevStart = new Date(now.getFullYear() - 1, 0, 1, 0, 0, 0);
+      setSelectedDay(null);
     }
+  };
+
+  // High-contrast dynamic colors
+  const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
+  const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
+  const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
+  const secondaryText = isDark ? PALETTE.textSubtleDark : PALETTE.textSubtleLight;
+  const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
+  const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
+  const accentGreen = PALETTE.primary;
+  const accentLilac = PALETTE.accentLilac;
+
+  // -------------------------------------------------------------
+  // Growth Metrics Engine
+  // -------------------------------------------------------------
+  const growthMetrics = useMemo(() => {
+    if (workouts.length === 0) {
+      return {
+        hasData: false,
+        overallAcc: 0,
+        overallAvgPace: 0,
+        speedDeltaPct: 0,
+        speedDeltaStr: 'Baseline set',
+        accDeltaStr: 'No trend yet',
+        isSpeedFaster: false,
+        isAccBetter: false,
+        fastestPace: 0,
+        bestAcc: 0,
+        totalWorkouts: 0,
+      };
+    }
+
+    const sorted = [...workouts].sort(
+      (a, b) => new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime()
+    );
+
+    let totalQ = 0;
+    let totalC = 0;
+    let totalTime = 0;
+    let fastestPace = Infinity;
+    let bestAcc = 0;
+
+    sorted.forEach((w) => {
+      const q = Number(w.total_questions) || 0;
+      const c = Number(w.correct_answers) || 0;
+      const t = Number(w.total_time) || 0;
+      const pace = q > 0 ? t / q / 1000 : 0;
+      const acc = Number(w.accuracy) || (q > 0 ? (c / q) * 100 : 0);
+
+      totalQ += q;
+      totalC += c;
+      totalTime += t;
+
+      if (pace > 0 && pace < fastestPace) fastestPace = pace;
+      if (acc > bestAcc) bestAcc = acc;
+    });
+
+    const overallAcc = totalQ > 0 ? Math.round((totalC / totalQ) * 100) : 0;
+    const overallAvgPace = totalQ > 0 ? parseFloat((totalTime / totalQ / 1000).toFixed(1)) : 0;
+
+    let speedDeltaPct = 0;
+    let accDelta = 0;
+    let isSpeedFaster = false;
+    let isAccBetter = false;
+
+    if (sorted.length >= 2) {
+      const mid = Math.floor(sorted.length / 2);
+      const firstHalf = sorted.slice(0, mid);
+      const secondHalf = sorted.slice(mid);
+
+      const getPace = (arr: any[]) => {
+        let q = 0;
+        let t = 0;
+        arr.forEach((item) => {
+          q += Number(item.total_questions) || 0;
+          t += Number(item.total_time) || 0;
+        });
+        return q > 0 ? t / q / 1000 : 0;
+      };
+
+      const getAcc = (arr: any[]) => {
+        let q = 0;
+        let c = 0;
+        arr.forEach((item) => {
+          q += Number(item.total_questions) || 0;
+          c += Number(item.correct_answers) || 0;
+        });
+        return q > 0 ? (c / q) * 100 : 0;
+      };
+
+      const oldPace = getPace(firstHalf);
+      const newPace = getPace(secondHalf);
+      const oldAcc = getAcc(firstHalf);
+      const newAcc = getAcc(secondHalf);
+
+      if (oldPace > 0) {
+        speedDeltaPct = Math.round(((oldPace - newPace) / oldPace) * 100);
+        isSpeedFaster = speedDeltaPct >= 0;
+      }
+
+      accDelta = Math.round(newAcc - oldAcc);
+      isAccBetter = accDelta >= 0;
+    }
+
+    return {
+      hasData: true,
+      overallAcc,
+      overallAvgPace,
+      speedDeltaPct: Math.abs(speedDeltaPct),
+      speedDeltaStr:
+        sorted.length < 2
+          ? 'Baseline active'
+          : speedDeltaPct >= 0
+          ? `${speedDeltaPct}% faster overall`
+          : `${Math.abs(speedDeltaPct)}% slower overall`,
+      accDeltaStr:
+        sorted.length < 2
+          ? 'Tracking begun'
+          : accDelta >= 0
+          ? `+${accDelta}% accuracy gain`
+          : `${accDelta}% accuracy drop`,
+      isSpeedFaster,
+      isAccBetter,
+      fastestPace: fastestPace === Infinity ? overallAvgPace : parseFloat(fastestPace.toFixed(1)),
+      bestAcc: Math.round(bestAcc),
+      totalWorkouts: sorted.length,
+    };
+  }, [workouts]);
+
+  // -------------------------------------------------------------
+  // Calendar Grid - Exact 7-column rows
+  // -------------------------------------------------------------
+  const { gridWeeks, dotSize, dailyMap } = useMemo(() => {
+    const totalDaysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+    const firstDayIndex = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
+
+    const map: Record<number, { count: number; solved: number; correct: number; totalTimeMs: number }> = {};
 
     workouts.forEach((w) => {
       if (!w.completed_at) return;
-      const wDate = new Date(w.completed_at);
-      if (wDate >= currentStart && wDate <= now) {
-        currentList.push(w);
-      } else if (wDate >= prevStart && wDate <= prevEnd) {
-        prevList.push(w);
+      const d = new Date(w.completed_at);
+      if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
+        const day = d.getDate();
+        if (!map[day]) {
+          map[day] = { count: 0, solved: 0, correct: 0, totalTimeMs: 0 };
+        }
+        map[day].count += 1;
+        map[day].solved += Number(w.total_questions) || 0;
+        map[day].correct += Number(w.correct_answers) || 0;
+        map[day].totalTimeMs += Number(w.total_time) || 0;
       }
     });
 
-    const compileMetrics = (items: any[]) => {
-      let qCount = 0;
-      let cCount = 0;
-      let timeMs = 0;
-
-      items.forEach((item) => {
-        const solved = Number(item.total_questions) || 0;
-        const correct = Number(item.correct_answers) || 0;
-        const duration = Number(item.total_time) || 0;
-
-        qCount += solved;
-        cCount += correct;
-        timeMs += duration;
-      });
-
-      const acc = qCount > 0 ? Math.round((cCount / qCount) * 100) : 0;
-      const totalSecs = Math.round(timeMs / 1000);
-      const mins = Math.floor(totalSecs / 60);
-      const secs = totalSecs % 60;
-      const xp = cCount * 10 + items.length * 15;
-
-      return {
-        workoutsCount: items.length,
-        accuracy: acc,
-        timeMs,
-        timeFormatted: mins > 0 ? `${mins}m ${secs}s` : `${secs}s`,
-        xp,
-      };
-    };
-
-    const current = compileMetrics(currentList);
-    const prev = compileMetrics(prevList);
-
-    const accDiff = current.accuracy - prev.accuracy;
-    const workoutsDiff = current.workoutsCount - prev.workoutsCount;
-    const xpDiff = current.xp - prev.xp;
-    const timeDiffMs = current.timeMs - prev.timeMs;
-    const timeDiffPct = prev.timeMs > 0 ? Math.round((timeDiffMs / prev.timeMs) * 100) : 0;
-
-    const periodLabel = selectedRange === 'week' ? 'last week' : selectedRange === 'month' ? 'last month' : 'last year';
-
-    return {
-      current,
-      diffs: {
-        accStr: `${accDiff >= 0 ? '↑' : '↓'} ${Math.abs(accDiff)}% from ${periodLabel}`,
-        workoutStr: `${workoutsDiff >= 0 ? '↑' : '↓'} ${Math.abs(workoutsDiff)} from ${periodLabel}`,
-        xpStr: `${xpDiff >= 0 ? '↑' : '↓'} ${Math.abs(xpDiff)} from ${periodLabel}`,
-        timeStr: `${timeDiffPct >= 0 ? '↑' : '↓'} ${Math.abs(timeDiffPct)}% from ${periodLabel}`,
-      },
-    };
-  }, [workouts, selectedRange]);
-
-  // 2. Real Accuracy Over Last 7 Days
-  const last7DaysData = useMemo(() => {
-    const days: { label: string; accuracy: number; hasWorkouts: boolean }[] = [];
-    const now = new Date();
-
-    for (let i = 6; i >= 0; i--) {
-      const targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-      const startOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 0, 0, 0).getTime();
-      const endOfDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 23, 59, 59, 999).getTime();
-
-      const dayWorkouts = workouts.filter((w) => {
-        if (!w.completed_at) return false;
-        const time = new Date(w.completed_at).getTime();
-        return time >= startOfDay && time <= endOfDay;
-      });
-
-      let dayTotalQ = 0;
-      let dayTotalC = 0;
-
-      dayWorkouts.forEach((w) => {
-        dayTotalQ += Number(w.total_questions) || 0;
-        dayTotalC += Number(w.correct_answers) || 0;
-      });
-
-      const dayAcc = dayTotalQ > 0 ? Math.round((dayTotalC / dayTotalQ) * 100) : 0;
-      const monthShort = targetDate.toLocaleDateString('en-US', { month: 'short' });
-
-      days.push({
-        label: `${monthShort} ${targetDate.getDate()}`,
-        accuracy: dayAcc,
-        hasWorkouts: dayTotalQ > 0,
-      });
+    const flatCells: { day: number; active: boolean; isRealToday: boolean }[] = [];
+    for (let i = 0; i < firstDayIndex; i++) {
+      flatCells.push({ day: 0, active: false, isRealToday: false });
+    }
+    for (let d = 1; d <= totalDaysInMonth; d++) {
+      const hasWorkouts = Boolean(map[d] && map[d].count > 0);
+      const isRealToday = isCurrentViewingMonth && d === today.getDate();
+      flatCells.push({ day: d, active: hasWorkouts, isRealToday });
     }
 
-    return days;
-  }, [workouts]);
+    const remainder = flatCells.length % 7;
+    if (remainder !== 0) {
+      const trailingCount = 7 - remainder;
+      for (let j = 0; j < trailingCount; j++) {
+        flatCells.push({ day: 0, active: false, isRealToday: false });
+      }
+    }
 
-  // 3. Real Overall Summary Across All Workouts
-  const overallSummary = useMemo(() => {
-    let totalQ = 0;
-    let totalCorrect = 0;
-    let totalTimeMs = 0;
+    // Break into week rows
+    const weeks: { day: number; active: boolean; isRealToday: boolean }[][] = [];
+    for (let i = 0; i < flatCells.length; i += 7) {
+      weeks.push(flatCells.slice(i, i + 7));
+    }
+
+    const horizontalPadding = isNarrow ? 32 : 40;
+    const availableWidth = width - horizontalPadding - 32;
+    const calculatedSize = Math.floor(availableWidth / 7);
+
+    return {
+      gridWeeks: weeks,
+      dotSize: Math.max(calculatedSize, 36),
+      dailyMap: map,
+    };
+  }, [calYear, calMonth, workouts, width, isCurrentViewingMonth, today, isNarrow]);
+
+  const activeDaySummary = useMemo(() => {
+    if (!selectedDay) {
+      return { count: 0, solved: 0, pace: '—', acc: '—' };
+    }
+    const dayData = dailyMap[selectedDay];
+    if (!dayData || dayData.count === 0) {
+      return { count: 0, solved: 0, pace: '—', acc: '—' };
+    }
+    const pace = dayData.solved > 0 ? (dayData.totalTimeMs / dayData.solved / 1000).toFixed(1) : '—';
+    const acc = dayData.solved > 0 ? `${Math.round((dayData.correct / dayData.solved) * 100)}%` : '—';
+    return {
+      count: dayData.count,
+      solved: dayData.solved,
+      pace: `${pace}s`,
+      acc,
+    };
+  }, [dailyMap, selectedDay]);
+
+  const displayDayNumber = selectedDay || (isCurrentViewingMonth ? today.getDate() : 1);
+  const selectedWeekday = WEEKDAY_ABBR[new Date(calYear, calMonth, displayDayNumber).getDay()];
+
+  // -------------------------------------------------------------
+  // Skill Matrix Breakdown
+  // -------------------------------------------------------------
+  const skillBreakdown = useMemo(() => {
+    const categories: Record<string, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
+      addition: { label: 'Addition', totalQ: 0, correct: 0, totalTimeMs: 0 },
+      subtraction: { label: 'Subtraction', totalQ: 0, correct: 0, totalTimeMs: 0 },
+      multiplication: { label: 'Multiplication', totalQ: 0, correct: 0, totalTimeMs: 0 },
+      division: { label: 'Division', totalQ: 0, correct: 0, totalTimeMs: 0 },
+      mixed: { label: 'Mixed Challenge', totalQ: 0, correct: 0, totalTimeMs: 0 },
+    };
 
     workouts.forEach((w) => {
-      totalQ += Number(w.total_questions) || 0;
-      totalCorrect += Number(w.correct_answers) || 0;
-      totalTimeMs += Number(w.total_time) || 0;
+      let rawOp = (w.operation || 'mixed').toLowerCase();
+      if (rawOp === 'adaptive_mix') rawOp = 'mixed';
+      if (!categories[rawOp]) return;
+
+      categories[rawOp].totalQ += Number(w.total_questions) || 0;
+      categories[rawOp].correct += Number(w.correct_answers) || 0;
+      categories[rawOp].totalTimeMs += Number(w.total_time) || 0;
     });
 
-    const totalIncorrect = Math.max(0, totalQ - totalCorrect);
-    const avgSecsPerQ = totalQ > 0 ? (totalTimeMs / totalQ / 1000).toFixed(1) : '0.0';
+    const parsed = Object.entries(categories).map(([key, data]) => {
+      const acc = data.totalQ > 0 ? Math.round((data.correct / data.totalQ) * 100) : 0;
+      const avgPace = data.totalQ > 0 ? parseFloat((data.totalTimeMs / data.totalQ / 1000).toFixed(1)) : 0;
+      return {
+        key,
+        name: data.label,
+        totalQ: data.totalQ,
+        accuracy: acc,
+        avgPace,
+        frictionScore: data.totalQ > 0 ? (100 - acc) * 1.5 + avgPace * 4 : -1,
+      };
+    });
+
+    const practiced = parsed.filter((p) => p.totalQ > 0);
+    if (practiced.length === 0) {
+      return { skills: parsed, strongest: null, needsWork: null };
+    }
+
+    const sortedByMastery = [...practiced].sort((a, b) => {
+      if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
+      return a.avgPace - b.avgPace;
+    });
+
+    const strongest = sortedByMastery[0];
+    const sortedByFriction = [...practiced].sort((a, b) => b.frictionScore - a.frictionScore);
+    const needsWork = sortedByFriction[0];
 
     return {
-      totalQ,
-      totalCorrect,
-      totalIncorrect,
-      avgSecsPerQ,
+      skills: parsed,
+      strongest,
+      needsWork: needsWork.key !== strongest.key ? needsWork : null,
     };
   }, [workouts]);
 
-  // SVG Chart Layout
-  const chartHeight = 96;
-  const onChartLayout = (e: LayoutChangeEvent) => {
-    const layoutWidth = e.nativeEvent.layout.width;
-    if (layoutWidth > 0 && Math.abs(layoutWidth - chartWidth) > 2) {
-      setChartWidth(layoutWidth);
-    }
-  };
-
-  const chartPoints = useMemo(() => {
-    const count = last7DaysData.length;
-    const step = chartWidth / (count - 1 || 1);
-    return last7DaysData.map((d, idx) => {
-      const x = Math.max(8, Math.min(chartWidth - 8, idx * step));
-      const clampedAcc = Math.max(0, Math.min(100, d.accuracy));
-      const y = chartHeight - 14 - (clampedAcc / 100) * (chartHeight - 28);
-      return { x, y, hasWorkouts: d.hasWorkouts };
-    });
-  }, [last7DaysData, chartWidth]);
-
-  const linePath = chartPoints.length > 0 ? `M ${chartPoints.map((p) => `${p.x},${p.y}`).join(' L ')}` : '';
-  const areaPath = chartPoints.length > 0
-    ? `${linePath} L ${chartPoints[chartPoints.length - 1].x},${chartHeight} L ${chartPoints[0].x},${chartHeight} Z`
-    : '';
+  // If offline, block the screen completely matching Workout
+  if (isOffline) {
+    return (
+      <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+        <StatusBar
+          barStyle={isDark ? 'light-content' : 'dark-content'}
+          backgroundColor={screenBg}
+        />
+        <OfflineNotice onRetry={handleRetryConnection} />
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      {/* Header */}
-      <View style={[styles.header, { paddingTop: Math.max(insets.top + 6, 16) }]}>
-        <TouchableOpacity
-          onPress={() => router.back()}
-          style={[styles.backBtn, { borderColor: theme.border, backgroundColor: theme.card }]}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="arrow-back" size={18} color={theme.text} />
-        </TouchableOpacity>
-        <Text style={[styles.screenTitle, { color: theme.text }]}>Statistics</Text>
-        <View style={styles.headerSpacer} />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
+      <StatusBar
+        barStyle={isDark ? 'light-content' : 'dark-content'}
+        backgroundColor={screenBg}
+      />
+
+      {/* Header Bar */}
+      <View style={styles.header}>
+        <View style={styles.headerInner}>
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
+            onPress={() => router.back()}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="arrow-back" size={20} color={primaryText} />
+          </TouchableOpacity>
+          <Text style={[styles.headerTitle, { color: primaryText }]}>Performance & Growth</Text>
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
+            onPress={() => loadData(true)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="refresh" size={18} color={primaryText} />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {loading ? (
-        <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color="#EC673C" />
+        <View style={styles.loadingCenter}>
+          <ActivityIndicator size="large" color={accentGreen} />
         </View>
       ) : (
         <ScrollView
-          contentContainerStyle={[styles.scrollContent, { paddingBottom: Math.max(insets.bottom + 32, 48) }]}
+          contentContainerStyle={[
+            styles.scrollContent,
+            {
+              paddingHorizontal: isNarrow ? 16 : 20,
+              paddingBottom: Math.max(insets.bottom, 20) + 100,
+            },
+          ]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Day Hero Banner */}
-          <View style={styles.heroSection}>
-            <View style={styles.heroTopRow}>
-              <Text style={[styles.heroDayNumber, { color: '#F6FE91' }]}>{selectedDay}</Text>
-              <Text style={[styles.heroDayWeekday, { color: theme.muted }]}>{selectedWeekday}</Text>
-            </View>
-
-            {/* Month Switcher */}
-            <View style={styles.monthSwitcherRow}>
-              <Text style={[styles.monthLabel, { color: theme.text }]}>
-                {MONTH_NAMES[month]} <Text style={{ fontWeight: '400', color: theme.muted }}>{year}</Text>
-              </Text>
-              <View style={styles.arrowsGroup}>
-                <TouchableOpacity
-                  onPress={handlePrevMonth}
-                  style={[styles.arrowButton, { borderColor: theme.border, backgroundColor: theme.card }]}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="chevron-back" size={16} color={theme.text} />
-                </TouchableOpacity>
-                <TouchableOpacity
-                  onPress={handleNextMonth}
-                  style={[styles.arrowButton, { borderColor: theme.border, backgroundColor: theme.card }]}
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="chevron-forward" size={16} color={theme.text} />
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-
-          {/* Calendar Card */}
-          <View style={[styles.calendarCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={styles.weekHeaderRow}>
-              {WEEK_DAYS.map((wd, i) => (
-                <Text key={i} style={[styles.weekDayText, { color: theme.muted, width: dotSize }]}>
-                  {wd}
+          <View style={styles.responsiveWrapper}>
+            {/* 1. RESTORED ENLARGED CALENDAR HERO */}
+            <View style={styles.heroSection}>
+              <View style={styles.heroTopRow}>
+                <Text style={[styles.heroDayNumber, { color: accentGreen }]}>
+                  {displayDayNumber}
                 </Text>
-              ))}
-            </View>
-            <View style={styles.dotsGrid}>
-              {gridCells.map((item, index) => {
-                if (item.day === 0) return <View key={index} style={{ width: dotSize, height: dotSize }} />;
-                const isSelected = item.day === selectedDay;
-                return (
+                <Text style={[styles.heroDayWeekday, { color: secondaryText }]}>
+                  {selectedWeekday}
+                </Text>
+              </View>
+
+              <View style={styles.monthSwitcherRow}>
+                <Text style={[styles.monthLabel, { color: primaryText }]}>
+                  {MONTH_NAMES[calMonth]} <Text style={{ fontWeight: '400', color: secondaryText }}>{calYear}</Text>
+                </Text>
+
+                <View style={styles.arrowsGroup}>
                   <TouchableOpacity
-                    key={index}
-                    onPress={() => setSelectedDay(item.day)}
-                    style={[
-                      styles.dotCell,
-                      {
-                        width: dotSize,
-                        height: dotSize,
-                        borderRadius: dotSize / 2,
-                        backgroundColor: isSelected
-                          ? '#F6FE91'
-                          : item.active
-                          ? '#EC673C'
-                          : theme.isDark
-                          ? 'rgba(255,255,255,0.08)'
-                          : '#E5E5EA',
-                      },
-                    ]}
+                    onPress={handlePrevMonth}
+                    style={[styles.arrowButton, { borderColor: borderSubtle, backgroundColor: cardBg }]}
                     activeOpacity={0.7}
-                  />
-                );
-              })}
-            </View>
-
-            {/* Selected Day Stats Ribbon */}
-            <View style={[styles.dayRecapRow, { borderTopColor: theme.divider || theme.border }]}>
-              <View style={styles.recapItem}>
-                <Text style={[styles.recapLabel, { color: theme.muted }]}>Workouts</Text>
-                <Text style={[styles.recapValue, { color: theme.text }]}>{activeDaySummary.workoutsCount}</Text>
-              </View>
-              <View style={styles.recapDivider} />
-              <View style={styles.recapItem}>
-                <Text style={[styles.recapLabel, { color: theme.muted }]}>Solved</Text>
-                <Text style={[styles.recapValue, { color: theme.text }]}>{activeDaySummary.problemsSolved}</Text>
-              </View>
-              <View style={styles.recapDivider} />
-              <View style={styles.recapItem}>
-                <Text style={[styles.recapLabel, { color: theme.muted }]}>Pace</Text>
-                <Text style={[styles.recapValue, { color: theme.text }]}>
-                  {activeDaySummary.avgSpeed ? `${activeDaySummary.avgSpeed}s` : '—'}
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Range Selector */}
-          <View style={styles.filterSectionRow}>
-            <View style={styles.dropdownAnchorContainer}>
-              <TouchableOpacity
-                style={[
-                  styles.rangeDropdownPill,
-                  {
-                    backgroundColor: theme.card,
-                    borderColor: theme.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
-                  },
-                ]}
-                onPress={() => setIsDropdownOpen((prev) => !prev)}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="calendar-outline" size={15} color={theme.text} style={{ marginRight: 6 }} />
-                <Text style={[styles.rangeDropdownText, { color: theme.text }]}>
-                  {RANGE_LABELS[selectedRange]}
-                </Text>
-                <Ionicons
-                  name={isDropdownOpen ? 'chevron-up' : 'chevron-down'}
-                  size={14}
-                  color={theme.muted}
-                  style={{ marginLeft: 6 }}
-                />
-              </TouchableOpacity>
-
-              {isDropdownOpen && (
-                <View
-                  style={[
-                    styles.dropdownMenu,
-                    {
-                      backgroundColor: theme.card,
-                      borderColor: theme.isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)',
-                    },
-                  ]}
-                >
-                  {(['week', 'month', 'year'] as TimeRange[]).map((rangeKey) => {
-                    const isSelected = selectedRange === rangeKey;
-                    return (
-                      <TouchableOpacity
-                        key={rangeKey}
-                        style={[
-                          styles.dropdownMenuItem,
-                          isSelected && { backgroundColor: theme.isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)' },
-                        ]}
-                        onPress={() => {
-                          setSelectedRange(rangeKey);
-                          setIsDropdownOpen(false);
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.dropdownMenuItemText,
-                            { color: isSelected ? '#EC673C' : theme.text },
-                            isSelected && { fontWeight: '800' },
-                          ]}
-                        >
-                          {RANGE_LABELS[rangeKey]}
-                        </Text>
-                        {isSelected && <Ionicons name="checkmark" size={16} color="#EC673C" />}
-                      </TouchableOpacity>
-                    );
-                  })}
+                  >
+                    <Ionicons name="chevron-back" size={18} color={primaryText} />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleNextMonth}
+                    style={[styles.arrowButton, { borderColor: borderSubtle, backgroundColor: cardBg }]}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="chevron-forward" size={18} color={primaryText} />
+                  </TouchableOpacity>
                 </View>
-              )}
-            </View>
-          </View>
-
-          {/* 4 Performance Metric Cards */}
-          <View style={[styles.statsCardGrid, isNarrow && { gap: 8 }]}>
-            {/* 1. Avg. Accuracy */}
-            <View style={[styles.statBoxCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.statBoxIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.14)' }]}>
-                <Ionicons name="locate-outline" size={17} color="#EC673C" />
-              </View>
-              <Text style={[styles.statBoxBigValue, { color: '#EC673C' }]}>
-                {rangeStats.current.accuracy}%
-              </Text>
-              <Text style={[styles.statBoxLabel, { color: theme.muted }]}>Avg. Accuracy</Text>
-              <Text style={styles.trendText} numberOfLines={1}>{rangeStats.diffs.accStr}</Text>
-            </View>
-
-            {/* 2. Total Time */}
-            <View style={[styles.statBoxCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.statBoxIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                <Ionicons name="timer-outline" size={17} color="#AFA2FE" />
-              </View>
-              <Text style={[styles.statBoxBigValue, { color: '#AFA2FE' }]} numberOfLines={1}>
-                {rangeStats.current.timeFormatted}
-              </Text>
-              <Text style={[styles.statBoxLabel, { color: theme.muted }]}>Total Time</Text>
-              <Text style={[styles.trendText, { color: '#AFA2FE' }]} numberOfLines={1}>
-                {rangeStats.diffs.timeStr}
-              </Text>
-            </View>
-          </View>
-
-          <View style={[styles.statsCardGrid, { marginTop: 10 }, isNarrow && { gap: 8 }]}>
-            {/* 3. Workouts */}
-            <View style={[styles.statBoxCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.statBoxIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.14)' }]}>
-                <Ionicons name="trending-up-outline" size={17} color="#EC673C" />
-              </View>
-              <Text style={[styles.statBoxBigValue, { color: '#EC673C' }]}>
-                {rangeStats.current.workoutsCount}
-              </Text>
-              <Text style={[styles.statBoxLabel, { color: theme.muted }]}>Workouts</Text>
-              <Text style={styles.trendText} numberOfLines={1}>{rangeStats.diffs.workoutStr}</Text>
-            </View>
-
-            {/* 4. Total XP */}
-            <View style={[styles.statBoxCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.statBoxIconCircle, { backgroundColor: 'rgba(246, 254, 145, 0.25)' }]}>
-                <Ionicons name="flash" size={17} color="#EC673C" />
-              </View>
-              <Text style={[styles.statBoxBigValue, { color: theme.text }]}>
-                {rangeStats.current.xp}
-              </Text>
-              <Text style={[styles.statBoxLabel, { color: theme.muted }]}>Total XP</Text>
-              <Text style={styles.trendText} numberOfLines={1}>{rangeStats.diffs.xpStr}</Text>
-            </View>
-          </View>
-
-          {/* Accuracy Over Time (Real Last 7 Days) */}
-          <View style={[styles.chartCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={styles.chartCardHeader}>
-              <Text style={[styles.chartTitle, { color: theme.text }]}>Accuracy Over Time</Text>
-              <View
-                style={[
-                  styles.chartFilterPill,
-                  {
-                    backgroundColor: theme.background,
-                    borderColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-                  },
-                ]}
-              >
-                <Text style={[styles.chartFilterText, { color: theme.muted }]}>Last 7 Days</Text>
               </View>
             </View>
 
-            <View style={styles.chartMainContent}>
-              <View style={styles.yAxisLabels}>
-                <Text style={[styles.axisText, { color: theme.muted }]}>100%</Text>
-                <Text style={[styles.axisText, { color: theme.muted }]}>75%</Text>
-                <Text style={[styles.axisText, { color: theme.muted }]}>50%</Text>
-                <Text style={[styles.axisText, { color: theme.muted }]}>25%</Text>
-                <Text style={[styles.axisText, { color: theme.muted }]}>0%</Text>
-              </View>
-
-              <View style={styles.chartPlot} onLayout={onChartLayout}>
-                <Svg width={chartWidth} height={chartHeight} style={{ overflow: 'hidden' }}>
-                  <Defs>
-                    <SvgLinearGradient id="statsLineGradient" x1="0" y1="0" x2="0" y2="1">
-                      <Stop offset="0%" stopColor="#EC673C" stopOpacity="0.32" />
-                      <Stop offset="100%" stopColor="#EC673C" stopOpacity="0.0" />
-                    </SvgLinearGradient>
-                  </Defs>
-                  {areaPath ? <Path d={areaPath} fill="url(#statsLineGradient)" /> : null}
-                  {linePath ? (
-                    <Path d={linePath} stroke="#EC673C" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-                  ) : null}
-                  {chartPoints.map((pt, i) => (
-                    <Circle
-                      key={i}
-                      cx={pt.x}
-                      cy={pt.y}
-                      r="3.5"
-                      fill={pt.hasWorkouts ? '#EC673C' : theme.isDark ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.2)'}
-                      stroke="#FFFFFF"
-                      strokeWidth="1.5"
-                    />
-                  ))}
-                </Svg>
-
-                <View style={styles.xAxisLabels}>
-                  {last7DaysData.map((d, i) => (
-                    <Text key={i} style={[styles.xAxisText, { color: theme.muted }]}>
-                      {d.label}
+            {/* Calendar Heatmap Card */}
+            <View style={[styles.calendarCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <View style={styles.weekHeaderRow}>
+                {WEEK_DAYS.map((wd, i) => (
+                  <View key={i} style={[styles.cellColumn, { width: dotSize }]}>
+                    <Text style={[styles.weekDayText, { color: secondaryText }]}>
+                      {wd}
                     </Text>
-                  ))}
+                  </View>
+                ))}
+              </View>
+
+              {/* Rows separated into weeks */}
+              <View style={styles.weeksContainer}>
+                {gridWeeks.map((week, weekIndex) => (
+                  <View key={weekIndex} style={styles.weekRow}>
+                    {week.map((item, colIndex) => {
+                      if (item.day === 0) {
+                        return (
+                          <View
+                            key={colIndex}
+                            style={[styles.cellColumn, { width: dotSize, height: dotSize }]}
+                          />
+                        );
+                      }
+                      const isSelected = selectedDay === item.day;
+                      return (
+                        <View key={colIndex} style={[styles.cellColumn, { width: dotSize }]}>
+                          <TouchableOpacity
+                            onPress={() => setSelectedDay(item.day)}
+                            style={[
+                              styles.dotCell,
+                              {
+                                width: dotSize - 4,
+                                height: dotSize - 4,
+                                borderRadius: (dotSize - 4) / 2,
+                                backgroundColor: isSelected
+                                  ? primaryText
+                                  : item.active
+                                  ? accentGreen
+                                  : isDark
+                                  ? 'rgba(255,255,255,0.08)'
+                                  : 'rgba(10,15,11,0.06)',
+                                borderWidth: item.isRealToday && !isSelected ? 2 : 0,
+                                borderColor: accentGreen,
+                              },
+                            ]}
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.dotCellText,
+                                {
+                                  color: isSelected
+                                    ? isDark
+                                      ? PALETTE.dark
+                                      : '#FFFFFF'
+                                    : item.active
+                                    ? PALETTE.dark
+                                    : secondaryText,
+                                  fontWeight: isSelected || item.active || item.isRealToday ? '800' : '600',
+                                },
+                              ]}
+                            >
+                              {item.day}
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      );
+                    })}
+                  </View>
+                ))}
+              </View>
+
+              {/* Day Recap */}
+              <View style={[styles.dayRecapRow, { borderTopColor: dividerColor }]}>
+                <View style={styles.recapItem}>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Workouts</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.count}</Text>
+                </View>
+                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
+                <View style={styles.recapItem}>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Solved</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.solved}</Text>
+                </View>
+                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
+                <View style={styles.recapItem}>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Accuracy</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.acc}</Text>
+                </View>
+                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
+                <View style={styles.recapItem}>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Pace</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.pace}</Text>
                 </View>
               </View>
             </View>
-          </View>
 
-          {/* Overall Summary Card */}
-          <View style={[styles.summaryCard, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <Text style={[styles.summaryTitle, { color: theme.text }]}>Overall Summary</Text>
-
-            <View style={styles.summaryStatsRow}>
-              {/* Total Questions */}
-              <View style={styles.summaryColumn}>
-                <View style={[styles.summaryIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.12)' }]}>
-                  <Ionicons name="checkmark-outline" size={17} color="#EC673C" />
+            {/* 2. GROWTH & IMPROVEMENT VERDICT */}
+            <View style={[styles.heroCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <View style={styles.heroBadgeRow}>
+                <View style={[styles.statusBadge, { backgroundColor: accentGreen }]}>
+                  <Text style={styles.statusBadgeText}>GROWTH VERDICT</Text>
                 </View>
-                <Text style={[styles.summaryValue, { color: '#EC673C' }]}>{overallSummary.totalQ}</Text>
-                <Text style={[styles.summaryLabel, { color: theme.muted }]} numberOfLines={1}>
-                  Total Questions
+                <Text style={[styles.totalRoundsText, { color: secondaryText }]}>
+                  {growthMetrics.totalWorkouts} sessions logged
                 </Text>
               </View>
 
-              <View style={[styles.summaryDivider, { backgroundColor: theme.divider || theme.border }]} />
+              <Text style={[styles.heroHeadline, { color: primaryText }]}>
+                {growthMetrics.hasData
+                  ? growthMetrics.isSpeedFaster
+                    ? `Your solving speed improved by ${growthMetrics.speedDeltaPct}%.`
+                    : `Focus on clean accuracy to lock in your pace.`
+                  : 'Complete workouts to reveal your growth curve.'}
+              </Text>
 
-              {/* Correct */}
-              <View style={styles.summaryColumn}>
-                <View style={[styles.summaryIconCircle, { backgroundColor: 'rgba(246, 254, 145, 0.28)' }]}>
-                  <Ionicons name="locate-outline" size={17} color="#EC673C" />
+              <Text style={[styles.heroSubtext, { color: secondaryText }]}>
+                {growthMetrics.hasData
+                  ? `Current average pace is ${growthMetrics.overallAvgPace}s per question across all sessions with ${growthMetrics.overallAcc}% overall accuracy.`
+                  : 'NUMO benchmarks your response times, calculation fluency, and identifies weak spots automatically.'}
+              </Text>
+
+              <View style={[styles.growthPillsRow, { borderTopColor: dividerColor }]}>
+                <View style={styles.growthPillItem}>
+                  <Ionicons
+                    name={growthMetrics.isSpeedFaster ? 'trending-up' : 'timer-outline'}
+                    size={18}
+                    color={primaryText}
+                  />
+                  <Text style={[styles.growthPillText, { color: primaryText }]}>
+                    {growthMetrics.speedDeltaStr}
+                  </Text>
                 </View>
-                <Text style={[styles.summaryValue, { color: '#EC673C' }]}>{overallSummary.totalCorrect}</Text>
-                <Text style={[styles.summaryLabel, { color: theme.muted }]} numberOfLines={1}>
-                  Correct
+
+                <View style={[styles.pillDivider, { backgroundColor: dividerColor }]} />
+
+                <View style={styles.growthPillItem}>
+                  <Ionicons
+                    name={growthMetrics.isAccBetter ? 'checkmark-circle' : 'alert-circle-outline'}
+                    size={18}
+                    color={primaryText}
+                  />
+                  <Text style={[styles.growthPillText, { color: primaryText }]}>
+                    {growthMetrics.accDeltaStr}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* 3. DIRECTIVES */}
+            <View style={styles.directivesRow}>
+              <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                <View style={[styles.directiveIconCircle, { backgroundColor: accentGreen }]}>
+                  <Ionicons name="trophy" size={17} color="#0A0F0B" />
+                </View>
+                <Text style={[styles.directiveLabel, { color: secondaryText }]}>Strongest Area</Text>
+                <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
+                  {skillBreakdown.strongest ? skillBreakdown.strongest.name : '—'}
+                </Text>
+                <Text style={[styles.directiveDetail, { color: secondaryText }]}>
+                  {skillBreakdown.strongest
+                    ? `${skillBreakdown.strongest.accuracy}% · ${skillBreakdown.strongest.avgPace}s/Q`
+                    : 'Requires 1 session'}
                 </Text>
               </View>
 
-              <View style={[styles.summaryDivider, { backgroundColor: theme.divider || theme.border }]} />
-
-              {/* Incorrect */}
-              <View style={styles.summaryColumn}>
-                <View style={[styles.summaryIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                  <Ionicons name="close-outline" size={18} color="#AFA2FE" />
+              <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                <View style={[styles.directiveIconCircle, { backgroundColor: accentLilac }]}>
+                  <Ionicons name="sparkles" size={17} color="#0A0F0B" />
                 </View>
-                <Text style={[styles.summaryValue, { color: '#AFA2FE' }]}>{overallSummary.totalIncorrect}</Text>
-                <Text style={[styles.summaryLabel, { color: theme.muted }]} numberOfLines={1}>
-                  Incorrect
+                <Text style={[styles.directiveLabel, { color: secondaryText }]}>Next Focus</Text>
+                <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
+                  {skillBreakdown.needsWork ? skillBreakdown.needsWork.name : 'All Balanced'}
+                </Text>
+                <Text style={[styles.directiveDetail, { color: secondaryText }]}>
+                  {skillBreakdown.needsWork ? 'Recommended challenge' : 'Keep steady pace'}
                 </Text>
               </View>
+            </View>
 
-              <View style={[styles.summaryDivider, { backgroundColor: theme.divider || theme.border }]} />
+            {/* 4. SKILL PROFICIENCY */}
+            <View style={[styles.sectionCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <View style={styles.sectionHeaderRow}>
+                <Text style={[styles.sectionTitle, { color: primaryText }]}>Skill Proficiency</Text>
+                <Text style={[styles.sectionSubtitle, { color: secondaryText }]}>Accuracy & Pace</Text>
+              </View>
 
-              {/* Avg. Time / Q */}
-              <View style={styles.summaryColumn}>
-                <View style={[styles.summaryIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.12)' }]}>
-                  <Ionicons name="timer-outline" size={17} color="#EC673C" />
+              <View style={styles.skillsList}>
+                {skillBreakdown.skills.map((skill) => {
+                  const isPracticed = skill.totalQ > 0;
+                  return (
+                    <View key={skill.key} style={styles.skillRow}>
+                      <View style={styles.skillHeader}>
+                        <Text style={[styles.skillName, { color: primaryText }]}>{skill.name}</Text>
+                        <Text style={[styles.skillStat, { color: isPracticed ? primaryText : secondaryText }]}>
+                          {isPracticed ? `${skill.accuracy}% · ${skill.avgPace}s` : 'Not practiced yet'}
+                        </Text>
+                      </View>
+
+                      <View
+                        style={[
+                          styles.skillTrack,
+                          {
+                            backgroundColor: isDark
+                              ? 'rgba(255,255,255,0.08)'
+                              : 'rgba(10,15,11,0.06)',
+                          },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.skillFill,
+                            {
+                              width: `${Math.max(skill.accuracy, 4)}%`,
+                              backgroundColor: isPracticed ? accentGreen : 'transparent',
+                            },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+
+            {/* 5. PERSONAL RECORDS */}
+            <View style={[styles.sectionCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <Text style={[styles.sectionTitle, { color: primaryText, marginBottom: 16 }]}>
+                Personal Records
+              </Text>
+
+              <View style={styles.recordsGrid}>
+                <View style={styles.recordItem}>
+                  <Ionicons name="flash" size={24} color={accentGreen} />
+                  <Text style={[styles.recordValue, { color: primaryText }]}>
+                    {growthMetrics.fastestPace > 0 ? `${growthMetrics.fastestPace}s` : '—'}
+                  </Text>
+                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Fastest Pace</Text>
                 </View>
-                <Text style={[styles.summaryValue, { color: '#EC673C' }]}>{overallSummary.avgSecsPerQ}s</Text>
-                <Text style={[styles.summaryLabel, { color: theme.muted }]} numberOfLines={1}>
-                  Avg. Time / Q
-                </Text>
+
+                <View style={[styles.recordDivider, { backgroundColor: dividerColor }]} />
+
+                <View style={styles.recordItem}>
+                  <Ionicons name="ribbon" size={24} color={accentLilac} />
+                  <Text style={[styles.recordValue, { color: primaryText }]}>
+                    {growthMetrics.bestAcc > 0 ? `${growthMetrics.bestAcc}%` : '—'}
+                  </Text>
+                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Peak Accuracy</Text>
+                </View>
+
+                <View style={[styles.recordDivider, { backgroundColor: dividerColor }]} />
+
+                <View style={styles.recordItem}>
+                  <Ionicons name="bar-chart" size={24} color={primaryText} />
+                  <Text style={[styles.recordValue, { color: primaryText }]}>
+                    {growthMetrics.totalWorkouts}
+                  </Text>
+                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Completed</Text>
+                </View>
               </View>
             </View>
           </View>
         </ScrollView>
       )}
-    </View>
+    </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1 },
-  centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+  safeArea: {
+    flex: 1,
+  },
   header: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 12,
+  },
+  headerInner: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    marginBottom: 8,
   },
-  backBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+  backButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
     borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 5,
+    elevation: 2,
+  },
+  headerTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: -0.4,
+  },
+  loadingCenter: {
+    flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  screenTitle: { fontSize: 20, fontWeight: '800', letterSpacing: -0.3 },
-  headerSpacer: { width: 36 },
-  scrollContent: { paddingHorizontal: 20 },
-
-  /* Day Hero */
-  heroSection: { marginTop: 4, marginBottom: 12 },
-  heroTopRow: { flexDirection: 'row', alignItems: 'flex-start', justifyContent: 'space-between' },
-  heroDayNumber: { fontSize: 94, fontWeight: '900', lineHeight: 94, letterSpacing: -3 },
-  heroDayWeekday: { fontSize: 13, fontWeight: '800', letterSpacing: 1, marginTop: 8 },
-  monthSwitcherRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
-  monthLabel: { fontSize: 20, fontWeight: '900', letterSpacing: 0.5 },
-  arrowsGroup: { flexDirection: 'row', gap: 8 },
-  arrowButton: { width: 32, height: 32, borderRadius: 16, borderWidth: 1, alignItems: 'center', justifyContent: 'center' },
-
-  /* Calendar Card */
-  calendarCard: { borderRadius: 24, borderWidth: 1, padding: 16, marginBottom: 16 },
-  weekHeaderRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 },
-  weekDayText: { fontSize: 12, fontWeight: '700', textAlign: 'center' },
-  dotsGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between', rowGap: 10 },
-  dotCell: { shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.05, shadowRadius: 2, elevation: 1 },
-  dayRecapRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-around', marginTop: 16, paddingTop: 14, borderTopWidth: 1 },
-  recapItem: { alignItems: 'center' },
-  recapLabel: { fontSize: 11, fontWeight: '600', textTransform: 'uppercase', marginBottom: 2 },
-  recapValue: { fontSize: 16, fontWeight: '800' },
-  recapDivider: { width: 1, height: 24, backgroundColor: 'rgba(150, 150, 150, 0.2)' },
-
-  /* Range Selector */
-  filterSectionRow: {
-    marginBottom: 14,
-    zIndex: 20,
+  scrollContent: {
+    paddingTop: 8,
   },
-  dropdownAnchorContainer: {
-    alignSelf: 'flex-start',
-    position: 'relative',
+  responsiveWrapper: {
+    width: '100%',
+    maxWidth: 480,
+    alignSelf: 'center',
+    gap: 16,
   },
-  rangeDropdownPill: {
+
+  /* Calendar Hero */
+  heroSection: {
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  heroTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 14,
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 3,
-    elevation: 1,
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
   },
-  rangeDropdownText: {
-    fontSize: 13,
-    fontWeight: '700',
+  heroDayNumber: {
+    fontSize: 96,
+    fontWeight: '900',
+    lineHeight: 96,
+    letterSpacing: -3,
   },
-  dropdownMenu: {
-    position: 'absolute',
-    top: 42,
-    left: 0,
-    minWidth: 140,
-    borderRadius: 14,
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 4,
-    zIndex: 30,
-    overflow: 'hidden',
+  heroDayWeekday: {
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 1.5,
+    marginTop: 10,
   },
-  dropdownMenuItem: {
+  monthSwitcherRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    marginTop: 4,
   },
-  dropdownMenuItemText: {
-    fontSize: 13,
-    fontWeight: '600',
+  monthLabel: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: 0.5,
   },
-
-  /* Metric Cards */
-  statsCardGrid: {
+  arrowsGroup: {
     flexDirection: 'row',
     gap: 10,
   },
-  statBoxCard: {
-    flex: 1,
-    borderRadius: 18,
-    padding: 14,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  statBoxIconCircle: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+  arrowButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 8,
-  },
-  statBoxBigValue: {
-    fontSize: 20,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-    marginBottom: 2,
-  },
-  statBoxLabel: {
-    fontSize: 11,
-    fontWeight: '600',
-    marginBottom: 6,
-  },
-  trendText: {
-    fontSize: 10,
-    fontWeight: '700',
-    color: '#EC673C',
   },
 
-  /* Chart Card */
-  chartCard: {
-    borderRadius: 20,
+  /* Calendar Card */
+  calendarCard: {
+    borderRadius: 24,
     borderWidth: 1,
-    padding: 16,
-    marginTop: 18,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
+    paddingVertical: 18,
+    paddingHorizontal: 12,
   },
-  chartCardHeader: {
+  weekHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 14,
+    marginBottom: 12,
   },
-  chartTitle: {
-    fontSize: 15,
+  cellColumn: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  weekDayText: {
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  weeksContainer: {
+    gap: 10,
+  },
+  weekRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  dotCell: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dotCellText: {
+    fontSize: 14,
+  },
+  dayRecapRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-around',
+    marginTop: 18,
+    paddingTop: 16,
+    borderTopWidth: 1,
+  },
+  recapItem: {
+    alignItems: 'center',
+  },
+  recapLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    marginBottom: 4,
+    letterSpacing: 0.5,
+  },
+  recapValue: {
+    fontSize: 17,
     fontWeight: '800',
   },
-  chartFilterPill: {
-    paddingHorizontal: 9,
+  recapDivider: {
+    width: 1,
+    height: 28,
+  },
+
+  /* Growth Verdict Card */
+  heroCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 20,
+  },
+  heroBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  statusBadge: {
+    paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 10,
-    borderWidth: 1,
   },
-  chartFilterText: {
+  statusBadgeText: {
+    color: '#0A0F0B',
     fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  totalRoundsText: {
+    fontSize: 13,
     fontWeight: '600',
   },
-  chartMainContent: {
+  heroHeadline: {
+    fontSize: 22,
+    fontWeight: '800',
+    lineHeight: 28,
+    letterSpacing: -0.5,
+    marginBottom: 8,
+  },
+  heroSubtext: {
+    fontSize: 14,
+    lineHeight: 20,
+    marginBottom: 16,
+  },
+  growthPillsRow: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-  },
-  yAxisLabels: {
-    height: 96,
+    alignItems: 'center',
     justifyContent: 'space-between',
-    paddingRight: 8,
-    alignItems: 'flex-end',
+    borderTopWidth: 1,
+    paddingTop: 14,
   },
-  axisText: {
-    fontSize: 9,
-    fontWeight: '600',
-  },
-  chartPlot: {
+  growthPillItem: {
     flex: 1,
-    overflow: 'hidden',
-  },
-  xAxisLabels: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 2,
-    marginTop: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
   },
-  xAxisText: {
-    fontSize: 9,
-    fontWeight: '600',
+  growthPillText: {
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  pillDivider: {
+    width: 1,
+    height: 22,
   },
 
-  /* Summary Card */
-  summaryCard: {
-    borderRadius: 20,
+  /* Directives Row */
+  directivesRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  directiveCard: {
+    flex: 1,
+    borderRadius: 22,
     borderWidth: 1,
     padding: 16,
-    marginBottom: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
   },
-  summaryTitle: {
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 14,
-  },
-  summaryStatsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  summaryColumn: {
-    flex: 1,
-    alignItems: 'center',
-    paddingHorizontal: 2,
-  },
-  summaryIconCircle: {
+  directiveIconCircle: {
     width: 34,
     height: 34,
     borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 6,
+    marginBottom: 10,
   },
-  summaryValue: {
+  directiveLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 4,
+  },
+  directiveValue: {
     fontSize: 17,
     fontWeight: '800',
     marginBottom: 2,
   },
-  summaryLabel: {
-    fontSize: 9,
+  directiveDetail: {
+    fontSize: 12.5,
     fontWeight: '600',
-    textAlign: 'center',
   },
-  summaryDivider: {
+
+  /* Section Cards */
+  sectionCard: {
+    borderRadius: 24,
+    borderWidth: 1,
+    padding: 18,
+  },
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    marginBottom: 14,
+  },
+  sectionTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  sectionSubtitle: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+
+  /* Skills */
+  skillsList: {
+    gap: 14,
+  },
+  skillRow: {
+    gap: 7,
+  },
+  skillHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  skillName: {
+    fontSize: 14.5,
+    fontWeight: '700',
+  },
+  skillStat: {
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  skillTrack: {
+    width: '100%',
+    height: 7,
+    borderRadius: 3.5,
+    overflow: 'hidden',
+  },
+  skillFill: {
+    height: '100%',
+    borderRadius: 3.5,
+  },
+
+  /* Personal Records */
+  recordsGrid: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  recordItem: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 6,
+  },
+  recordValue: {
+    fontSize: 19,
+    fontWeight: '800',
+  },
+  recordLabel: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  recordDivider: {
     width: 1,
-    height: 38,
+    height: 34,
   },
 });

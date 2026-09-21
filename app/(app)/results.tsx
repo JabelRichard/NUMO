@@ -5,657 +5,695 @@ import {
   StyleSheet,
   StatusBar,
   TouchableOpacity,
-  ActivityIndicator,
+  Platform,
+  Modal,
   ScrollView,
-  Share,
   useWindowDimensions,
-  LayoutChangeEvent,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withTiming,
+  withSpring,
+  withRepeat,
+  withSequence,
   Easing,
+  runOnJS,
 } from 'react-native-reanimated';
-import Svg, {
-  Circle,
-  Path,
-  Defs,
-  LinearGradient as SvgLinearGradient,
-  Stop,
-} from 'react-native-svg';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import { GlassCard } from '../../src/components/GlassCard';
-import { PrimaryButton } from '../../src/components/PrimaryButton';
+import * as Haptics from 'expo-haptics';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { QuestionAttemptResult, OperationType } from '../../src/lib/math/types';
-import { saveWorkoutSession, setPendingDemoSession } from '../../src/services/workoutService';
+import {
+  saveWorkoutSession,
+  setPendingDemoSession,
+  getRecentWorkouts,
+} from '../../src/services/workoutService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+
+const PALETTE = {
+  primary: '#BCE3AA',
+  accentLilac: '#F2CAEC',
+  backgroundLight: '#F1ECE9',
+  dark: '#0A0F0B',
+  white: '#FFFFFF',
+  dangerText: '#EB5757',
+};
+
+const STORAGE_LAST_SUMMARY_KEY = 'numo_last_workout_summary_v1';
+
+interface PriorWorkoutSummary {
+  accuracy: number;
+  avgTimeSecs: number;
+  correctCount: number;
+  totalQuestions: number;
+  completedAt: string;
+}
+
+function AnimatedRollingNumber({
+  target,
+  duration = 750,
+  style,
+  suffix = '',
+  prefix = '',
+}: {
+  target: number;
+  duration?: number;
+  style?: any;
+  suffix?: string;
+  prefix?: string;
+}) {
+  const [displayVal, setDisplayVal] = useState(0);
+
+  useEffect(() => {
+    if (isNaN(target) || target <= 0) {
+      setDisplayVal(0);
+      return;
+    }
+    let start = 0;
+    const steps = 20;
+    const intervalTime = Math.max(16, Math.floor(duration / steps));
+    const increment = target / steps;
+
+    const timer = setInterval(() => {
+      start += increment;
+      if (start >= target) {
+        setDisplayVal(target);
+        clearInterval(timer);
+        if (Platform.OS !== 'web') {
+          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+        }
+      } else {
+        setDisplayVal(Math.floor(start));
+      }
+    }, intervalTime);
+
+    return () => clearInterval(timer);
+  }, [target, duration]);
+
+  return (
+    <Text style={style}>
+      {prefix}
+      {displayVal}
+      {suffix}
+    </Text>
+  );
+}
+
+function IconStage({
+  icon,
+  iconColor,
+  haloColor,
+  discColor,
+  size = 54,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  iconColor: string;
+  haloColor: string;
+  discColor: string;
+  size?: number;
+}) {
+  const floatAnim = useSharedValue(0);
+  const scaleAnim = useSharedValue(0.7);
+
+  useEffect(() => {
+    scaleAnim.value = withSpring(1, { damping: 11, stiffness: 120 });
+    floatAnim.value = withRepeat(
+      withSequence(
+        withTiming(-6, { duration: 1800, easing: Easing.inOut(Easing.ease) }),
+        withTiming(0, { duration: 1800, easing: Easing.inOut(Easing.ease) })
+      ),
+      -1,
+      true
+    );
+  }, [floatAnim, scaleAnim]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: floatAnim.value }, { scale: scaleAnim.value }],
+  }));
+
+  return (
+    <View style={styles.stageOuterWrap}>
+      <View style={[styles.haloGlow, { backgroundColor: haloColor }]} />
+      <Animated.View style={[styles.floatingBadge, { backgroundColor: discColor }, animatedStyle]}>
+        <Ionicons name={icon} size={size} color={iconColor} />
+      </Animated.View>
+      <View style={styles.pedestalShadow} />
+    </View>
+  );
+}
 
 export default function ResultsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const { theme } = useTheme();
+  const { session } = useAuth();
 
-  const isNarrow = width < 360;
-  const isCompactHeight = height < 700;
+  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
 
-  const { mode, difficulty, results, isDemo } = useLocalSearchParams<{
+  const { mode, difficulty, results, isDemo, sessionKey } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
     results?: string;
     isDemo?: string;
+    sessionKey?: string;
   }>();
 
-  const { session } = useAuth();
   const isDemoWorkout = isDemo === 'true' || (!session && isDemo !== 'false');
 
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [chartContainerWidth, setChartContainerWidth] = useState(width - 80);
+  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
+  const [priorSummary, setPriorSummary] = useState<PriorWorkoutSummary | null>(null);
+  const [showMistakesModal, setShowMistakesModal] = useState(false);
+
+  const stepOpacity = useSharedValue(1);
+  const stepTranslateX = useSharedValue(0);
   const hasSavedRef = useRef(false);
 
-  // Entrance animation
-  const opacity = useSharedValue(0);
-  const translateY = useSharedValue(18);
-
+  // RESET ROUTINE: Ensures every session starts fresh at Step 1
   useEffect(() => {
-    opacity.value = withTiming(1, {
-      duration: 500,
-      easing: Easing.out(Easing.quad),
-    });
-    translateY.value = withTiming(0, {
-      duration: 500,
-      easing: Easing.out(Easing.quad),
-    });
-  }, [opacity, translateY]);
+    setCurrentStep(1);
+    hasSavedRef.current = false;
+    stepOpacity.value = 1;
+    stepTranslateX.value = 0;
+  }, [sessionKey, results, stepOpacity, stepTranslateX]);
 
-  const animatedStyle = useAnimatedStyle(() => ({
-    opacity: opacity.value,
-    transform: [{ translateY: translateY.value }],
-  }));
-
-  // Parse results
+  // Parse Attempts with normalized timeTakenMs
   const attempts: QuestionAttemptResult[] = useMemo(() => {
     if (!results) return [];
     try {
-      return JSON.parse(results);
-    } catch (err) {
-      console.error('Failed to parse workout results payload', err);
+      const decoded = results.startsWith('%') ? decodeURIComponent(results) : results;
+      const parsed = JSON.parse(decoded);
+      if (!Array.isArray(parsed)) return [];
+
+      return parsed.map((item: any) => ({
+        ...item,
+        timeTakenMs: item.timeTakenMs ?? item.timeSpentMs ?? 1800,
+      }));
+    } catch {
       return [];
     }
   }, [results]);
 
-  // Session persistence
+  // Current Metrics
+  const totalQuestions = attempts.length;
+  const correctAttempts = attempts.filter((a) => a.isCorrect);
+  const missedAttempts = attempts.filter((a) => !a.isCorrect);
+  const correctCount = correctAttempts.length;
+  const accuracy = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
+  const totalTimeSpentMs = attempts.reduce((acc, item) => acc + (item.timeTakenMs || 0), 0);
+  const avgPaceNum = totalQuestions > 0 && totalTimeSpentMs > 0
+    ? parseFloat((totalTimeSpentMs / totalQuestions / 1000).toFixed(1))
+    : 1.8;
+
+  // Coaching Feedback
+  const performanceVerdict = useMemo(() => {
+    if (accuracy >= 90 && avgPaceNum <= 2.2) {
+      return {
+        title: 'Fast & accurate',
+        desc: 'Sharp instinct and quick retrieval under pressure.',
+      };
+    }
+    if (accuracy >= 80 && avgPaceNum > 2.2) {
+      return {
+        title: 'Accurate, steady pace',
+        desc: 'High precision round. Speed will build naturally with reps.',
+      };
+    }
+    if (accuracy < 75 && avgPaceNum <= 1.9) {
+      return {
+        title: 'Fast, but watch accuracy',
+        desc: 'Quick answers, but take half a second to verify mental carries.',
+      };
+    }
+    return {
+      title: 'Keep building consistency',
+      desc: 'Solid session completed. Daily consistency builds mental fluency.',
+    };
+  }, [accuracy, avgPaceNum]);
+
+  // Recommendation logic
+  const recommendation = useMemo(() => {
+    const opStats: Record<string, { total: number; incorrect: number; totalTime: number }> = {};
+
+    attempts.forEach((a) => {
+      const op = a.question?.operation || mode || 'mixed';
+      if (!opStats[op]) opStats[op] = { total: 0, incorrect: 0, totalTime: 0 };
+      opStats[op].total += 1;
+      opStats[op].totalTime += (a.timeTakenMs || 1800);
+      if (!a.isCorrect) opStats[op].incorrect += 1;
+    });
+
+    let worstOp = (mode as OperationType) || 'mixed';
+    let highestFriction = -1;
+
+    Object.entries(opStats).forEach(([op, stats]) => {
+      const errorWeight = (stats.incorrect / stats.total) * 12;
+      const timeWeight = stats.totalTime / stats.total / 1000;
+      const frictionScore = errorWeight + timeWeight;
+
+      if (frictionScore > highestFriction) {
+        highestFriction = frictionScore;
+        worstOp = op as OperationType;
+      }
+    });
+
+    const displayOp = worstOp.charAt(0).toUpperCase() + worstOp.slice(1);
+
+    if (missedAttempts.length > 0) {
+      return {
+        targetMode: worstOp,
+        badge: `FOCUS: ${displayOp.toUpperCase()}`,
+        title: `Practice ${displayOp} next`,
+        desc: `Solid workout, but had slight hesitation on ${displayOp}. 10 targeted questions will smooth it out.`,
+      };
+    }
+
+    return {
+      targetMode: worstOp,
+      badge: 'CHALLENGE LEVEL UP',
+      title: `Keep pace on ${displayOp}`,
+      desc: 'Flawless execution. Maintain this speed on your next round.',
+    };
+  }, [attempts, mode, missedAttempts.length]);
+
+  // Single Save Routine + Baseline Loading
   useEffect(() => {
     if (attempts.length === 0 || hasSavedRef.current) return;
     hasSavedRef.current = true;
 
-    const activeMode = (mode as OperationType) || 'mixed';
-    const activeDiff = difficulty || 'easy';
+    async function persistAndLoadComparison() {
+      // 1. Fetch prior summary for Beat 2 comparison
+      try {
+        const cachedPrior = await AsyncStorage.getItem(STORAGE_LAST_SUMMARY_KEY);
+        if (cachedPrior) {
+          setPriorSummary(JSON.parse(cachedPrior));
+        } else if (!isDemoWorkout) {
+          const dbRecents = await getRecentWorkouts();
+          if (dbRecents && dbRecents.length > 0) {
+            const last = dbRecents[0];
+            setPriorSummary({
+              accuracy: Math.round(last.accuracy),
+              avgTimeSecs: parseFloat(((last.average_time_per_question || 2000) / 1000).toFixed(1)),
+              correctCount: last.correct_answers,
+              totalQuestions: last.total_questions,
+              completedAt: last.completed_at,
+            });
+          }
+        }
+      } catch (e) {
+        console.warn('Could not load prior summary:', e);
+      }
 
-    async function handlePersistence() {
+      // 2. Persist this workout summary locally for next time
+      const currentSummary: PriorWorkoutSummary = {
+        accuracy,
+        avgTimeSecs: avgPaceNum,
+        correctCount,
+        totalQuestions,
+        completedAt: new Date().toISOString(),
+      };
+      await AsyncStorage.setItem(STORAGE_LAST_SUMMARY_KEY, JSON.stringify(currentSummary));
+
+      // 3. Save to Supabase exactly once
+      const activeMode = (mode as OperationType) || 'mixed';
+      const activeDiff = difficulty || 'easy';
+
       if (isDemoWorkout) {
         await setPendingDemoSession(attempts, activeMode, activeDiff);
       } else {
-        setSaving(true);
-        const { error } = await saveWorkoutSession(attempts, activeMode, activeDiff);
-        setSaving(false);
-        if (error) {
-          setSaveError('Failed to save session online. Results stored locally.');
-        }
+        await saveWorkoutSession(attempts, activeMode, activeDiff, session?.user?.id);
       }
     }
 
-    handlePersistence();
-  }, [attempts, mode, difficulty, isDemoWorkout]);
+    persistAndLoadComparison();
+  }, [attempts, mode, difficulty, isDemoWorkout, accuracy, avgPaceNum, correctCount, totalQuestions, session?.user?.id]);
 
-  // Stats calculation
-  const totalQuestions = attempts.length;
-  const correctCount = attempts.filter((a) => a.isCorrect).length;
-  const incorrectCount = totalQuestions - correctCount;
-  const accuracy = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-  const totalXpEarned = correctCount * 10 + (accuracy >= 80 ? 25 : 0);
+  // Comparison Deltas
+  const comparisonData = useMemo(() => {
+    if (!priorSummary) return null;
 
-  const totalTimeSpentMs = attempts.reduce((acc, item) => acc + item.timeTakenMs, 0);
-  const averageTimePerQuestionMs = totalQuestions > 0 ? totalTimeSpentMs / totalQuestions : 0;
+    const accDiff = accuracy - priorSummary.accuracy;
+    const timeDiff = parseFloat((avgPaceNum - priorSummary.avgTimeSecs).toFixed(1));
+    const scoreDiff = correctCount - priorSummary.correctCount;
 
-  const formatTimer = (ms: number): string => {
-    const totalSecs = Math.max(0, Math.round(ms / 1000));
-    const mins = Math.floor(totalSecs / 60);
-    const secs = totalSecs % 60;
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const formatAvgTime = (ms: number): string => {
-    return `${(ms / 1000).toFixed(1)}s`;
-  };
-
-  const getAccuracyFeedback = (pct: number) => {
-    if (pct >= 85) {
-      return {
-        badgeText: '★ Outstanding!',
-        subtitle: 'Great job! Keep training your mind 💪',
-        color: '#EC673C',
-        badgeBg: 'rgba(236, 103, 60, 0.16)',
-      };
-    }
-    if (pct >= 70) {
-      return {
-        badgeText: '★ Great Work!',
-        subtitle: 'Consistent work pays off, keep pushing! 🔥',
-        color: '#AFA2FE',
-        badgeBg: 'rgba(175, 162, 254, 0.2)',
-      };
-    }
-    if (pct >= 50) {
-      return {
-        badgeText: '★ Good Start!',
-        subtitle: 'You are making steady progress every run 🚀',
-        color: '#EC673C',
-        badgeBg: 'rgba(236, 103, 60, 0.14)',
-      };
-    }
     return {
-      badgeText: '★ Keep Going!',
-      subtitle: 'Practice builds speed and precision! 🧠',
-      color: '#EC673C',
-      badgeBg: 'rgba(236, 103, 60, 0.12)',
+      accuracyDelta: `${accDiff >= 0 ? '+' : ''}${accDiff}%`,
+      isAccPositive: accDiff >= 0,
+      timeDelta:
+        timeDiff === 0
+          ? 'Same pace'
+          : timeDiff < 0
+          ? `${Math.abs(timeDiff)}s faster`
+          : `${timeDiff}s slower`,
+      isTimePositive: timeDiff <= 0,
+      scoreDelta: `${scoreDiff >= 0 ? '+' : ''}${scoreDiff}`,
+      isScorePositive: scoreDiff >= 0,
     };
+  }, [priorSummary, accuracy, avgPaceNum, correctCount]);
+
+  const advanceStep = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    stepOpacity.value = withTiming(0, { duration: 150 }, () => {
+      runOnJS(handleNextStep)();
+    });
   };
 
-  const feedback = getAccuracyFeedback(accuracy);
-
-  const getModeLabel = (): string => {
-    if (!mode) return 'Mixed ( + − × ÷ )';
-    switch (mode.toLowerCase()) {
-      case 'addition':
-        return 'Addition ( + )';
-      case 'subtraction':
-        return 'Subtraction ( − )';
-      case 'multiplication':
-        return 'Multiplication ( × )';
-      case 'division':
-        return 'Division ( ÷ )';
-      case 'adaptive_mix':
-      case 'mixed':
-      default:
-        return 'Mixed ( + − × ÷ )';
+  const handleNextStep = () => {
+    if (currentStep < 3) {
+      setCurrentStep((prev) => (prev + 1) as 2 | 3);
+      stepTranslateX.value = 24;
+      stepOpacity.value = withTiming(1, { duration: 220 });
+      stepTranslateX.value = withSpring(0, { damping: 14 });
     }
   };
 
-  const formattedDate = useMemo(() => {
-    const now = new Date();
-    const datePart = now.toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-    });
-    const timePart = now.toLocaleTimeString('en-US', {
-      hour: 'numeric',
-      minute: '2-digit',
-      hour12: true,
-    });
-    return `${datePart} • ${timePart}`;
-  }, []);
+  const handleStartNextWorkout = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+    const targetPayload = {
+      mode: recommendation.targetMode || 'mixed',
+      difficulty: difficulty || 'easy',
+      reset: 'true',
+      sessionKey: Date.now().toString(),
+    };
 
-  const handleShare = async () => {
     try {
-      await Share.share({
-        message: `NUMO Workout Finished! 🎯 ${accuracy}% Accuracy, ${correctCount}/${totalQuestions} correct in ${formatTimer(
-          totalTimeSpentMs
-        )}!`,
+      router.replace({
+        pathname: '/(app)/workout' as any,
+        params: targetPayload,
       });
     } catch {
-      // Ignored
+      router.replace({
+        pathname: '/workout' as any,
+        params: targetPayload,
+      });
     }
   };
 
-  /**
-   * RESET & START NEW WORKOUT FIX:
-   * Strips out previous results and sends explicit restart parameters
-   * with a fresh timestamp so the workout screen starts from question #1.
-   */
-  const handleStartNewWorkout = () => {
-    router.replace({
-      pathname: '/(app)/workout' as any,
-      params: {
-        mode: mode || 'mixed',
-        difficulty: difficulty || 'easy',
-        reset: 'true',
-        sessionKey: Date.now().toString(),
-        isDemo: isDemoWorkout ? 'true' : 'false',
-        results: undefined, // Clear any previous attempt cache
-      },
-    });
+  const handleGoHome = () => {
+    if (Platform.OS !== 'web') {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
+    router.replace('/(app)');
   };
 
-  // Trend buckets calculation
-  const trendBuckets = useMemo(() => {
-    if (totalQuestions === 0) {
-      return [
-        { label: '1-5', pct: 0 },
-        { label: '6-10', pct: 0 },
-        { label: '11-15', pct: 0 },
-        { label: '16-20', pct: 0 },
-      ];
-    }
-    const bucketSize = Math.max(1, Math.ceil(totalQuestions / 4));
-    const resultBuckets = [];
-    for (let i = 0; i < 4; i++) {
-      const start = i * bucketSize;
-      const end = Math.min(start + bucketSize, totalQuestions);
-      const slice = attempts.slice(start, end);
-      const correctInSlice = slice.filter((item) => item.isCorrect).length;
-      const pct = slice.length > 0 ? (correctInSlice / slice.length) * 100 : accuracy;
-      const label = `${start + 1}-${end > start ? end : start + 1}`;
-      resultBuckets.push({ label, pct });
-    }
-    return resultBuckets;
-  }, [attempts, totalQuestions, accuracy]);
+  const stepAnimatedStyle = useAnimatedStyle(() => ({
+    opacity: stepOpacity.value,
+    transform: [{ translateX: stepTranslateX.value }],
+  }));
 
-  // Responsive ring
-  const circleSize = isNarrow ? 96 : 108;
-  const strokeWidth = isNarrow ? 8 : 9;
-  const radius = (circleSize - strokeWidth) / 2;
-  const circumference = 2 * Math.PI * radius;
-  const progressOffset = circumference - (accuracy / 100) * circumference;
-
-  // Chart responsiveness & bounds
-  const onChartLayout = (e: LayoutChangeEvent) => {
-    const layoutWidth = e.nativeEvent.layout.width;
-    if (layoutWidth > 0 && Math.abs(layoutWidth - chartContainerWidth) > 2) {
-      setChartContainerWidth(layoutWidth);
-    }
-  };
-
-  const chartHeight = isCompactHeight ? 75 : 85;
-  const safeTopPadding = 10;
-  const safeBottomPadding = 10;
-  const usableChartHeight = chartHeight - safeTopPadding - safeBottomPadding;
-
-  const chartPoints = trendBuckets.map((bucket, index) => {
-    const step = chartContainerWidth / 4;
-    const x = Math.max(10, Math.min(chartContainerWidth - 10, step * index + step / 2));
-    const normalizedPct = Math.max(0, Math.min(100, bucket.pct));
-    const y = chartHeight - safeBottomPadding - (normalizedPct / 100) * usableChartHeight;
-    return { x, y };
-  });
-
-  const linePath =
-    chartPoints.length > 0 ? `M ${chartPoints.map((p) => `${p.x},${p.y}`).join(' L ')}` : '';
-  const areaPath =
-    chartPoints.length > 0
-      ? `${linePath} L ${chartPoints[chartPoints.length - 1].x},${chartHeight - 2} L ${chartPoints[0].x},${chartHeight - 2} Z`
-      : '';
+  const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
+  const textColor = isDark ? PALETTE.backgroundLight : PALETTE.dark;
+  const subtextColor = isDark ? 'rgba(241, 236, 233, 0.65)' : 'rgba(10, 15, 11, 0.55)';
+  const cardBg = isDark ? '#141C15' : PALETTE.white;
+  const borderSubtle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
 
   return (
-    <SafeAreaView style={[styles.safeArea, { backgroundColor: theme.background }]} edges={['top', 'bottom']}>
-      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
 
-      {/* Header Top Bar */}
-      <View style={[styles.topBar, { paddingHorizontal: isNarrow ? 14 : 20 }]}>
-        <TouchableOpacity
-          style={[
-            styles.navIconButton,
-            {
-              backgroundColor: theme.card,
-              borderColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-            },
-          ]}
-          onPress={() => router.replace('/(app)')}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="arrow-back" size={isNarrow ? 18 : 20} color={theme.text} />
-        </TouchableOpacity>
+      {/* TOP TIMELINE NAVIGATION */}
+      <View style={styles.topTimelineWrapper}>
+        <View style={styles.topTimelineRow}>
+          <View style={styles.timelineSegmentsRow}>
+            {[1, 2, 3].map((step) => {
+              const isFilled = step <= currentStep;
+              return (
+                <View
+                  key={step}
+                  style={[
+                    styles.timelineSegment,
+                    {
+                      backgroundColor: isFilled
+                        ? PALETTE.primary
+                        : isDark
+                        ? 'rgba(255, 255, 255, 0.12)'
+                        : 'rgba(10, 15, 11, 0.1)',
+                    },
+                  ]}
+                />
+              );
+            })}
+          </View>
 
-        <View style={styles.titleCenter}>
-          <Text style={[styles.mainScreenTitle, { color: theme.text, fontSize: isNarrow ? 15 : 17 }]}>
-            Workout Results
-          </Text>
-          <Text style={[styles.mainScreenSubtitle, { color: theme.subtext }]} numberOfLines={1}>
-            {feedback.subtitle}
-          </Text>
+          <View style={styles.timelineActionWrap}>
+            {currentStep === 1 ? (
+              <TouchableOpacity
+                style={[styles.closeIconBtn, { backgroundColor: cardBg }]}
+                onPress={handleGoHome}
+                activeOpacity={0.7}
+                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              >
+                <Ionicons name="close" size={18} color={textColor} />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.closeIconPlaceholder} />
+            )}
+          </View>
         </View>
-
-        <TouchableOpacity
-          style={[
-            styles.navIconButton,
-            {
-              backgroundColor: theme.card,
-              borderColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-            },
-          ]}
-          onPress={handleShare}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="share-outline" size={isNarrow ? 18 : 19} color={theme.text} />
-        </TouchableOpacity>
       </View>
 
-      <ScrollView
-        contentContainerStyle={[
-          styles.scrollContent,
-          {
-            paddingHorizontal: isNarrow ? 14 : 20,
-            paddingBottom: Math.max(insets.bottom + 16, 24),
-          },
-        ]}
-        showsVerticalScrollIndicator={false}
-        bounces={false}
-      >
-        <Animated.View style={[styles.container, animatedStyle]}>
-          {/* Sync Status Toast */}
-          {!isDemoWorkout && saving && (
-            <View style={styles.statusToast}>
-              <ActivityIndicator size="small" color="#EC673C" />
-              <Text style={[styles.statusToastText, { color: theme.muted }]}>Saving workout results...</Text>
+      {/* BODY CONTENT CONTAINER */}
+      <Animated.View style={[styles.contentWrapper, stepAnimatedStyle]}>
+        {/* BEAT 1: YOUR RESULT */}
+        {currentStep === 1 && (
+          <View style={styles.stepContainer}>
+            <IconStage
+              icon="sparkles"
+              iconColor={PALETTE.dark}
+              discColor={PALETTE.accentLilac}
+              haloColor={isDark ? 'rgba(242, 202, 236, 0.12)' : 'rgba(242, 202, 236, 0.35)'}
+              size={52}
+            />
+
+            <Text style={[styles.stepHeadline, { color: textColor }]}>Workout complete</Text>
+
+            <View style={styles.scoreRow}>
+              <AnimatedRollingNumber target={correctCount} style={[styles.massiveScoreText, { color: textColor }]} />
+              <Text style={[styles.massiveScoreDivider, { color: subtextColor }]}>/{totalQuestions}</Text>
             </View>
-          )}
-          {saveError && <Text style={styles.errorText}>{saveError}</Text>}
 
-          {/* Hero Accuracy Card */}
-          <GlassCard style={[styles.heroCard, isNarrow && styles.heroCardNarrow]} intensity={50}>
-            <View style={[styles.heroInnerRow, isNarrow && styles.heroInnerRowNarrow]}>
-              {/* Left Circular Ring */}
-              <View style={[styles.circleWrapper, { width: circleSize, height: circleSize }]}>
-                <Svg width={circleSize} height={circleSize}>
-                  <Circle
-                    cx={circleSize / 2}
-                    cy={circleSize / 2}
-                    r={radius}
-                    stroke={theme.isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.06)'}
-                    strokeWidth={strokeWidth}
-                    fill="none"
-                  />
-                  <Circle
-                    cx={circleSize / 2}
-                    cy={circleSize / 2}
-                    r={radius}
-                    stroke="#EC673C"
-                    strokeWidth={strokeWidth}
-                    strokeDasharray={circumference}
-                    strokeDashoffset={progressOffset}
-                    strokeLinecap="round"
-                    fill="none"
-                    transform={`rotate(-90 ${circleSize / 2} ${circleSize / 2})`}
-                  />
-                </Svg>
-                <View style={styles.circleCenterText}>
-                  <Text style={[styles.circlePercentage, { color: theme.text, fontSize: isNarrow ? 20 : 24 }]}>
-                    {accuracy}%
-                  </Text>
-                  <Text style={[styles.circleLabel, { color: theme.muted }]}>Accuracy</Text>
-                </View>
-              </View>
+            <Text style={[styles.metricSubtitle, { color: textColor }]}>
+              {accuracy}% accuracy · {avgPaceNum}s average
+            </Text>
 
-              {/* Right Hero Info */}
-              <View style={styles.heroInfoColumn}>
-                <View style={[styles.heroBadge, { backgroundColor: feedback.badgeBg }]}>
-                  <Text style={[styles.heroBadgeText, { color: feedback.color }]}>{feedback.badgeText}</Text>
-                </View>
-
-                <Text style={[styles.heroDescriptionText, { color: theme.text }]} numberOfLines={2}>
-                  You completed the workout{'\n'}
-                  <Text style={{ color: theme.subtext }}>Keep it up!</Text>
-                </Text>
-
-                <View style={[styles.heroStatsSubRow, { borderTopColor: theme.divider }]}>
-                  <View style={styles.statMiniGroup}>
-                    <View style={styles.statMiniHeader}>
-                      <Ionicons name="time-outline" size={13} color="#EC673C" />
-                      <Text style={[styles.statMiniLabel, { color: theme.muted }]}>Total Time</Text>
-                    </View>
-                    <Text style={[styles.statMiniValue, { color: theme.text }]}>
-                      {formatTimer(totalTimeSpentMs)}
-                    </Text>
-                  </View>
-
-                  <View style={[styles.miniDivider, { backgroundColor: theme.divider }]} />
-
-                  <View style={styles.statMiniGroup}>
-                    <View style={styles.statMiniHeader}>
-                      <Ionicons name="flash" size={13} color="#F6FE91" />
-                      <Text style={[styles.statMiniLabel, { color: theme.muted }]}>Total XP</Text>
-                    </View>
-                    <Text style={[styles.statMiniValue, { color: theme.text }]}>+{totalXpEarned}</Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-          </GlassCard>
-
-          {/* Section: Overview */}
-          <Text style={[styles.sectionHeading, { color: theme.text }]}>Overview</Text>
-          <View style={[styles.overviewGrid, isNarrow && { gap: 6 }]}>
-            <View style={[styles.overviewItemCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.overviewIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                <Ionicons name="grid-outline" size={15} color="#AFA2FE" />
-              </View>
-              <Text style={[styles.overviewBigValue, { color: '#AFA2FE', fontSize: isNarrow ? 16 : 18 }]}>
-                {totalQuestions}
+            <View style={[styles.interpretationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <Text style={[styles.interpretationTitle, { color: textColor }]}>
+                {performanceVerdict.title}
               </Text>
-              <Text style={[styles.overviewSmallLabel, { color: theme.muted }]} numberOfLines={1}>
-                {isNarrow ? 'Total' : 'Total Questions'}
+              <Text style={[styles.interpretationDesc, { color: subtextColor }]}>
+                {performanceVerdict.desc}
               </Text>
             </View>
 
-            <View style={[styles.overviewItemCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.overviewIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.16)' }]}>
-                <Ionicons name="locate-outline" size={15} color="#EC673C" />
-              </View>
-              <Text style={[styles.overviewBigValue, { color: '#EC673C', fontSize: isNarrow ? 16 : 18 }]}>
-                {correctCount}
-              </Text>
-              <Text style={[styles.overviewSmallLabel, { color: theme.muted }]} numberOfLines={1}>
-                Correct
-              </Text>
-            </View>
-
-            <View style={[styles.overviewItemCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.overviewIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                <Ionicons name="close" size={15} color="#AFA2FE" />
-              </View>
-              <Text style={[styles.overviewBigValue, { color: '#AFA2FE', fontSize: isNarrow ? 16 : 18 }]}>
-                {incorrectCount}
-              </Text>
-              <Text style={[styles.overviewSmallLabel, { color: theme.muted }]} numberOfLines={1}>
-                Incorrect
-              </Text>
-            </View>
-
-            <View style={[styles.overviewItemCard, { backgroundColor: theme.card }]}>
-              <View style={[styles.overviewIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.16)' }]}>
-                <Ionicons name="timer-outline" size={15} color="#EC673C" />
-              </View>
-              <Text
-                style={[
-                  styles.overviewBigValue,
-                  { color: '#EC673C', fontSize: isNarrow ? 15 : 18 },
-                ]}
-                numberOfLines={1}
+            {missedAttempts.length > 0 ? (
+              <TouchableOpacity
+                style={[styles.mistakeReviewPill, { backgroundColor: isDark ? 'rgba(235, 87, 87, 0.16)' : 'rgba(235, 87, 87, 0.08)' }]}
+                activeOpacity={0.8}
+                onPress={() => setShowMistakesModal(true)}
               >
-                {formatAvgTime(averageTimePerQuestionMs)}
-              </Text>
-              <Text style={[styles.overviewSmallLabel, { color: theme.muted }]} numberOfLines={1}>
-                {isNarrow ? 'Avg/Q' : 'Avg. Time / Q'}
-              </Text>
-            </View>
-          </View>
-
-          {/* Section: Workout Details */}
-          <Text style={[styles.sectionHeading, { color: theme.text }]}>Workout Details</Text>
-          <View style={[styles.listCard, { backgroundColor: theme.card }]}>
-            <View style={styles.listRow}>
-              <View style={styles.listRowLeft}>
-                <View style={[styles.listIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.16)' }]}>
-                  <Ionicons name="calculator-outline" size={15} color="#EC673C" />
-                </View>
-                <Text style={[styles.listRowTitle, { color: theme.text }]}>Mode</Text>
-              </View>
-              <Text style={[styles.listRowValue, { color: theme.subtext }]}>{getModeLabel()}</Text>
-            </View>
-
-            <View style={[styles.rowDivider, { backgroundColor: theme.divider }]} />
-
-            <View style={styles.listRow}>
-              <View style={styles.listRowLeft}>
-                <View style={[styles.listIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                  <Ionicons name="bar-chart-outline" size={15} color="#AFA2FE" />
-                </View>
-                <Text style={[styles.listRowTitle, { color: theme.text }]}>Level</Text>
-              </View>
-              <Text style={[styles.listRowValue, { color: theme.subtext }]}>
-                {(difficulty || 'Easy').charAt(0).toUpperCase() + (difficulty || 'Easy').slice(1)}
-              </Text>
-            </View>
-
-            <View style={[styles.rowDivider, { backgroundColor: theme.divider }]} />
-
-            <View style={styles.listRow}>
-              <View style={styles.listRowLeft}>
-                <View style={[styles.listIconCircle, { backgroundColor: 'rgba(175, 162, 254, 0.18)' }]}>
-                  <Ionicons name="help-circle-outline" size={15} color="#AFA2FE" />
-                </View>
-                <Text style={[styles.listRowTitle, { color: theme.text }]}>Questions</Text>
-              </View>
-              <Text style={[styles.listRowValue, { color: theme.subtext }]}>{totalQuestions}</Text>
-            </View>
-
-            <View style={[styles.rowDivider, { backgroundColor: theme.divider }]} />
-
-            <View style={styles.listRow}>
-              <View style={styles.listRowLeft}>
-                <View style={[styles.listIconCircle, { backgroundColor: 'rgba(236, 103, 60, 0.16)' }]}>
-                  <Ionicons name="calendar-outline" size={15} color="#EC673C" />
-                </View>
-                <Text style={[styles.listRowTitle, { color: theme.text }]}>Date</Text>
-              </View>
-              <Text style={[styles.listRowValue, { color: theme.subtext }]}>{formattedDate}</Text>
-            </View>
-          </View>
-
-          {/* Section: Accuracy Trend */}
-          <Text style={[styles.sectionHeading, { color: theme.text }]}>Accuracy Trend</Text>
-          <View style={[styles.chartCard, { backgroundColor: theme.card }]}>
-            <View style={styles.chartContainer}>
-              {/* Y Axis Labels */}
-              <View style={styles.yAxisLabels}>
-                <Text style={[styles.axisLabelText, { color: theme.muted }]}>100%</Text>
-                <Text style={[styles.axisLabelText, { color: theme.muted }]}>75%</Text>
-                <Text style={[styles.axisLabelText, { color: theme.muted }]}>50%</Text>
-                <Text style={[styles.axisLabelText, { color: theme.muted }]}>25%</Text>
-                <Text style={[styles.axisLabelText, { color: theme.muted }]}>0%</Text>
-              </View>
-
-              {/* Chart Plot Area */}
-              <View style={styles.chartPlotArea} onLayout={onChartLayout}>
-                <View style={[styles.svgWrapper, { height: chartHeight }]}>
-                  <Svg width={chartContainerWidth} height={chartHeight} style={{ overflow: 'hidden' }}>
-                    <Defs>
-                      <SvgLinearGradient id="trendGradient" x1="0" y1="0" x2="0" y2="1">
-                        <Stop offset="0%" stopColor="#EC673C" stopOpacity="0.3" />
-                        <Stop offset="100%" stopColor="#EC673C" stopOpacity="0.0" />
-                      </SvgLinearGradient>
-                    </Defs>
-                    {areaPath ? <Path d={areaPath} fill="url(#trendGradient)" /> : null}
-                    {linePath ? (
-                      <Path d={linePath} stroke="#EC673C" strokeWidth="2.5" fill="none" strokeLinecap="round" />
-                    ) : null}
-                    {chartPoints.map((pt, i) => (
-                      <Circle key={i} cx={pt.x} cy={pt.y} r="3.5" fill="#EC673C" stroke="#FFFFFF" strokeWidth="1.5" />
-                    ))}
-                  </Svg>
-                </View>
-
-                {/* X Axis Labels */}
-                <View style={styles.xAxisLabels}>
-                  {trendBuckets.map((bucket, index) => (
-                    <Text key={index} style={[styles.axisLabelText, { color: theme.muted }]}>
-                      {bucket.label}
-                    </Text>
-                  ))}
-                </View>
-              </View>
-            </View>
-          </View>
-
-          {/* Footer Actions */}
-          <View style={styles.bottomButtonsSection}>
-            {isDemoWorkout ? (
-              <View style={styles.demoActionBox}>
-                <View style={[styles.demoBannerCard, { backgroundColor: theme.card }]}>
-                  <View style={[styles.sparkleIconBox, { backgroundColor: 'rgba(236, 103, 60, 0.14)' }]}>
-                    <Ionicons name="sparkles" size={18} color="#EC673C" />
-                  </View>
-                  <View style={styles.demoBannerTextGroup}>
-                    <Text style={[styles.demoBannerTitle, { color: theme.text }]}>Save Your Progress</Text>
-                    <Text style={[styles.demoBannerSubtitle, { color: theme.subtext }]}>
-                      Save this workout and start tracking your progress.
-                    </Text>
-                  </View>
-                </View>
-
-                <PrimaryButton
-                  title="Create Free Account"
-                  onPress={() => router.push('/(auth)/signup')}
-                  icon={<Ionicons name="person-add" size={18} color="#1C1C1E" />}
-                  style={[styles.fullWidthButton, { backgroundColor: '#F6FE91' }]}
-                  textStyle={styles.actionButtonText}
-                />
-
-                <TouchableOpacity
-                  style={styles.loginLinkButton}
-                  activeOpacity={0.7}
-                  onPress={() => router.push('/(auth)/login')}
-                >
-                  <Text style={[styles.loginLinkText, { color: theme.subtext }]}>
-                    Already have an account? <Text style={[styles.loginBoldText, { color: '#EC673C' }]}>Log In</Text>
-                  </Text>
-                </TouchableOpacity>
-              </View>
+                <Ionicons name="eye-outline" size={15} color={PALETTE.dangerText} />
+                <Text style={styles.mistakeReviewPillText}>
+                  Review {missedAttempts.length} missed {missedAttempts.length === 1 ? 'question' : 'questions'}
+                </Text>
+                <Ionicons name="chevron-forward" size={14} color={PALETTE.dangerText} />
+              </TouchableOpacity>
             ) : (
-              <View style={[styles.authenticatedButtonRow, isNarrow && styles.authenticatedButtonRowNarrow]}>
-                <TouchableOpacity
-                  style={[
-                    styles.backToDashboardButton,
-                    {
-                      backgroundColor: theme.card,
-                      borderColor: theme.isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-                    },
-                    isNarrow && styles.buttonNarrow,
-                  ]}
-                  activeOpacity={0.75}
-                  onPress={() => router.replace('/(app)')}
-                >
-                  <Ionicons name="grid-outline" size={16} color={theme.text} style={{ marginRight: 6 }} />
-                  <Text style={[styles.backToDashboardText, { color: theme.text }]} numberOfLines={1}>
-                    Dashboard
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.startWorkoutButton,
-                    { backgroundColor: '#F6FE91' },
-                    isNarrow && styles.buttonNarrow,
-                  ]}
-                  activeOpacity={0.85}
-                  onPress={handleStartNewWorkout}
-                >
-                  <Text style={styles.startWorkoutText} numberOfLines={1}>
-                    New Workout
-                  </Text>
-                  <Ionicons name="flash" size={15} color="#1C1C1E" style={{ marginLeft: 6 }} />
-                </TouchableOpacity>
+              <View style={[styles.flawlessPill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : 'rgba(188, 227, 170, 0.35)' }]}>
+                <Ionicons name="shield-checkmark" size={15} color={PALETTE.dark} />
+                <Text style={styles.flawlessPillText}>Flawless Round · 100% Accuracy</Text>
               </View>
             )}
           </View>
-        </Animated.View>
-      </ScrollView>
+        )}
+
+        {/* BEAT 2: YOUR PROGRESS */}
+        {currentStep === 2 && (
+          <View style={styles.stepContainer}>
+            <IconStage
+              icon="trending-up"
+              iconColor={PALETTE.dark}
+              discColor={PALETTE.primary}
+              haloColor={isDark ? 'rgba(188, 227, 170, 0.14)' : 'rgba(188, 227, 170, 0.4)'}
+              size={54}
+            />
+
+            <Text style={[styles.stepHeadline, { color: textColor }]}>Your progress</Text>
+            <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
+              {comparisonData ? 'Compared to your last workout' : 'Establishing your personal standard'}
+            </Text>
+
+            {comparisonData ? (
+              <View style={[styles.comparisonCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                <View style={styles.tableRowHeader}>
+                  <Text style={[styles.tableColHeader, { color: subtextColor }]}>Metric</Text>
+                  <Text style={[styles.tableColHeader, { color: subtextColor, textAlign: 'center' }]}>Today</Text>
+                  <Text style={[styles.tableColHeader, { color: subtextColor, textAlign: 'right' }]}>Change</Text>
+                </View>
+
+                <View style={[styles.tableDivider, { backgroundColor: borderSubtle }]} />
+
+                <View style={styles.tableRow}>
+                  <Text style={[styles.tableLabel, { color: textColor }]}>Accuracy</Text>
+                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{accuracy}%</Text>
+                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isAccPositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
+                    <Text style={[styles.deltaText, { color: comparisonData.isAccPositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
+                      {comparisonData.accuracyDelta}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.tableRow}>
+                  <Text style={[styles.tableLabel, { color: textColor }]}>Avg. pace</Text>
+                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{avgPaceNum}s</Text>
+                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isTimePositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
+                    <Text style={[styles.deltaText, { color: comparisonData.isTimePositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
+                      {comparisonData.timeDelta}
+                    </Text>
+                  </View>
+                </View>
+
+                <View style={styles.tableRow}>
+                  <Text style={[styles.tableLabel, { color: textColor }]}>Correct</Text>
+                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{correctCount}/{totalQuestions}</Text>
+                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isScorePositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
+                    <Text style={[styles.deltaText, { color: comparisonData.isScorePositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
+                      {comparisonData.scoreDelta}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            ) : (
+              <View style={[styles.baselineCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                <View style={[styles.baselineIconWrap, { backgroundColor: isDark ? 'rgba(188,227,170,0.15)' : PALETTE.primary }]}>
+                  <Ionicons name="flag-outline" size={24} color="#0A0F0B" />
+                </View>
+                <Text style={[styles.baselineTitle, { color: textColor }]}>Your baseline is set</Text>
+                <Text style={[styles.baselineDesc, { color: subtextColor }]}>
+                  This workout is recorded as your benchmark. Progress deltas will calculate on your next session.
+                </Text>
+              </View>
+            )}
+          </View>
+        )}
+
+        {/* BEAT 3: YOUR NEXT STEP */}
+        {currentStep === 3 && (
+          <View style={styles.stepContainer}>
+            <IconStage
+              icon="compass-outline"
+              iconColor={PALETTE.dark}
+              discColor={PALETTE.primary}
+              haloColor={isDark ? 'rgba(188, 227, 170, 0.14)' : 'rgba(188, 227, 170, 0.4)'}
+              size={56}
+            />
+
+            <Text style={[styles.stepHeadline, { color: textColor }]}>Next recommendation</Text>
+            <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
+              Targeted focus based on today's performance
+            </Text>
+
+            <View style={[styles.recommendationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+              <View style={[styles.recBadge, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : PALETTE.primary }]}>
+                <Text style={[styles.recBadgeText, { color: isDark ? PALETTE.primary : PALETTE.dark }]}>
+                  {recommendation.badge}
+                </Text>
+              </View>
+
+              <Text style={[styles.recTitle, { color: textColor }]}>{recommendation.title}</Text>
+              <Text style={[styles.recDesc, { color: subtextColor }]}>{recommendation.desc}</Text>
+            </View>
+          </View>
+        )}
+      </Animated.View>
+
+      {/* BOTTOM ACTION DOCK */}
+      <View style={[styles.dockContainer, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
+        {currentStep === 3 ? (
+          <View style={styles.doubleActionWrap}>
+            <TouchableOpacity
+              style={[styles.primaryActionBtn, { backgroundColor: PALETTE.primary }]}
+              activeOpacity={0.85}
+              onPress={handleStartNextWorkout}
+            >
+              <Text style={styles.primaryActionBtnText}>Start Next Workout</Text>
+              <Ionicons name="arrow-forward" size={18} color={PALETTE.dark} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.ghostActionBtn}
+              activeOpacity={0.7}
+              onPress={handleGoHome}
+            >
+              <Text style={[styles.ghostActionBtnText, { color: subtextColor }]}>Done for today</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity
+            style={[styles.primaryActionBtn, { backgroundColor: PALETTE.primary }]}
+            activeOpacity={0.85}
+            onPress={advanceStep}
+          >
+            <Text style={styles.primaryActionBtnText}>Continue</Text>
+            <Ionicons name="arrow-forward" size={18} color={PALETTE.dark} />
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* MISTAKE REVIEW MODAL SHEET */}
+      <Modal
+        visible={showMistakesModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowMistakesModal(false)}
+      >
+        <View style={styles.modalBackdrop}>
+          <TouchableOpacity
+            style={styles.modalBackdropDismiss}
+            activeOpacity={1}
+            onPress={() => setShowMistakesModal(false)}
+          />
+
+          <View style={[styles.modalSheet, { backgroundColor: isDark ? '#141C15' : PALETTE.white }]}>
+            <View style={styles.modalHandle} />
+
+            <View style={styles.modalHeaderRow}>
+              <Text style={[styles.modalTitle, { color: textColor }]}>Review Missed Questions</Text>
+              <TouchableOpacity onPress={() => setShowMistakesModal(false)} hitSlop={12}>
+                <Ionicons name="close-circle" size={24} color={subtextColor} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
+              {missedAttempts.map((item, index) => (
+                <View
+                  key={item.question?.id || `missed-${index}`}
+                  style={[styles.missedItemCard, { backgroundColor: isDark ? '#1B241C' : '#F8F6F4' }]}
+                >
+                  <Text style={[styles.missedEquationText, { color: textColor }]}>
+                    {item.question?.equation || 'Problem'}
+                  </Text>
+                  <View style={styles.missedAnswerSplit}>
+                    <Text style={styles.yourAnswerText}>
+                      Your Answer: <Text style={{ textDecorationLine: 'line-through' }}>{item.userAnswer}</Text>
+                    </Text>
+                    <Text style={styles.correctAnswerText}>
+                      Correct: <Text style={{ fontWeight: '800' }}>{item.question?.answer}</Text>
+                    </Text>
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -664,372 +702,379 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
+  topTimelineWrapper: {
+    paddingHorizontal: 20,
+    paddingTop: 8,
+    paddingBottom: 4,
   },
-  navIconButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
-    elevation: 1,
-  },
-  titleCenter: {
-    alignItems: 'center',
-    flex: 1,
-    paddingHorizontal: 8,
-  },
-  mainScreenTitle: {
-    fontWeight: '800',
-    letterSpacing: -0.2,
-  },
-  mainScreenSubtitle: {
-    fontSize: 11,
-    fontWeight: '500',
-    marginTop: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-    paddingTop: 6,
-  },
-  container: {
-    flex: 1,
-    width: '100%',
-    maxWidth: 440,
-    alignSelf: 'center',
-  },
-  statusToast: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    marginBottom: 8,
-  },
-  statusToastText: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  errorText: {
-    fontSize: 11,
-    color: '#EC673C',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  heroCard: {
-    width: '100%',
-    borderRadius: 22,
-    padding: 16,
-    marginBottom: 16,
-  },
-  heroCardNarrow: {
-    padding: 12,
-  },
-  heroInnerRow: {
+  topTimelineRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-  },
-  heroInnerRowNarrow: {
-    gap: 10,
-  },
-  circleWrapper: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  circleCenterText: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  circlePercentage: {
-    fontWeight: '900',
-    letterSpacing: -0.5,
-  },
-  circleLabel: {
-    fontSize: 10,
-    fontWeight: '700',
-    marginTop: 1,
-  },
-  heroInfoColumn: {
-    flex: 1,
-    justifyContent: 'center',
-  },
-  heroBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 10,
-    marginBottom: 5,
-  },
-  heroBadgeText: {
-    fontSize: 11,
-    fontWeight: '800',
-  },
-  heroDescriptionText: {
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 16,
-    marginBottom: 8,
-  },
-  heroStatsSubRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderTopWidth: StyleSheet.hairlineWidth,
-    paddingTop: 8,
-  },
-  statMiniGroup: {
-    flex: 1,
-  },
-  statMiniHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  statMiniLabel: {
-    fontSize: 10,
-    fontWeight: '600',
-  },
-  statMiniValue: {
-    fontSize: 13,
-    fontWeight: '800',
-    marginTop: 1,
-  },
-  miniDivider: {
-    width: 1,
-    height: 20,
-    marginHorizontal: 6,
-  },
-  sectionHeading: {
-    fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 8,
-    letterSpacing: -0.2,
-  },
-  overviewGrid: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 16,
-  },
-  overviewItemCard: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 4,
-    borderRadius: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  overviewIconCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 4,
-  },
-  overviewBigValue: {
-    fontWeight: '800',
-    marginBottom: 1,
-  },
-  overviewSmallLabel: {
-    fontSize: 9,
-    fontWeight: '600',
-    textAlign: 'center',
-  },
-  listCard: {
-    borderRadius: 18,
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    marginBottom: 16,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-  },
-  listRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-  },
-  listRowLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-  },
-  listIconCircle: {
-    width: 30,
-    height: 30,
-    borderRadius: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  listRowTitle: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
-  listRowValue: {
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  rowDivider: {
-    height: StyleSheet.hairlineWidth,
+    maxWidth: 420,
+    alignSelf: 'center',
     width: '100%',
   },
-  chartCard: {
-    borderRadius: 18,
-    padding: 14,
-    marginBottom: 20,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
-    shadowRadius: 4,
-    elevation: 1,
-    overflow: 'hidden',
-  },
-  chartContainer: {
+  timelineSegmentsRow: {
+    flex: 1,
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    gap: 8,
+    height: 4,
   },
-  yAxisLabels: {
-    height: 85,
-    justifyContent: 'space-between',
-    paddingRight: 8,
+  timelineSegment: {
+    flex: 1,
+    height: 4,
+    borderRadius: 2,
+  },
+  timelineActionWrap: {
+    width: 32,
     alignItems: 'flex-end',
   },
-  axisLabelText: {
-    fontSize: 9,
-    fontWeight: '600',
-  },
-  chartPlotArea: {
-    flex: 1,
-    overflow: 'hidden',
-  },
-  svgWrapper: {
-    width: '100%',
-    overflow: 'hidden',
-  },
-  xAxisLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingHorizontal: 6,
-    marginTop: 6,
-  },
-  bottomButtonsSection: {
-    marginTop: 2,
-  },
-  authenticatedButtonRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  authenticatedButtonRowNarrow: {
-    gap: 6,
-  },
-  backToDashboardButton: {
-    flex: 1,
-    minHeight: 48,
+  closeIconBtn: {
+    width: 32,
+    height: 32,
     borderRadius: 16,
-    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    paddingHorizontal: 8,
-  },
-  backToDashboardText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  startWorkoutButton: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 8,
-    shadowColor: '#F6FE91',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 6,
-    elevation: 2,
-  },
-  startWorkoutText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: '#1C1C1E',
-  },
-  buttonNarrow: {
-    minHeight: 44,
-  },
-  fullWidthButton: {
-    width: '100%',
-    minHeight: 50,
-    borderRadius: 16,
-  },
-  actionButtonText: {
-    color: '#1C1C1E',
-    fontSize: 15,
-    fontWeight: '800',
-  },
-  demoActionBox: {
-    width: '100%',
-    alignItems: 'center',
-    gap: 8,
-  },
-  demoBannerCard: {
-    width: '100%',
-    borderRadius: 16,
-    paddingVertical: 10,
-    paddingHorizontal: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.04,
+    shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 1,
   },
-  sparkleIconBox: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  closeIconPlaceholder: {
+    width: 32,
+    height: 32,
+  },
+  contentWrapper: {
+    flex: 1,
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+    justifyContent: 'center',
+  },
+  stepContainer: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  demoBannerTextGroup: {
+  stageOuterWrap: {
+    width: 180,
+    height: 140,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  haloGlow: {
+    position: 'absolute',
+    width: 140,
+    height: 140,
+    borderRadius: 70,
+  },
+  floatingBadge: {
+    width: 92,
+    height: 92,
+    borderRadius: 30,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 12,
+    elevation: 5,
+    zIndex: 2,
+  },
+  pedestalShadow: {
+    position: 'absolute',
+    bottom: 18,
+    width: 80,
+    height: 20,
+    borderRadius: 40,
+    backgroundColor: 'rgba(0, 0, 0, 0.12)',
+    transform: [{ scaleY: 0.4 }],
+  },
+  stepHeadline: {
+    fontSize: 26,
+    fontWeight: '800',
+    textAlign: 'center',
+    letterSpacing: -0.5,
+    marginBottom: 4,
+  },
+  stepSubtitle: {
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 18,
+  },
+  scoreRow: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    marginTop: 2,
+  },
+  massiveScoreText: {
+    fontSize: 52,
+    fontWeight: '900',
+    letterSpacing: -1,
+  },
+  massiveScoreDivider: {
+    fontSize: 32,
+    fontWeight: '700',
+    marginLeft: 2,
+  },
+  metricSubtitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginTop: 2,
+    marginBottom: 16,
+  },
+  interpretationCard: {
+    width: '100%',
+    padding: 16,
+    borderRadius: 20,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  interpretationTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  interpretationDesc: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  mistakeReviewPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginTop: 14,
+  },
+  mistakeReviewPillText: {
+    color: PALETTE.dangerText,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  flawlessPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 20,
+    marginTop: 14,
+  },
+  flawlessPillText: {
+    color: PALETTE.dark,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  comparisonCard: {
+    width: '100%',
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+  },
+  tableRowHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingBottom: 8,
+  },
+  tableColHeader: {
+    flex: 1,
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  tableDivider: {
+    height: 1,
+    marginBottom: 6,
+  },
+  tableRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 10,
+  },
+  tableLabel: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  tableValue: {
+    flex: 1,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  deltaBadge: {
+    flex: 1,
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 10,
+    alignItems: 'flex-end',
+    alignSelf: 'center',
+  },
+  deltaText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  baselineCard: {
+    width: '100%',
+    padding: 20,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  baselineIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  baselineTitle: {
+    fontSize: 17,
+    fontWeight: '800',
+    marginBottom: 6,
+  },
+  baselineDesc: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  recommendationCard: {
+    width: '100%',
+    padding: 20,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+  },
+  recBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 10,
+    marginBottom: 12,
+  },
+  recBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  recTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  recDesc: {
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  dockContainer: {
+    width: '100%',
+    maxWidth: 420,
+    alignSelf: 'center',
+    paddingHorizontal: 24,
+  },
+  primaryActionBtn: {
+    width: '100%',
+    height: 58,
+    borderRadius: 29,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.08,
+    shadowRadius: 10,
+    elevation: 3,
+  },
+  primaryActionBtnText: {
+    fontSize: 16,
+    fontWeight: '800',
+    color: PALETTE.dark,
+    letterSpacing: 0.6,
+  },
+  doubleActionWrap: {
+    width: '100%',
+    gap: 8,
+  },
+  ghostActionBtn: {
+    width: '100%',
+    height: 42,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  ghostActionBtnText: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'flex-end',
+  },
+  modalBackdropDismiss: {
     flex: 1,
   },
-  demoBannerTitle: {
+  modalSheet: {
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 20,
+    paddingTop: 12,
+    paddingBottom: 36,
+    maxHeight: '65%',
+  },
+  modalHandle: {
+    width: 38,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: 'rgba(0,0,0,0.15)',
+    alignSelf: 'center',
+    marginBottom: 16,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '800',
+  },
+  modalScrollContent: {
+    gap: 10,
+    paddingBottom: 20,
+  },
+  missedItemCard: {
+    padding: 14,
+    borderRadius: 16,
+  },
+  missedEquationText: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  missedAnswerSplit: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  yourAnswerText: {
     fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 2,
+    color: PALETTE.dangerText,
+    fontWeight: '600',
   },
-  demoBannerSubtitle: {
-    fontSize: 11,
-    lineHeight: 15,
-  },
-  loginLinkButton: {
-    paddingVertical: 4,
-  },
-  loginLinkText: {
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  loginBoldText: {
-    fontWeight: '800',
+  correctAnswerText: {
+    fontSize: 13,
+    color: '#27AE60',
+    fontWeight: '600',
   },
 });
