@@ -13,15 +13,17 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
+import Svg, { Path, Circle } from 'react-native-svg';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { fetchAllWorkouts } from '../../src/services/statsService';
+import { getUserProfile } from '../../src/services/settingsService';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 
 const PALETTE = {
   primary: '#BCE3AA',         // Soft pastel sage
   accentLilac: '#F2CAEC',     // Soft orchid
-  backgroundLight: '#F1ECE9', // Warm alabaster neutral
+  backgroundLight: '#F1ECE9', // Warm neutral
   dark: '#0A0F0B',            // Deep obsidian
   cardLight: '#FFFFFF',
   cardDark: '#141C15',
@@ -38,6 +40,59 @@ const MONTH_NAMES = [
 ];
 const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
 
+function TrendSparkline({
+  data,
+  width,
+  height = 36,
+  strokeColor,
+}: {
+  data: number[];
+  width: number;
+  height?: number;
+  strokeColor: string;
+}) {
+  if (!data || data.length < 2) return null;
+
+  const min = Math.min(...data);
+  const max = Math.max(...data);
+  const range = max - min || 1;
+  const paddingX = 8;
+  const paddingY = 6;
+  const usableWidth = width - paddingX * 2;
+  const usableHeight = height - paddingY * 2;
+
+  const points = data.map((val, idx) => {
+    const x = paddingX + (idx / (data.length - 1)) * usableWidth;
+    const y = paddingY + ((val - min) / range) * usableHeight;
+    return { x, y };
+  });
+
+  const pathD = points.reduce((acc, curr, idx) => {
+    return `${acc} ${idx === 0 ? 'M' : 'L'} ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`;
+  }, '');
+
+  const lastPoint = points[points.length - 1];
+
+  return (
+    <Svg width={width} height={height}>
+      <Path
+        d={pathD}
+        fill="none"
+        stroke={strokeColor}
+        strokeWidth={2.4}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <Circle
+        cx={lastPoint.x}
+        cy={lastPoint.y}
+        r={3.8}
+        fill={strokeColor}
+      />
+    </Svg>
+  );
+}
+
 export default function StatisticsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
@@ -48,12 +103,11 @@ export default function StatisticsScreen() {
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const isNarrow = width < 360;
 
-  // Offline connection state
   const [isOffline, setIsOffline] = useState(false);
   const [loading, setLoading] = useState(true);
   const [workouts, setWorkouts] = useState<any[]>([]);
+  const [weeklyTarget, setWeeklyTarget] = useState<number>(5);
 
-  // Calendar dates
   const today = useMemo(() => new Date(), []);
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
   const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate());
@@ -64,7 +118,6 @@ export default function StatisticsScreen() {
   const isCurrentViewingMonth =
     calYear === today.getFullYear() && calMonth === today.getMonth();
 
-  // Network connectivity listener
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
       const offline = state.isConnected === false || state.isInternetReachable === false;
@@ -88,18 +141,47 @@ export default function StatisticsScreen() {
       setLoading(false);
       return;
     }
+
+    const net = await NetInfo.fetch();
+    if (net.isConnected === false || net.isInternetReachable === false) {
+      setIsOffline(true);
+      setLoading(false);
+      return;
+    }
+
     if (showLoading) setLoading(true);
+
     try {
-      const result: any = await fetchAllWorkouts(user.id);
-      if (Array.isArray(result)) {
-        setWorkouts(result);
-      } else if (result && typeof result === 'object') {
-        setWorkouts(result.data || []);
+      const [workoutsResult, profileResult]: [any, any] = await Promise.all([
+        fetchAllWorkouts(user.id),
+        getUserProfile(user.id).catch(() => null),
+      ]);
+
+      setIsOffline(false);
+
+      if (Array.isArray(workoutsResult)) {
+        setWorkouts(workoutsResult);
+      } else if (workoutsResult && typeof workoutsResult === 'object') {
+        setWorkouts(workoutsResult.data || []);
       } else {
         setWorkouts([]);
       }
-    } catch (err) {
-      console.error('Failed to load stats:', err);
+
+      if (profileResult?.weekly_goal) {
+        setWeeklyTarget(Number(profileResult.weekly_goal) || 5);
+      }
+    } catch (err: any) {
+      const isNetworkError =
+        err?.message?.includes('offline') ||
+        err?.message?.includes('Network request failed') ||
+        err?.message?.includes('fetch failed') ||
+        err?.message?.includes('Internet connection');
+
+      if (isNetworkError) {
+        setIsOffline(true);
+      } else {
+        console.warn('Stats fetch warning:', err?.message || err);
+      }
     } finally {
       setLoading(false);
     }
@@ -111,7 +193,6 @@ export default function StatisticsScreen() {
     }, [loadData])
   );
 
-  // Month navigation: never auto-select Day 1
   const handlePrevMonth = () => {
     const nextDate = new Date(calYear, calMonth - 1, 1);
     setCurrentCalendarDate(nextDate);
@@ -132,7 +213,6 @@ export default function StatisticsScreen() {
     }
   };
 
-  // High-contrast dynamic colors
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
   const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
@@ -141,6 +221,79 @@ export default function StatisticsScreen() {
   const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
   const accentGreen = PALETTE.primary;
   const accentLilac = PALETTE.accentLilac;
+
+  // -------------------------------------------------------------
+  // Consistency: Active Days This Month, Current Streak, Weekly Goal
+  // -------------------------------------------------------------
+  const consistencyStats = useMemo(() => {
+    if (workouts.length === 0) {
+      return {
+        activeDaysThisMonth: 0,
+        currentStreak: 0,
+        daysThisWeek: 0,
+      };
+    }
+
+    const activeDatesSet = new Set<string>();
+    let activeDaysThisMonth = 0;
+
+    workouts.forEach((w) => {
+      if (!w.completed_at) return;
+      const d = new Date(w.completed_at);
+      const str = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      
+      if (!activeDatesSet.has(str)) {
+        activeDatesSet.add(str);
+        if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
+          activeDaysThisMonth += 1;
+        }
+      }
+    });
+
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
+    // Consecutive unbroken daily streak (e.g., Sun -> Mon -> Tue -> Wed = 4 days)
+    let currentStreak = 0;
+    let checkDay = new Date(now);
+    const todayKey = `${checkDay.getFullYear()}-${String(checkDay.getMonth() + 1).padStart(2, '0')}-${String(checkDay.getDate()).padStart(2, '0')}`;
+    
+    if (!activeDatesSet.has(todayKey)) {
+      checkDay.setDate(checkDay.getDate() - 1);
+    }
+
+    while (true) {
+      const key = `${checkDay.getFullYear()}-${String(checkDay.getMonth() + 1).padStart(2, '0')}-${String(checkDay.getDate()).padStart(2, '0')}`;
+      if (activeDatesSet.has(key)) {
+        currentStreak += 1;
+        checkDay.setDate(checkDay.getDate() - 1);
+      } else {
+        break;
+      }
+    }
+
+    // Days completed this current calendar week (Monday to Sunday)
+    const dayOfWeek = now.getDay();
+    const distToMonday = (dayOfWeek + 6) % 7;
+    const mondayThisWeek = new Date(now);
+    mondayThisWeek.setDate(now.getDate() - distToMonday);
+
+    let daysThisWeek = 0;
+    for (let i = 0; i <= distToMonday; i++) {
+      const dayToCheck = new Date(mondayThisWeek);
+      dayToCheck.setDate(mondayThisWeek.getDate() + i);
+      const key = `${dayToCheck.getFullYear()}-${String(dayToCheck.getMonth() + 1).padStart(2, '0')}-${String(dayToCheck.getDate()).padStart(2, '0')}`;
+      if (activeDatesSet.has(key)) {
+        daysThisWeek += 1;
+      }
+    }
+
+    return {
+      activeDaysThisMonth,
+      currentStreak,
+      daysThisWeek,
+    };
+  }, [workouts, calYear, calMonth]);
 
   // -------------------------------------------------------------
   // Growth Metrics Engine
@@ -152,10 +305,13 @@ export default function StatisticsScreen() {
         overallAcc: 0,
         overallAvgPace: 0,
         speedDeltaPct: 0,
-        speedDeltaStr: 'Baseline set',
+        speedDeltaStr: 'Baseline active',
         accDeltaStr: 'No trend yet',
         isSpeedFaster: false,
         isAccBetter: false,
+        headline: 'Complete workouts to reveal your growth curve.',
+        subtext: 'NUMO benchmarks your response times, calculation fluency, and identifies weak spots automatically.',
+        trendPoints: [] as number[],
         fastestPace: 0,
         bestAcc: 0,
         totalWorkouts: 0,
@@ -190,49 +346,75 @@ export default function StatisticsScreen() {
     const overallAcc = totalQ > 0 ? Math.round((totalC / totalQ) * 100) : 0;
     const overallAvgPace = totalQ > 0 ? parseFloat((totalTime / totalQ / 1000).toFixed(1)) : 0;
 
+    const windowSize = Math.min(10, Math.floor(sorted.length / 2) || 1);
+    const recentSlice = sorted.slice(-windowSize);
+    const baselineSlice = sorted.slice(
+      Math.max(0, sorted.length - windowSize * 2),
+      sorted.length - windowSize
+    );
+
+    const calcStats = (slice: any[]) => {
+      let q = 0, c = 0, t = 0;
+      slice.forEach((item) => {
+        q += Number(item.total_questions) || 0;
+        c += Number(item.correct_answers) || 0;
+        t += Number(item.total_time) || 0;
+      });
+      return {
+        pace: q > 0 ? t / q / 1000 : 0,
+        acc: q > 0 ? (c / q) * 100 : 0,
+      };
+    };
+
+    const recentStats = calcStats(recentSlice);
+    const baselineStats = baselineSlice.length > 0 ? calcStats(baselineSlice) : recentStats;
+
     let speedDeltaPct = 0;
-    let accDelta = 0;
-    let isSpeedFaster = false;
-    let isAccBetter = false;
+    let accDeltaPct = 0;
 
-    if (sorted.length >= 2) {
-      const mid = Math.floor(sorted.length / 2);
-      const firstHalf = sorted.slice(0, mid);
-      const secondHalf = sorted.slice(mid);
-
-      const getPace = (arr: any[]) => {
-        let q = 0;
-        let t = 0;
-        arr.forEach((item) => {
-          q += Number(item.total_questions) || 0;
-          t += Number(item.total_time) || 0;
-        });
-        return q > 0 ? t / q / 1000 : 0;
-      };
-
-      const getAcc = (arr: any[]) => {
-        let q = 0;
-        let c = 0;
-        arr.forEach((item) => {
-          q += Number(item.total_questions) || 0;
-          c += Number(item.correct_answers) || 0;
-        });
-        return q > 0 ? (c / q) * 100 : 0;
-      };
-
-      const oldPace = getPace(firstHalf);
-      const newPace = getPace(secondHalf);
-      const oldAcc = getAcc(firstHalf);
-      const newAcc = getAcc(secondHalf);
-
-      if (oldPace > 0) {
-        speedDeltaPct = Math.round(((oldPace - newPace) / oldPace) * 100);
-        isSpeedFaster = speedDeltaPct >= 0;
-      }
-
-      accDelta = Math.round(newAcc - oldAcc);
-      isAccBetter = accDelta >= 0;
+    if (baselineStats.pace > 0 && baselineSlice.length > 0) {
+      speedDeltaPct = Math.round(((baselineStats.pace - recentStats.pace) / baselineStats.pace) * 100);
+      accDeltaPct = Math.round(recentStats.acc - baselineStats.acc);
     }
+
+    const isSpeedFaster = speedDeltaPct > 2;
+    const isSpeedSlower = speedDeltaPct < -2;
+    const isAccBetter = accDeltaPct > 2;
+    const isAccWorse = accDeltaPct < -2;
+
+    let headline = '';
+    let subtext = '';
+
+    if (sorted.length < 2) {
+      headline = 'Baseline calibration active.';
+      subtext = 'Complete additional sessions to establish rolling trends and precision insights.';
+    } else if (isSpeedFaster && !isAccWorse) {
+      if (isAccBetter) {
+        headline = "You're getting faster and more accurate.";
+        subtext = `Average pace improved ${Math.abs(speedDeltaPct)}% with a +${accDeltaPct}% accuracy boost over your last ${windowSize} sessions.`;
+      } else {
+        headline = "You're solving faster while maintaining accuracy.";
+        subtext = `Average solving speed increased by ${Math.abs(speedDeltaPct)}% over your last ${windowSize} sessions without compromising precision.`;
+      }
+    } else if (isAccBetter && !isSpeedSlower) {
+      headline = 'Your accuracy is improving while pace remains steady.';
+      subtext = `Accuracy gained +${accDeltaPct}% across recent workouts while holding a solid ${recentStats.pace.toFixed(1)}s pace.`;
+    } else if (isSpeedSlower && isAccBetter) {
+      headline = 'Accuracy is improving. Keep practicing to bring pace up.';
+      subtext = `Precision gained +${accDeltaPct}%. Continue consistent drills to naturally recover top speed.`;
+    } else if (isSpeedSlower && isAccWorse) {
+      headline = 'Focus on clean accuracy to lock in rhythm.';
+      subtext = `Recent sessions show variability. Slow down slightly to stabilize your fundamentals.`;
+    } else {
+      headline = 'Consistent execution across sessions.';
+      subtext = `Maintaining steady cadence at ${recentStats.pace.toFixed(1)}s/Q with ${Math.round(recentStats.acc)}% accuracy over your last ${windowSize} sessions.`;
+    }
+
+    const trendPoints = sorted.slice(-10).map((w) => {
+      const q = Number(w.total_questions) || 0;
+      const t = Number(w.total_time) || 0;
+      return q > 0 ? parseFloat((t / q / 1000).toFixed(2)) : overallAvgPace;
+    });
 
     return {
       hasData: true,
@@ -243,16 +425,19 @@ export default function StatisticsScreen() {
         sorted.length < 2
           ? 'Baseline active'
           : speedDeltaPct >= 0
-          ? `${speedDeltaPct}% faster overall`
-          : `${Math.abs(speedDeltaPct)}% slower overall`,
+          ? `${speedDeltaPct}% faster recently`
+          : `${Math.abs(speedDeltaPct)}% pace adjustment`,
       accDeltaStr:
         sorted.length < 2
           ? 'Tracking begun'
-          : accDelta >= 0
-          ? `+${accDelta}% accuracy gain`
-          : `${accDelta}% accuracy drop`,
+          : accDeltaPct >= 0
+          ? `+${accDeltaPct}% accuracy gain`
+          : `${accDeltaPct}% accuracy delta`,
       isSpeedFaster,
       isAccBetter,
+      headline,
+      subtext,
+      trendPoints,
       fastestPace: fastestPace === Infinity ? overallAvgPace : parseFloat(fastestPace.toFixed(1)),
       bestAcc: Math.round(bestAcc),
       totalWorkouts: sorted.length,
@@ -260,26 +445,19 @@ export default function StatisticsScreen() {
   }, [workouts]);
 
   // -------------------------------------------------------------
-  // Calendar Grid - Exact 7-column rows
+  // Calendar Grid
   // -------------------------------------------------------------
-  const { gridWeeks, dotSize, dailyMap } = useMemo(() => {
+  const { gridWeeks, dotSize } = useMemo(() => {
     const totalDaysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
     const firstDayIndex = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
 
-    const map: Record<number, { count: number; solved: number; correct: number; totalTimeMs: number }> = {};
+    const map: Record<number, boolean> = {};
 
     workouts.forEach((w) => {
       if (!w.completed_at) return;
       const d = new Date(w.completed_at);
       if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
-        const day = d.getDate();
-        if (!map[day]) {
-          map[day] = { count: 0, solved: 0, correct: 0, totalTimeMs: 0 };
-        }
-        map[day].count += 1;
-        map[day].solved += Number(w.total_questions) || 0;
-        map[day].correct += Number(w.correct_answers) || 0;
-        map[day].totalTimeMs += Number(w.total_time) || 0;
+        map[d.getDate()] = true;
       }
     });
 
@@ -288,7 +466,7 @@ export default function StatisticsScreen() {
       flatCells.push({ day: 0, active: false, isRealToday: false });
     }
     for (let d = 1; d <= totalDaysInMonth; d++) {
-      const hasWorkouts = Boolean(map[d] && map[d].count > 0);
+      const hasWorkouts = Boolean(map[d]);
       const isRealToday = isCurrentViewingMonth && d === today.getDate();
       flatCells.push({ day: d, active: hasWorkouts, isRealToday });
     }
@@ -301,7 +479,6 @@ export default function StatisticsScreen() {
       }
     }
 
-    // Break into week rows
     const weeks: { day: number; active: boolean; isRealToday: boolean }[][] = [];
     for (let i = 0; i < flatCells.length; i += 7) {
       weeks.push(flatCells.slice(i, i + 7));
@@ -314,33 +491,14 @@ export default function StatisticsScreen() {
     return {
       gridWeeks: weeks,
       dotSize: Math.max(calculatedSize, 36),
-      dailyMap: map,
     };
   }, [calYear, calMonth, workouts, width, isCurrentViewingMonth, today, isNarrow]);
-
-  const activeDaySummary = useMemo(() => {
-    if (!selectedDay) {
-      return { count: 0, solved: 0, pace: '—', acc: '—' };
-    }
-    const dayData = dailyMap[selectedDay];
-    if (!dayData || dayData.count === 0) {
-      return { count: 0, solved: 0, pace: '—', acc: '—' };
-    }
-    const pace = dayData.solved > 0 ? (dayData.totalTimeMs / dayData.solved / 1000).toFixed(1) : '—';
-    const acc = dayData.solved > 0 ? `${Math.round((dayData.correct / dayData.solved) * 100)}%` : '—';
-    return {
-      count: dayData.count,
-      solved: dayData.solved,
-      pace: `${pace}s`,
-      acc,
-    };
-  }, [dailyMap, selectedDay]);
 
   const displayDayNumber = selectedDay || (isCurrentViewingMonth ? today.getDate() : 1);
   const selectedWeekday = WEEKDAY_ABBR[new Date(calYear, calMonth, displayDayNumber).getDay()];
 
   // -------------------------------------------------------------
-  // Skill Matrix Breakdown
+  // Skill Matrix Breakdown (20+ floor for recommendations)
   // -------------------------------------------------------------
   const skillBreakdown = useMemo(() => {
     const categories: Record<string, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
@@ -364,38 +522,61 @@ export default function StatisticsScreen() {
     const parsed = Object.entries(categories).map(([key, data]) => {
       const acc = data.totalQ > 0 ? Math.round((data.correct / data.totalQ) * 100) : 0;
       const avgPace = data.totalQ > 0 ? parseFloat((data.totalTimeMs / data.totalQ / 1000).toFixed(1)) : 0;
+
+      const masteryScore = data.totalQ > 0 ? acc * 0.7 + Math.max(0, 10 - avgPace) * 3 : 0;
+      const frictionScore = data.totalQ > 0 ? (100 - acc) * 1.4 + avgPace * 3.5 : -1;
+
       return {
         key,
         name: data.label,
         totalQ: data.totalQ,
         accuracy: acc,
         avgPace,
-        frictionScore: data.totalQ > 0 ? (100 - acc) * 1.5 + avgPace * 4 : -1,
+        masteryScore,
+        frictionScore,
       };
     });
 
-    const practiced = parsed.filter((p) => p.totalQ > 0);
-    if (practiced.length === 0) {
-      return { skills: parsed, strongest: null, needsWork: null };
+    const eligibleOperations = parsed.filter((p) => p.totalQ >= 20);
+    const unpracticedOps = parsed.filter((p) => p.totalQ < 10 && p.key !== 'mixed');
+
+    let strongest: any = null;
+    let needsWork: any = null;
+    let focusDirective = 'Keep steady pace';
+
+    if (eligibleOperations.length >= 2) {
+      const sortedByMastery = [...eligibleOperations].sort((a, b) => b.masteryScore - a.masteryScore);
+      strongest = sortedByMastery[0];
+
+      const sortedByFriction = [...eligibleOperations].sort((a, b) => b.frictionScore - a.frictionScore);
+      const worstCandidate = sortedByFriction[0];
+      
+      if (worstCandidate.key !== strongest.key) {
+        needsWork = worstCandidate;
+        focusDirective = 'Recommended challenge';
+      } else {
+        needsWork = null;
+        focusDirective = 'All Balanced';
+      }
+    } else if (eligibleOperations.length === 1) {
+      strongest = eligibleOperations[0];
+      needsWork = null;
+      if (unpracticedOps.length > 0) {
+        focusDirective = `Try ${unpracticedOps[0].name}`;
+      } else {
+        focusDirective = 'Expand variety';
+      }
     }
-
-    const sortedByMastery = [...practiced].sort((a, b) => {
-      if (b.accuracy !== a.accuracy) return b.accuracy - a.accuracy;
-      return a.avgPace - b.avgPace;
-    });
-
-    const strongest = sortedByMastery[0];
-    const sortedByFriction = [...practiced].sort((a, b) => b.frictionScore - a.frictionScore);
-    const needsWork = sortedByFriction[0];
 
     return {
       skills: parsed,
       strongest,
-      needsWork: needsWork.key !== strongest.key ? needsWork : null,
+      needsWork,
+      matureCount: eligibleOperations.length,
+      focusDirective,
     };
   }, [workouts]);
 
-  // If offline, block the screen completely matching Workout
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
@@ -452,7 +633,8 @@ export default function StatisticsScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.responsiveWrapper}>
-            {/* 1. RESTORED ENLARGED CALENDAR HERO */}
+            
+            {/* 1. CALENDAR HERO */}
             <View style={styles.heroSection}>
               <View style={styles.heroTopRow}>
                 <Text style={[styles.heroDayNumber, { color: accentGreen }]}>
@@ -487,7 +669,7 @@ export default function StatisticsScreen() {
               </View>
             </View>
 
-            {/* Calendar Heatmap Card */}
+            {/* Calendar Heatmap */}
             <View style={[styles.calendarCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
               <View style={styles.weekHeaderRow}>
                 {WEEK_DAYS.map((wd, i) => (
@@ -499,7 +681,6 @@ export default function StatisticsScreen() {
                 ))}
               </View>
 
-              {/* Rows separated into weeks */}
               <View style={styles.weeksContainer}>
                 {gridWeeks.map((week, weekIndex) => (
                   <View key={weekIndex} style={styles.weekRow}>
@@ -561,54 +742,72 @@ export default function StatisticsScreen() {
                 ))}
               </View>
 
-              {/* Day Recap */}
+              {/* REFINED CONSISTENCY STATS */}
               <View style={[styles.dayRecapRow, { borderTopColor: dividerColor }]}>
                 <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Workouts</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.count}</Text>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Active Days</Text>
+                  <Text style={[styles.recapValue, { color: accentGreen }]}>
+                    {consistencyStats.activeDaysThisMonth} {consistencyStats.activeDaysThisMonth === 1 ? 'day' : 'days'}
+                  </Text>
                 </View>
+
                 <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
+
                 <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Solved</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.solved}</Text>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Current Streak</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>
+                    {consistencyStats.currentStreak} {consistencyStats.currentStreak === 1 ? 'day' : 'days'}
+                  </Text>
                 </View>
+
                 <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
+
                 <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Accuracy</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.acc}</Text>
-                </View>
-                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
-                <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Pace</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>{activeDaySummary.pace}</Text>
+                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Weekly Goal</Text>
+                  <Text style={[styles.recapValue, { color: primaryText }]}>
+                    {consistencyStats.daysThisWeek} / {weeklyTarget} days
+                  </Text>
                 </View>
               </View>
             </View>
 
-            {/* 2. GROWTH & IMPROVEMENT VERDICT */}
+            {/* 2. ROLLING GROWTH & IMPROVEMENT VERDICT WITH SPARKLINE */}
             <View style={[styles.heroCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
               <View style={styles.heroBadgeRow}>
                 <View style={[styles.statusBadge, { backgroundColor: accentGreen }]}>
-                  <Text style={styles.statusBadgeText}>GROWTH VERDICT</Text>
+                  <Text style={styles.statusBadgeText}>PROGRESS UPDATE</Text>
                 </View>
-                <Text style={[styles.totalRoundsText, { color: secondaryText }]}>
-                  {growthMetrics.totalWorkouts} sessions logged
-                </Text>
               </View>
 
               <Text style={[styles.heroHeadline, { color: primaryText }]}>
-                {growthMetrics.hasData
-                  ? growthMetrics.isSpeedFaster
-                    ? `Your solving speed improved by ${growthMetrics.speedDeltaPct}%.`
-                    : `Focus on clean accuracy to lock in your pace.`
-                  : 'Complete workouts to reveal your growth curve.'}
+                {growthMetrics.headline}
               </Text>
 
               <Text style={[styles.heroSubtext, { color: secondaryText }]}>
-                {growthMetrics.hasData
-                  ? `Current average pace is ${growthMetrics.overallAvgPace}s per question across all sessions with ${growthMetrics.overallAcc}% overall accuracy.`
-                  : 'NUMO benchmarks your response times, calculation fluency, and identifies weak spots automatically.'}
+                {growthMetrics.subtext}
               </Text>
+
+              {/* Pace Trajectory Sparkline */}
+              {growthMetrics.trendPoints.length >= 2 && (
+                <View style={[styles.sparklineContainer, { borderTopColor: dividerColor }]}>
+                  <View style={styles.sparklineHeader}>
+                    <Text style={[styles.sparklineTitle, { color: secondaryText }]}>
+                      Pace Trend (Last {growthMetrics.trendPoints.length} sessions)
+                    </Text>
+                    <Text style={[styles.sparklineCurrent, { color: primaryText }]}>
+                      {growthMetrics.trendPoints[growthMetrics.trendPoints.length - 1]}s/Q
+                    </Text>
+                  </View>
+                  <View style={styles.sparklineChartWrapper}>
+                    <TrendSparkline
+                      data={growthMetrics.trendPoints}
+                      width={width - (isNarrow ? 72 : 80)}
+                      height={40}
+                      strokeColor={accentGreen}
+                    />
+                  </View>
+                </View>
+              )}
 
               <View style={[styles.growthPillsRow, { borderTopColor: dividerColor }]}>
                 <View style={styles.growthPillItem}>
@@ -639,33 +838,47 @@ export default function StatisticsScreen() {
 
             {/* 3. DIRECTIVES */}
             <View style={styles.directivesRow}>
+              
+              {/* Strongest Area */}
               <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
                 <View style={[styles.directiveIconCircle, { backgroundColor: accentGreen }]}>
                   <Ionicons name="trophy" size={17} color="#0A0F0B" />
                 </View>
                 <Text style={[styles.directiveLabel, { color: secondaryText }]}>Strongest Area</Text>
                 <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
-                  {skillBreakdown.strongest ? skillBreakdown.strongest.name : '—'}
+                  {skillBreakdown.strongest
+                    ? skillBreakdown.strongest.name
+                    : 'Not enough data'}
                 </Text>
                 <Text style={[styles.directiveDetail, { color: secondaryText }]}>
                   {skillBreakdown.strongest
                     ? `${skillBreakdown.strongest.accuracy}% · ${skillBreakdown.strongest.avgPace}s/Q`
-                    : 'Requires 1 session'}
+                    : 'Needs 20 questions'}
                 </Text>
               </View>
 
+              {/* Next Focus */}
               <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
                 <View style={[styles.directiveIconCircle, { backgroundColor: accentLilac }]}>
                   <Ionicons name="sparkles" size={17} color="#0A0F0B" />
                 </View>
                 <Text style={[styles.directiveLabel, { color: secondaryText }]}>Next Focus</Text>
                 <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
-                  {skillBreakdown.needsWork ? skillBreakdown.needsWork.name : 'All Balanced'}
+                  {skillBreakdown.needsWork
+                    ? skillBreakdown.needsWork.name
+                    : skillBreakdown.matureCount === 1
+                    ? 'Explore Other Ops'
+                    : skillBreakdown.matureCount === 0
+                    ? 'Practice More'
+                    : 'All Balanced'}
                 </Text>
                 <Text style={[styles.directiveDetail, { color: secondaryText }]}>
-                  {skillBreakdown.needsWork ? 'Recommended challenge' : 'Keep steady pace'}
+                  {skillBreakdown.needsWork
+                    ? 'Recommended challenge'
+                    : skillBreakdown.focusDirective}
                 </Text>
               </View>
+
             </View>
 
             {/* 4. SKILL PROFICIENCY */}
@@ -677,13 +890,16 @@ export default function StatisticsScreen() {
 
               <View style={styles.skillsList}>
                 {skillBreakdown.skills.map((skill) => {
-                  const isPracticed = skill.totalQ > 0;
+                  const hasLittleData = skill.totalQ < 10;
+
                   return (
                     <View key={skill.key} style={styles.skillRow}>
                       <View style={styles.skillHeader}>
                         <Text style={[styles.skillName, { color: primaryText }]}>{skill.name}</Text>
-                        <Text style={[styles.skillStat, { color: isPracticed ? primaryText : secondaryText }]}>
-                          {isPracticed ? `${skill.accuracy}% · ${skill.avgPace}s` : 'Not practiced yet'}
+                        <Text style={[styles.skillStat, { color: hasLittleData ? secondaryText : primaryText }]}>
+                          {hasLittleData
+                            ? 'Not enough data yet'
+                            : `${skill.accuracy}% · ${skill.avgPace}s (${skill.totalQ}Q)`}
                         </Text>
                       </View>
 
@@ -701,8 +917,8 @@ export default function StatisticsScreen() {
                           style={[
                             styles.skillFill,
                             {
-                              width: `${Math.max(skill.accuracy, 4)}%`,
-                              backgroundColor: isPracticed ? accentGreen : 'transparent',
+                              width: hasLittleData ? '0%' : `${Math.max(skill.accuracy, 6)}%`,
+                              backgroundColor: accentGreen,
                             },
                           ]}
                         />
@@ -749,6 +965,7 @@ export default function StatisticsScreen() {
                 </View>
               </View>
             </View>
+
           </View>
         </ScrollView>
       )}
@@ -906,7 +1123,7 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   recapValue: {
-    fontSize: 17,
+    fontSize: 16,
     fontWeight: '800',
   },
   recapDivider: {
@@ -937,10 +1154,6 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     letterSpacing: 0.8,
   },
-  totalRoundsText: {
-    fontSize: 13,
-    fontWeight: '600',
-  },
   heroHeadline: {
     fontSize: 22,
     fontWeight: '800',
@@ -951,8 +1164,36 @@ const styles = StyleSheet.create({
   heroSubtext: {
     fontSize: 14,
     lineHeight: 20,
-    marginBottom: 16,
+    marginBottom: 14,
   },
+
+  /* Sparkline */
+  sparklineContainer: {
+    borderTopWidth: 1,
+    paddingTop: 12,
+    marginBottom: 14,
+  },
+  sparklineHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  sparklineTitle: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  sparklineCurrent: {
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  sparklineChartWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+
   growthPillsRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1029,8 +1270,10 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   sectionSubtitle: {
-    fontSize: 13,
-    fontWeight: '600',
+    fontSize: 12,
+    fontWeight: '700',
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
   },
 
   /* Skills */
@@ -1050,7 +1293,7 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   skillStat: {
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   skillTrack: {

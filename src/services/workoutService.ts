@@ -101,14 +101,13 @@ export async function saveWorkoutSession(
 
     if (!targetUserId) {
       const {
-        data: { user },
-        error: userError,
-      } = await supabase.auth.getUser();
+        data: { session },
+      } = await supabase.auth.getSession();
 
-      if (userError || !user) {
+      if (!session?.user) {
         throw new Error("User not authenticated.");
       }
-      targetUserId = user.id;
+      targetUserId = session.user.id;
     }
 
     const total_questions = attempts.length;
@@ -119,7 +118,7 @@ export async function saveWorkoutSession(
         ? parseFloat(((correct_answers / total_questions) * 100).toFixed(2))
         : 0;
 
-    const total_time = attempts.reduce((sum, a) => sum + a.timeTakenMs, 0);
+    const total_time = attempts.reduce((sum, a) => sum + (a.timeTakenMs || 0), 0);
     const average_time_per_question =
       total_questions > 0
         ? parseFloat((total_time / total_questions).toFixed(2))
@@ -147,7 +146,7 @@ export async function saveWorkoutSession(
 
     return { data: data as WorkoutSessionRecord, error: null };
   } catch (error: any) {
-    console.error("Error saving workout session:", error);
+    console.warn("Error saving workout session:", error?.message || error);
     return { data: null, error };
   }
 }
@@ -179,7 +178,7 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
     );
 
     if (error || !data) {
-      console.error("Failed to sync pending demo workout to Supabase:", error);
+      console.warn("Failed to sync pending demo workout to Supabase:", error?.message || error);
       await setPendingDemoSession(
         pendingSession.attempts,
         pendingSession.mode,
@@ -192,7 +191,7 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
     isSyncingDemo = false;
     return true;
   } catch (err) {
-    console.error("Error during demo workout sync:", err);
+    console.warn("Error during demo workout sync:", err);
     isSyncingDemo = false;
     return false;
   }
@@ -204,12 +203,13 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
 export async function getWeeklyStats(): Promise<WeeklyStats> {
   try {
     const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+      data: { session },
+    } = await supabase.auth.getSession();
 
-    if (authError) throw authError;
-    if (!user) return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
+    // If there is no active session yet, return empty stats without throwing
+    if (!session?.user) {
+      return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
+    }
 
     const now = new Date();
     const dayOfWeek = now.getDay();
@@ -221,7 +221,7 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
     const { data, error } = await supabase
       .from("workout_sessions")
       .select("correct_answers, total_time, total_questions")
-      .eq("user_id", user.id)
+      .eq("user_id", session.user.id)
       .gte("completed_at", startOfWeek.toISOString());
 
     if (error) throw error;
@@ -229,16 +229,22 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
       return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
     }
 
-    const solvedCount = data.reduce((acc: number, row) => acc + row.correct_answers, 0);
-    const totalTimeMs = data.reduce((acc: number, row) => acc + row.total_time, 0);
-    const totalQuestions = data.reduce((acc: number, row) => acc + row.total_questions, 0);
+    const solvedCount = data.reduce((acc: number, row) => acc + (row.correct_answers || 0), 0);
+    const totalTimeMs = data.reduce((acc: number, row) => acc + (row.total_time || 0), 0);
+    const totalQuestions = data.reduce((acc: number, row) => acc + (row.total_questions || 0), 0);
 
     const avgTimePerQuestionMs = totalQuestions > 0 ? totalTimeMs / totalQuestions : 0;
 
     return { solvedCount, totalTimeMs, avgTimePerQuestionMs };
-  } catch (err) {
-    console.error("Failed to fetch weekly stats:", err);
-    // Throw the error up so screens know the connection failed
+  } catch (err: any) {
+    if (
+      err?.name === "AuthSessionMissingError" ||
+      err?.message?.includes("Auth session missing")
+    ) {
+      return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
+    }
+
+    // Re-throw genuine network errors so screens can trigger the offline view
     throw err;
   }
 }
@@ -249,25 +255,29 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
 export async function getRecentWorkouts(): Promise<WorkoutSessionRecord[]> {
   try {
     const {
-      data: { user },
-      error: authError,
-    } = await supabase.auth.getUser();
+      data: { session },
+    } = await supabase.auth.getSession();
 
-    if (authError) throw authError;
-    if (!user) return [];
+    if (!session?.user) return [];
 
     const { data, error } = await supabase
       .from("workout_sessions")
       .select("*")
-      .eq("user_id", user.id)
+      .eq("user_id", session.user.id)
       .order("completed_at", { ascending: false })
       .limit(4);
 
     if (error) throw error;
     return (data || []) as WorkoutSessionRecord[];
-  } catch (err) {
-    console.error("Failed to fetch recent workouts:", err);
-    // Throw the error up so screens know the connection failed
+  } catch (err: any) {
+    if (
+      err?.name === "AuthSessionMissingError" ||
+      err?.message?.includes("Auth session missing")
+    ) {
+      return [];
+    }
+
+    // Re-throw genuine network errors so screens can trigger the offline view
     throw err;
   }
 }
