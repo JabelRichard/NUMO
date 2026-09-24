@@ -16,7 +16,8 @@ import NetInfo from '@react-native-community/netinfo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
-import { fetchAllWorkouts } from '../../src/services/statsService';
+import { supabase } from '../../src/config/supabase';
+import { getNextFocus } from '../../src/services/workoutService';
 import { getUserProfile } from '../../src/services/settingsService';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 
@@ -39,6 +40,17 @@ const MONTH_NAMES = [
   'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER',
 ];
 const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+
+async function fetchUserWorkouts(userId: string): Promise<any[]> {
+  const { data, error } = await supabase
+    .from('workout_sessions')
+    .select('*')
+    .eq('user_id', userId)
+    .order('completed_at', { ascending: true });
+
+  if (error) throw error;
+  return data || [];
+}
 
 function TrendSparkline({
   data,
@@ -153,7 +165,7 @@ export default function StatisticsScreen() {
 
     try {
       const [workoutsResult, profileResult]: [any, any] = await Promise.all([
-        fetchAllWorkouts(user.id),
+        fetchUserWorkouts(user.id),
         getUserProfile(user.id).catch(() => null),
       ]);
 
@@ -253,7 +265,6 @@ export default function StatisticsScreen() {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
 
-    // Consecutive unbroken daily streak (e.g., Sun -> Mon -> Tue -> Wed = 4 days)
     let currentStreak = 0;
     let checkDay = new Date(now);
     const todayKey = `${checkDay.getFullYear()}-${String(checkDay.getMonth() + 1).padStart(2, '0')}-${String(checkDay.getDate()).padStart(2, '0')}`;
@@ -272,7 +283,6 @@ export default function StatisticsScreen() {
       }
     }
 
-    // Days completed this current calendar week (Monday to Sunday)
     const dayOfWeek = now.getDay();
     const distToMonday = (dayOfWeek + 6) % 7;
     const mondayThisWeek = new Date(now);
@@ -498,7 +508,7 @@ export default function StatisticsScreen() {
   const selectedWeekday = WEEKDAY_ABBR[new Date(calYear, calMonth, displayDayNumber).getDay()];
 
   // -------------------------------------------------------------
-  // Skill Matrix Breakdown (20+ floor for recommendations)
+  // Skill Matrix Breakdown & Shared Focus Directive
   // -------------------------------------------------------------
   const skillBreakdown = useMemo(() => {
     const categories: Record<string, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
@@ -522,7 +532,6 @@ export default function StatisticsScreen() {
     const parsed = Object.entries(categories).map(([key, data]) => {
       const acc = data.totalQ > 0 ? Math.round((data.correct / data.totalQ) * 100) : 0;
       const avgPace = data.totalQ > 0 ? parseFloat((data.totalTimeMs / data.totalQ / 1000).toFixed(1)) : 0;
-
       const masteryScore = data.totalQ > 0 ? acc * 0.7 + Math.max(0, 10 - avgPace) * 3 : 0;
       const frictionScore = data.totalQ > 0 ? (100 - acc) * 1.4 + avgPace * 3.5 : -1;
 
@@ -538,45 +547,25 @@ export default function StatisticsScreen() {
     });
 
     const eligibleOperations = parsed.filter((p) => p.totalQ >= 20);
-    const unpracticedOps = parsed.filter((p) => p.totalQ < 10 && p.key !== 'mixed');
 
     let strongest: any = null;
-    let needsWork: any = null;
-    let focusDirective = 'Keep steady pace';
-
-    if (eligibleOperations.length >= 2) {
+    if (eligibleOperations.length > 0) {
       const sortedByMastery = [...eligibleOperations].sort((a, b) => b.masteryScore - a.masteryScore);
       strongest = sortedByMastery[0];
-
-      const sortedByFriction = [...eligibleOperations].sort((a, b) => b.frictionScore - a.frictionScore);
-      const worstCandidate = sortedByFriction[0];
-      
-      if (worstCandidate.key !== strongest.key) {
-        needsWork = worstCandidate;
-        focusDirective = 'Recommended challenge';
-      } else {
-        needsWork = null;
-        focusDirective = 'All Balanced';
-      }
-    } else if (eligibleOperations.length === 1) {
-      strongest = eligibleOperations[0];
-      needsWork = null;
-      if (unpracticedOps.length > 0) {
-        focusDirective = `Try ${unpracticedOps[0].name}`;
-      } else {
-        focusDirective = 'Expand variety';
-      }
     }
+
+    // Call the single source of truth for Next Focus
+    const nextFocusRec = getNextFocus(workouts);
 
     return {
       skills: parsed,
       strongest,
-      needsWork,
-      matureCount: eligibleOperations.length,
-      focusDirective,
+      nextFocusHeading: nextFocusRec.heading,
+      nextFocusSubheading: nextFocusRec.subheading,
     };
   }, [workouts]);
 
+  // Hook rules guarantee: Early returns happen strictly after all hooks have executed
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
@@ -857,25 +846,17 @@ export default function StatisticsScreen() {
                 </Text>
               </View>
 
-              {/* Next Focus */}
+              {/* Next Focus (Synced directly with getNextFocus) */}
               <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
                 <View style={[styles.directiveIconCircle, { backgroundColor: accentLilac }]}>
                   <Ionicons name="sparkles" size={17} color="#0A0F0B" />
                 </View>
                 <Text style={[styles.directiveLabel, { color: secondaryText }]}>Next Focus</Text>
                 <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
-                  {skillBreakdown.needsWork
-                    ? skillBreakdown.needsWork.name
-                    : skillBreakdown.matureCount === 1
-                    ? 'Explore Other Ops'
-                    : skillBreakdown.matureCount === 0
-                    ? 'Practice More'
-                    : 'All Balanced'}
+                  {skillBreakdown.nextFocusHeading}
                 </Text>
                 <Text style={[styles.directiveDetail, { color: secondaryText }]}>
-                  {skillBreakdown.needsWork
-                    ? 'Recommended challenge'
-                    : skillBreakdown.focusDirective}
+                  {skillBreakdown.nextFocusSubheading}
                 </Text>
               </View>
 

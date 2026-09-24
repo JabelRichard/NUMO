@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -10,21 +10,30 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
+import { useAuth } from '../../../src/context/AuthContext';
+import { useTheme } from '@/src/context/ThemeContext';
+import { getUserSettings } from '../../../src/services/settingsService';
+import {
+  fetchAllWorkouts,
+  getNextFocus,
+  FocusOperation,
+  WorkoutSessionRecord,
+} from '../../../src/services/workoutService';
 import { FUTURE_PROGRAMS } from '../../../src/data/trainingPrograms';
 import { ProgramCard } from '../../../src/components/ProgramCard';
 import { OfflineNotice } from '../../../src/components/OfflineNotice';
-import { useTheme } from '@/src/context/ThemeContext';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
 
 interface OperationData {
-  id: string;
+  id: FocusOperation | 'adaptive_mix';
   title: string;
   subtitle: string;
-  icon: keyof typeof Ionicons.glyphMap;
+  icon?: keyof typeof Ionicons.glyphMap;
+  glyph?: string;
 }
 
 const OPERATIONS: OperationData[] = [
@@ -50,13 +59,13 @@ const OPERATIONS: OperationData[] = [
     id: 'division',
     title: 'Division',
     subtitle: 'Quotients & factors',
-    icon: 'stats-chart',
+    glyph: '÷',
   },
   {
     id: 'adaptive_mix',
     title: 'Mixed Challenge',
     subtitle: 'All operations combined',
-    icon: 'sparkles',
+    icon: 'shuffle',
   },
 ];
 
@@ -70,23 +79,22 @@ export default function TrainingSelectionScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const { user } = useAuth();
   const { theme } = useTheme();
 
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const params = useLocalSearchParams<{ mode?: string; difficulty?: Difficulty }>();
   const isNarrow = width < 360;
 
-  // Offline connection state
   const [isOffline, setIsOffline] = useState(false);
+  const [workouts, setWorkouts] = useState<WorkoutSessionRecord[]>([]);
+  const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
 
-  // Selected state for bottom sheet modal - defaults to 'easy'
+  // Selected state for modal
   const [selectedOperation, setSelectedOperation] = useState<OperationData | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>(
-    params.difficulty || 'easy'
-  );
+  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>(params.difficulty || 'easy');
   const [showOthers, setShowOthers] = useState(false);
 
-  // Network connectivity listener
   useEffect(() => {
     const unsubscribe = NetInfo.addEventListener((state) => {
       const offline = state.isConnected === false || state.isInternetReachable === false;
@@ -95,6 +103,29 @@ export default function TrainingSelectionScreen() {
 
     return () => unsubscribe();
   }, []);
+
+  const loadScreenData = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const [workoutsData, settingsData] = await Promise.all([
+        fetchAllWorkouts(user.id).catch(() => []),
+        getUserSettings(user.id).catch(() => null),
+      ]);
+
+      setWorkouts(workoutsData || []);
+      if (settingsData?.daily_question_goal) {
+        setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
+      }
+    } catch (e) {
+      console.warn('Error loading training screen data:', e);
+    }
+  }, [user?.id]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadScreenData();
+    }, [loadScreenData])
+  );
 
   useEffect(() => {
     if (params.mode === 'demo') {
@@ -113,9 +144,29 @@ export default function TrainingSelectionScreen() {
     const state = await NetInfo.fetch();
     const offline = state.isConnected === false || state.isInternetReachable === false;
     setIsOffline(offline);
+    if (!offline) {
+      loadScreenData();
+    }
   };
 
-  // High-contrast dynamic colors
+  // Recommended focus aligned with Home & Stats
+  const nextFocusRecommendation = useMemo(() => {
+    return getNextFocus(workouts);
+  }, [workouts]);
+
+  // Dynamic baseline adaptive difficulty
+  const adaptiveDifficulty = useMemo((): Difficulty => {
+    if (workouts.length === 0) return 'easy';
+    const sample = workouts.slice(0, 5);
+    const avgAccuracy = sample.reduce((acc, curr) => acc + (Number(curr.accuracy) || 0), 0) / sample.length;
+    const avgTimePerQuestionMs =
+      sample.reduce((acc, curr) => acc + (Number(curr.average_time_per_question) || 0), 0) / sample.length;
+
+    if (avgAccuracy >= 85 && avgTimePerQuestionMs <= 3500) return 'hard';
+    if (avgAccuracy >= 70) return 'medium';
+    return 'easy';
+  }, [workouts]);
+
   const screenBg = isDark ? '#0A0F0B' : '#F1ECE9';
   const cardBg = isDark ? '#141C15' : '#FFFFFF';
   const cardElevated = isDark ? '#1B241C' : '#F8F6F4';
@@ -126,7 +177,37 @@ export default function TrainingSelectionScreen() {
   const accentGreen = '#BCE3AA';
   const accentLilac = '#F2CAEC';
 
-  // If offline, block the screen completely
+  const handleOpenDifficulty = (op: OperationData) => {
+    setSelectedOperation(op);
+    setSelectedDifficulty(params.difficulty || adaptiveDifficulty);
+  };
+
+  const handleDismissModal = () => {
+    setSelectedOperation(null);
+  };
+
+  const handleContinueToWorkout = () => {
+    if (!selectedOperation) return;
+    const rawMode = selectedOperation.id;
+    const mode = rawMode === 'mixed' ? 'adaptive_mix' : rawMode;
+    const diff = selectedDifficulty;
+    const isNewUser = workouts.length === 0;
+
+    handleDismissModal();
+
+    router.push({
+      pathname: '/workout' as any,
+      params: {
+        mode,
+        difficulty: diff,
+        count: isNewUser ? '10' : userQuestionGoal.toString(),
+        source: 'training_menu',
+        reset: 'true',
+        sessionKey: Date.now().toString(),
+      },
+    });
+  };
+
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
@@ -138,29 +219,6 @@ export default function TrainingSelectionScreen() {
       </SafeAreaView>
     );
   }
-
-  const handleOpenDifficulty = (op: OperationData) => {
-    setSelectedOperation(op);
-    setSelectedDifficulty('easy');
-  };
-
-  const handleDismissModal = () => {
-    setSelectedOperation(null);
-    setSelectedDifficulty('easy');
-  };
-
-  const handleContinueToWorkout = () => {
-    if (!selectedOperation) return;
-    const mode = selectedOperation.id;
-    const diff = selectedDifficulty;
-
-    handleDismissModal();
-
-    router.push({
-      pathname: '/workout' as any,
-      params: { mode, difficulty: diff },
-    });
-  };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
@@ -219,6 +277,9 @@ export default function TrainingSelectionScreen() {
           <View style={[styles.groupedCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
             {OPERATIONS.map((op, index) => {
               const iconBg = index % 2 === 0 ? accentGreen : accentLilac;
+              const isRecommended =
+                nextFocusRecommendation.targetOp === op.id ||
+                (nextFocusRecommendation.targetOp === 'mixed' && op.id === 'adaptive_mix');
 
               return (
                 <React.Fragment key={op.id}>
@@ -228,11 +289,22 @@ export default function TrainingSelectionScreen() {
                     onPress={() => handleOpenDifficulty(op)}
                   >
                     <View style={[styles.iconCircle, { backgroundColor: iconBg }]}>
-                      <Ionicons name={op.icon} size={20} color="#0A0F0B" />
+                      {op.glyph ? (
+                        <Text style={styles.glyphText}>{op.glyph}</Text>
+                      ) : (
+                        <Ionicons name={op.icon!} size={20} color="#0A0F0B" />
+                      )}
                     </View>
 
                     <View style={styles.textStack}>
-                      <Text style={[styles.programTitle, { color: primaryText }]}>{op.title}</Text>
+                      <View style={styles.titleRow}>
+                        <Text style={[styles.programTitle, { color: primaryText }]}>{op.title}</Text>
+                        {isRecommended && (
+                          <View style={[styles.recPill, { backgroundColor: accentGreen }]}>
+                            <Text style={styles.recPillText}>RECOMMENDED</Text>
+                          </View>
+                        )}
+                      </View>
                       <Text style={[styles.programSubtitle, { color: secondaryText }]}>
                         {op.subtitle}
                       </Text>
@@ -324,7 +396,7 @@ export default function TrainingSelectionScreen() {
               </Text>
             </View>
 
-            {/* Difficulty Options (Easy pre-selected by default) */}
+            {/* Difficulty Options */}
             <View style={styles.difficultyList}>
               {DIFFICULTIES.map(({ level, label }) => {
                 const isSelected = selectedDifficulty === level;
@@ -483,13 +555,36 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 14,
   },
+  glyphText: {
+    fontSize: 24,
+    lineHeight: 28,
+    fontWeight: '700',
+    color: '#0A0F0B',
+    textAlign: 'center',
+  },
   textStack: {
     flex: 1,
+  },
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
   programTitle: {
     fontSize: 15.5,
     fontWeight: '600',
     letterSpacing: -0.2,
+  },
+  recPill: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  recPillText: {
+    fontSize: 9.5,
+    fontWeight: '800',
+    color: '#0A0F0B',
+    letterSpacing: 0.5,
   },
   programSubtitle: {
     fontSize: 12.5,

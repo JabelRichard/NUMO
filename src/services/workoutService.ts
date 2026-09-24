@@ -34,13 +34,9 @@ export interface PendingDemoSession {
   completedAt: string;
 }
 
-// In-memory fallback & concurrency lock
 let inMemoryPendingDemo: PendingDemoSession | null = null;
 let isSyncingDemo = false;
 
-/**
- * Stores a completed demo workout locally while the user creates an account / signs in
- */
 export async function setPendingDemoSession(
   attempts: QuestionAttemptResult[],
   mode: OperationType = "mixed" as OperationType,
@@ -61,9 +57,6 @@ export async function setPendingDemoSession(
   }
 }
 
-/**
- * Retrieves the pending demo workout if one exists
- */
 export async function getPendingDemoSession(): Promise<PendingDemoSession | null> {
   if (inMemoryPendingDemo) return inMemoryPendingDemo;
   try {
@@ -75,9 +68,6 @@ export async function getPendingDemoSession(): Promise<PendingDemoSession | null
   }
 }
 
-/**
- * Clears the pending demo workout
- */
 export async function clearPendingDemoSession(): Promise<void> {
   inMemoryPendingDemo = null;
   try {
@@ -87,9 +77,6 @@ export async function clearPendingDemoSession(): Promise<void> {
   }
 }
 
-/**
- * Saves a completed workout session to Supabase (authenticated user)
- */
 export async function saveWorkoutSession(
   attempts: QuestionAttemptResult[],
   mode: OperationType,
@@ -151,10 +138,6 @@ export async function saveWorkoutSession(
   }
 }
 
-/**
- * Syncs and saves any pending demo session once the user logs in or signs up.
- * Includes concurrency locking to prevent duplicate insertions.
- */
 export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
   if (isSyncingDemo || !userId) return false;
 
@@ -167,7 +150,6 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
       return false;
     }
 
-    // Clear local storage first to prevent duplicate attempts if re-triggered
     await clearPendingDemoSession();
 
     const { data, error } = await saveWorkoutSession(
@@ -197,16 +179,12 @@ export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
   }
 }
 
-/**
- * Calculates current calendar week statistics for the authenticated user
- */
 export async function getWeeklyStats(): Promise<WeeklyStats> {
   try {
     const {
       data: { session },
     } = await supabase.auth.getSession();
 
-    // If there is no active session yet, return empty stats without throwing
     if (!session?.user) {
       return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
     }
@@ -244,14 +222,10 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
       return { solvedCount: 0, totalTimeMs: 0, avgTimePerQuestionMs: 0 };
     }
 
-    // Re-throw genuine network errors so screens can trigger the offline view
     throw err;
   }
 }
 
-/**
- * Fetches the user's latest 4 completed workouts
- */
 export async function getRecentWorkouts(): Promise<WorkoutSessionRecord[]> {
   try {
     const {
@@ -277,7 +251,144 @@ export async function getRecentWorkouts(): Promise<WorkoutSessionRecord[]> {
       return [];
     }
 
-    // Re-throw genuine network errors so screens can trigger the offline view
     throw err;
   }
+}
+
+export async function fetchAllWorkouts(userId: string): Promise<WorkoutSessionRecord[]> {
+  try {
+    const { data, error } = await supabase
+      .from("workout_sessions")
+      .select("*")
+      .eq("user_id", userId)
+      .order("completed_at", { ascending: true });
+
+    if (error) throw error;
+    return (data || []) as WorkoutSessionRecord[];
+  } catch (err: any) {
+    if (
+      err?.name === "AuthSessionMissingError" ||
+      err?.message?.includes("Auth session missing")
+    ) {
+      return [];
+    }
+
+    throw err;
+  }
+}
+
+// -------------------------------------------------------------
+// 3-Stage Recommendation State Machine
+// -------------------------------------------------------------
+
+export type FocusOperation = 'addition' | 'subtraction' | 'multiplication' | 'division' | 'mixed';
+export type RecommendationStage = 'baseline' | 'tour' | 'coach';
+
+export interface NextFocusRecommendation {
+  targetOp: FocusOperation;
+  stage: RecommendationStage;
+  heading: string;
+  subheading: string;
+  coachOpName: string;
+}
+
+export function getNextFocus(workouts: any[]): NextFocusRecommendation {
+  if (!workouts || workouts.length === 0) {
+    return {
+      targetOp: 'mixed',
+      stage: 'baseline',
+      heading: "Let's find your baseline.",
+      subheading: 'Start with a balanced challenge so NUMO can learn how you solve.',
+      coachOpName: 'Mixed Challenge',
+    };
+  }
+
+  const categories: Record<FocusOperation, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
+    addition: { label: 'Addition', totalQ: 0, correct: 0, totalTimeMs: 0 },
+    subtraction: { label: 'Subtraction', totalQ: 0, correct: 0, totalTimeMs: 0 },
+    multiplication: { label: 'Multiplication', totalQ: 0, correct: 0, totalTimeMs: 0 },
+    division: { label: 'Division', totalQ: 0, correct: 0, totalTimeMs: 0 },
+    mixed: { label: 'Mixed Challenge', totalQ: 0, correct: 0, totalTimeMs: 0 },
+  };
+
+  workouts.forEach((w) => {
+    let rawOp = (w.operation || 'mixed').toLowerCase();
+    if (rawOp === 'adaptive_mix') rawOp = 'mixed';
+    if (!categories[rawOp as FocusOperation]) return;
+
+    const opKey = rawOp as FocusOperation;
+    categories[opKey].totalQ += Number(w.total_questions) || 0;
+    categories[opKey].correct += Number(w.correct_answers) || 0;
+    categories[opKey].totalTimeMs += Number(w.total_time) || 0;
+  });
+
+  const parsed = (Object.keys(categories) as FocusOperation[]).map((key) => {
+    const data = categories[key];
+    const acc = data.totalQ > 0 ? (data.correct / data.totalQ) * 100 : 0;
+    const avgPace = data.totalQ > 0 ? data.totalTimeMs / data.totalQ / 1000 : 0;
+    const friction = data.totalQ > 0 ? (100 - acc) * 1.4 + avgPace * 3.5 : -1;
+    const mastery = data.totalQ > 0 ? acc * 0.7 + Math.max(0, 10 - avgPace) * 3 : 0;
+
+    return {
+      key,
+      name: data.label,
+      totalQ: data.totalQ,
+      accuracy: acc,
+      avgPace,
+      frictionScore: friction,
+      masteryScore: mastery,
+    };
+  });
+
+  // STAGE 1: Baseline Check (Under 20 questions in Mixed)
+  if (categories.mixed.totalQ < 20 && workouts.length < 2) {
+    return {
+      targetOp: 'mixed',
+      stage: 'baseline',
+      heading: "Let's find your baseline.",
+      subheading: 'Start with a balanced challenge so NUMO can learn how you solve.',
+      coachOpName: 'Mixed Challenge',
+    };
+  }
+
+  // STAGE 2: Core Onboarding Tour (Addition -> Subtraction -> Multiplication -> Division)
+  const tourOrder: FocusOperation[] = ['addition', 'subtraction', 'multiplication', 'division'];
+  const nextTourOp = tourOrder.find((op) => categories[op].totalQ < 10);
+
+  if (nextTourOp) {
+    const opInfo = categories[nextTourOp];
+    return {
+      targetOp: nextTourOp,
+      stage: 'tour',
+      heading: `Explore ${opInfo.label}`,
+      subheading: `Try ${opInfo.label} to complete your placement tour.`,
+      coachOpName: opInfo.label,
+    };
+  }
+
+  // STAGE 3: Smart Coach Mode (All 4 core operations tested)
+  const coreTested = parsed.filter((p) => p.key !== 'mixed' && p.totalQ >= 10);
+  const sortedByFriction = [...coreTested].sort((a, b) => b.frictionScore - a.frictionScore);
+  const weakest = sortedByFriction[0];
+
+  const sortedByMastery = [...coreTested].sort((a, b) => b.masteryScore - a.masteryScore);
+  const strongest = sortedByMastery[0];
+
+  if (weakest && weakest.key !== strongest.key) {
+    return {
+      targetOp: weakest.key,
+      stage: 'coach',
+      heading: `Coach's Choice: ${weakest.name}`,
+      subheading: `Targeted session to sharpen your ${weakest.name.toLowerCase()} speed and accuracy.`,
+      coachOpName: weakest.name,
+    };
+  }
+
+  return {
+    targetOp: 'mixed',
+    stage: 'coach',
+    heading: "Coach's Choice: Mixed Challenge",
+    subheading: 'Your operations are balanced. Test your speed across all modes.',
+    coachOpName: 'Mixed Challenge',
+  };
 }

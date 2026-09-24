@@ -30,7 +30,12 @@ import {
   saveWorkoutSession,
   setPendingDemoSession,
   getRecentWorkouts,
+  fetchAllWorkouts,
+  getNextFocus,
+  WorkoutSessionRecord,
+  FocusOperation,
 } from '../../src/services/workoutService';
+import { getUserSettings } from '../../src/services/settingsService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 
@@ -168,12 +173,13 @@ export default function ResultsScreen() {
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
   const [priorSummary, setPriorSummary] = useState<PriorWorkoutSummary | null>(null);
   const [showMistakesModal, setShowMistakesModal] = useState(false);
+  const [historicalWorkouts, setHistoricalWorkouts] = useState<WorkoutSessionRecord[]>([]);
+  const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
 
   const stepOpacity = useSharedValue(1);
   const stepTranslateX = useSharedValue(0);
   const hasSavedRef = useRef(false);
 
-  // RESET ROUTINE: Ensures every session starts fresh at Step 1
   useEffect(() => {
     setCurrentStep(1);
     hasSavedRef.current = false;
@@ -181,7 +187,6 @@ export default function ResultsScreen() {
     stepTranslateX.value = 0;
   }, [sessionKey, results, stepOpacity, stepTranslateX]);
 
-  // Parse Attempts with normalized timeTakenMs
   const attempts: QuestionAttemptResult[] = useMemo(() => {
     if (!results) return [];
     try {
@@ -198,7 +203,6 @@ export default function ResultsScreen() {
     }
   }, [results]);
 
-  // Current Metrics
   const totalQuestions = attempts.length;
   const correctAttempts = attempts.filter((a) => a.isCorrect);
   const missedAttempts = attempts.filter((a) => !a.isCorrect);
@@ -209,7 +213,6 @@ export default function ResultsScreen() {
     ? parseFloat((totalTimeSpentMs / totalQuestions / 1000).toFixed(1))
     : 1.8;
 
-  // Coaching Feedback
   const performanceVerdict = useMemo(() => {
     if (accuracy >= 90 && avgPaceNum <= 2.2) {
       return {
@@ -235,58 +238,46 @@ export default function ResultsScreen() {
     };
   }, [accuracy, avgPaceNum]);
 
-  // Recommendation logic
+  // Synchronized Recommendation Engine: Blends history + this completed session
   const recommendation = useMemo(() => {
-    const opStats: Record<string, { total: number; incorrect: number; totalTime: number }> = {};
+    const rawMode = (mode || 'mixed').toLowerCase();
+    const currentOp: FocusOperation =
+      rawMode === 'adaptive_mix' || rawMode === 'mixed'
+        ? 'mixed'
+        : (rawMode as FocusOperation);
 
-    attempts.forEach((a) => {
-      const op = a.question?.operation || mode || 'mixed';
-      if (!opStats[op]) opStats[op] = { total: 0, incorrect: 0, totalTime: 0 };
-      opStats[op].total += 1;
-      opStats[op].totalTime += (a.timeTakenMs || 1800);
-      if (!a.isCorrect) opStats[op].incorrect += 1;
-    });
+    const syntheticCurrentSession = {
+      operation: currentOp,
+      total_questions: totalQuestions,
+      correct_answers: correctCount,
+      total_time: totalTimeSpentMs,
+      completed_at: new Date().toISOString(),
+    };
 
-    let worstOp = (mode as OperationType) || 'mixed';
-    let highestFriction = -1;
+    const combinedWorkouts = [...historicalWorkouts, syntheticCurrentSession];
+    const rec = getNextFocus(combinedWorkouts);
 
-    Object.entries(opStats).forEach(([op, stats]) => {
-      const errorWeight = (stats.incorrect / stats.total) * 12;
-      const timeWeight = stats.totalTime / stats.total / 1000;
-      const frictionScore = errorWeight + timeWeight;
-
-      if (frictionScore > highestFriction) {
-        highestFriction = frictionScore;
-        worstOp = op as OperationType;
-      }
-    });
-
-    const displayOp = worstOp.charAt(0).toUpperCase() + worstOp.slice(1);
-
-    if (missedAttempts.length > 0) {
-      return {
-        targetMode: worstOp,
-        badge: `FOCUS: ${displayOp.toUpperCase()}`,
-        title: `Practice ${displayOp} next`,
-        desc: `Solid workout, but had slight hesitation on ${displayOp}. 10 targeted questions will smooth it out.`,
-      };
+    let badge = 'COACH RECOMMENDATION';
+    if (rec.stage === 'tour') {
+      badge = 'PLACEMENT TOUR';
+    } else if (accuracy === 100) {
+      badge = 'FLAWLESS EXECUTION';
     }
 
     return {
-      targetMode: worstOp,
-      badge: 'CHALLENGE LEVEL UP',
-      title: `Keep pace on ${displayOp}`,
-      desc: 'Flawless execution. Maintain this speed on your next round.',
+      targetMode: rec.targetOp,
+      stage: rec.stage,
+      badge,
+      title: rec.heading,
+      desc: rec.subheading,
     };
-  }, [attempts, mode, missedAttempts.length]);
+  }, [mode, totalQuestions, correctCount, totalTimeSpentMs, historicalWorkouts, accuracy]);
 
-  // Single Save Routine + Baseline Loading
   useEffect(() => {
     if (attempts.length === 0 || hasSavedRef.current) return;
     hasSavedRef.current = true;
 
     async function persistAndLoadComparison() {
-      // 1. Fetch prior summary for Beat 2 comparison
       try {
         const cachedPrior = await AsyncStorage.getItem(STORAGE_LAST_SUMMARY_KEY);
         if (cachedPrior) {
@@ -304,11 +295,21 @@ export default function ResultsScreen() {
             });
           }
         }
+
+        if (session?.user?.id) {
+          const [allWorkoutsData, settingsData] = await Promise.all([
+            fetchAllWorkouts(session.user.id).catch(() => []),
+            getUserSettings(session.user.id).catch(() => null),
+          ]);
+          setHistoricalWorkouts(allWorkoutsData || []);
+          if (settingsData?.daily_question_goal) {
+            setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
+          }
+        }
       } catch (e) {
-        console.warn('Could not load prior summary:', e);
+        console.warn('Could not load prior summary or history:', e);
       }
 
-      // 2. Persist this workout summary locally for next time
       const currentSummary: PriorWorkoutSummary = {
         accuracy,
         avgTimeSecs: avgPaceNum,
@@ -318,7 +319,6 @@ export default function ResultsScreen() {
       };
       await AsyncStorage.setItem(STORAGE_LAST_SUMMARY_KEY, JSON.stringify(currentSummary));
 
-      // 3. Save to Supabase exactly once
       const activeMode = (mode as OperationType) || 'mixed';
       const activeDiff = difficulty || 'easy';
 
@@ -332,7 +332,6 @@ export default function ResultsScreen() {
     persistAndLoadComparison();
   }, [attempts, mode, difficulty, isDemoWorkout, accuracy, avgPaceNum, correctCount, totalQuestions, session?.user?.id]);
 
-  // Comparison Deltas
   const comparisonData = useMemo(() => {
     if (!priorSummary) return null;
 
@@ -350,6 +349,7 @@ export default function ResultsScreen() {
           ? `${Math.abs(timeDiff)}s faster`
           : `${timeDiff}s slower`,
       isTimePositive: timeDiff <= 0,
+      isTimeNeutral: timeDiff === 0,
       scoreDelta: `${scoreDiff >= 0 ? '+' : ''}${scoreDiff}`,
       isScorePositive: scoreDiff >= 0,
     };
@@ -377,9 +377,16 @@ export default function ResultsScreen() {
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
+
+    const nextMode = recommendation.targetMode || 'mixed';
+    const resolvedMode = nextMode === 'mixed' ? 'adaptive_mix' : nextMode;
+    const isNewUser = historicalWorkouts.length === 0;
+
     const targetPayload = {
-      mode: recommendation.targetMode || 'mixed',
+      mode: resolvedMode,
       difficulty: difficulty || 'easy',
+      count: isNewUser ? '10' : userQuestionGoal.toString(),
+      source: 'results_coach',
       reset: 'true',
       sessionKey: Date.now().toString(),
     };
@@ -553,8 +560,34 @@ export default function ResultsScreen() {
                 <View style={styles.tableRow}>
                   <Text style={[styles.tableLabel, { color: textColor }]}>Avg. pace</Text>
                   <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{avgPaceNum}s</Text>
-                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isTimePositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
-                    <Text style={[styles.deltaText, { color: comparisonData.isTimePositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
+                  <View
+                    style={[
+                      styles.deltaBadge,
+                      {
+                        backgroundColor: comparisonData.isTimeNeutral
+                          ? isDark
+                            ? 'rgba(255,255,255,0.08)'
+                            : 'rgba(0,0,0,0.06)'
+                          : comparisonData.isTimePositive
+                          ? 'rgba(188, 227, 170, 0.25)'
+                          : 'rgba(235, 87, 87, 0.12)',
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.deltaText,
+                        {
+                          color: comparisonData.isTimeNeutral
+                            ? subtextColor
+                            : comparisonData.isTimePositive
+                            ? isDark
+                              ? PALETTE.primary
+                              : '#2E7D32'
+                            : PALETTE.dangerText,
+                        },
+                      ]}
+                    >
                       {comparisonData.timeDelta}
                     </Text>
                   </View>
@@ -584,7 +617,7 @@ export default function ResultsScreen() {
           </View>
         )}
 
-        {/* BEAT 3: YOUR NEXT STEP */}
+        {/* BEAT 3: YOUR NEXT STEP (SYNCHRONIZED WITH SINGLE SOURCE OF TRUTH) */}
         {currentStep === 3 && (
           <View style={styles.stepContainer}>
             <IconStage
@@ -597,7 +630,7 @@ export default function ResultsScreen() {
 
             <Text style={[styles.stepHeadline, { color: textColor }]}>Next recommendation</Text>
             <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
-              Targeted focus based on today's performance
+              {recommendation.stage === 'tour' ? 'Your placement tour roadmap' : "Targeted focus based on today's performance"}
             </Text>
 
             <View style={[styles.recommendationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
