@@ -364,6 +364,24 @@ export default function DashboardScreen() {
       };
     }
 
+    // Fresh Day / First Workout of Today
+    if (workoutsCompletedToday === 0 && !isNewUser) {
+      const opName = OP_DISPLAY_NAMES[effectiveOp];
+      const isTour = recommendation.stage === 'tour';
+
+      return {
+        focusOp: effectiveOp,
+        badgeText: isTour ? 'PLACEMENT TOUR' : "COACH'S DAILY PICK",
+        headingText: isTour
+          ? `Explore ${opName}`
+          : `Start today with ${opName}`,
+        subheadingText: isTour
+          ? `Complete 10 quick ${opName.toLowerCase()} questions to continue your tour.`
+          : `Warm up your mental pace and keep your consistency streak alive.`,
+        buttonText: "START TODAY'S WORKOUT",
+      };
+    }
+
     // Default to Coach's Choice / Tour Recommendation
     if (hasJustCompletedWorkout) {
       let postBadge = 'NICE WORK TODAY';

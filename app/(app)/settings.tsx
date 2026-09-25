@@ -21,6 +21,7 @@ import { useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import * as ImagePicker from 'expo-image-picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../src/context/AuthContext';
 import {
   getUserSettings,
@@ -34,17 +35,36 @@ import {
 } from '../../src/services/settingsService';
 import { UserSettings, DEFAULT_USER_SETTINGS } from '../../src/types/settings';
 import { useTheme } from '@/src/context/ThemeContext';
+import { OfflineNotice } from '../../src/components/OfflineNotice';
 
-// Options
-const QUESTION_OPTIONS: number[] = [5, 10, 30, 50];
-const DURATION_OPTIONS: { mins: number; label: string }[] = [
-  { mins: 2, label: '2 mins' },
-  { mins: 5, label: '5 mins' },
-  { mins: 10, label: '10 mins' },
+const PALETTE = {
+  primary: '#BCE3AA',         // Soft pastel sage
+  accentLilac: '#F2CAEC',     // Soft orchid
+  backgroundLight: '#F1ECE9', // Warm neutral
+  dark: '#0A0F0B',            // Deep obsidian
+  cardLight: '#FFFFFF',
+  cardDark: '#141C15',
+  borderLight: 'rgba(10, 15, 11, 0.08)',
+  borderDark: 'rgba(255, 255, 255, 0.08)',
+  textSubtleLight: 'rgba(10, 15, 11, 0.55)',
+  textSubtleDark: 'rgba(241, 236, 233, 0.65)',
+  danger: '#EB5757',
+  dangerBgLight: 'rgba(235, 87, 87, 0.1)',
+  dangerBgDark: 'rgba(235, 87, 87, 0.16)',
+};
+
+const QUESTION_OPTIONS = [5, 10, 30, 50];
+const DURATION_OPTIONS = [
+  { mins: 2, label: '2 min' },
+  { mins: 5, label: '5 min' },
+  { mins: 10, label: '10 min' },
 ];
-const FREQUENCY_OPTIONS: string[] = ['3 days per week', '5 days per week', 'Every day'];
+const FREQUENCY_OPTIONS = [
+  { value: '3 days per week', label: '3x / wk' },
+  { value: '5 days per week', label: '5x / wk' },
+  { value: 'Every day', label: 'Daily' },
+];
 
-// Presets (First 3 slots)
 const PRESET_REMINDER_TIMES = [
   { label: '8:00 AM', value: '08:00' },
   { label: '12:30 PM', value: '12:30' },
@@ -56,25 +76,38 @@ const PREF_KEYS = {
   REMINDER_TIME: '@numo_reminder_time',
   DAILY_MINUTES: '@numo_daily_goal_minutes',
   FREQUENCY: '@numo_training_frequency',
+  HAPTICS: '@numo_haptics_enabled',
+  SOUNDS: '@numo_sounds_enabled',
 };
 
 export default function SettingsScreen() {
   const router = useRouter();
   const { session, signOut } = useAuth();
   const insets = useSafeAreaInsets();
-  const { height, width } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const { theme, themeMode, setThemeMode } = useTheme();
 
-  const isCompact = height < 720;
+  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const isNarrow = width < 360;
 
-  // DB Settings
-  const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
-  const [loading, setLoading] = useState<boolean>(true);
-  const [savingKey, setSavingKey] = useState<string | null>(null);
+  const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
+  const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
+  const textColor = isDark ? PALETTE.backgroundLight : PALETTE.dark;
+  const subtextColor = isDark ? PALETTE.textSubtleDark : PALETTE.textSubtleLight;
+  const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
+  const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
+  const pillBaseBg = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.05)';
+  const accentGreen = PALETTE.primary;
+  const accentLilac = PALETTE.accentLilac;
+  const dangerText = PALETTE.danger;
 
-  // Accordion Expandable States
-  const [expandedSection, setExpandedSection] = useState<'questions' | 'duration' | 'frequency' | null>(null);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [settings, setSettings] = useState<UserSettings>(DEFAULT_USER_SETTINGS);
+
+  // Sensory Toggles
+  const [hapticsEnabled, setHapticsEnabled] = useState<boolean>(true);
+  const [soundsEnabled, setSoundsEnabled] = useState<boolean>(true);
 
   // Local Device Preferences
   const [dailyGoalMinutes, setDailyGoalMinutes] = useState<number>(5);
@@ -90,8 +123,9 @@ export default function SettingsScreen() {
   const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
   const [isUploadingAvatar, setIsUploadingAvatar] = useState<boolean>(false);
   const [fullName, setFullName] = useState<string>('');
-  const [isEditingName, setIsEditingName] = useState<boolean>(false);
+  const [editNameModalVisible, setEditNameModalVisible] = useState<boolean>(false);
   const [nameInput, setNameInput] = useState<string>('');
+  const [isSavingName, setIsSavingName] = useState<boolean>(false);
 
   // Password Modal State
   const [passwordModalVisible, setPasswordModalVisible] = useState<boolean>(false);
@@ -112,11 +146,32 @@ export default function SettingsScreen() {
 
   const userId = session?.user?.id;
 
+  // Connectivity Listener
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+      if (!offline && isOffline) {
+        loadSettings();
+      }
+    });
+
+    return () => unsubscribe();
+  }, [isOffline]);
+
   const loadSettings = useCallback(async () => {
+    const net = await NetInfo.fetch();
+    if (net.isConnected === false || net.isInternetReachable === false) {
+      setIsOffline(true);
+      setLoading(false);
+      return;
+    }
+
     if (!userId) {
       setLoading(false);
       return;
     }
+
     try {
       const [settingsData, profileData] = await Promise.all([
         getUserSettings(userId),
@@ -131,19 +186,25 @@ export default function SettingsScreen() {
       setNameInput(name);
       setAvatarUrl(avatar);
 
-      const [storedNotifs, storedTime, storedMins, storedFreq] = await Promise.all([
+      const [storedNotifs, storedTime, storedMins, storedFreq, storedHaptics, storedSounds] = await Promise.all([
         AsyncStorage.getItem(PREF_KEYS.NOTIFICATIONS),
         AsyncStorage.getItem(PREF_KEYS.REMINDER_TIME),
         AsyncStorage.getItem(PREF_KEYS.DAILY_MINUTES),
         AsyncStorage.getItem(PREF_KEYS.FREQUENCY),
+        AsyncStorage.getItem(PREF_KEYS.HAPTICS),
+        AsyncStorage.getItem(PREF_KEYS.SOUNDS),
       ]);
 
       if (storedNotifs !== null) setNotificationsEnabled(storedNotifs === 'true');
       if (storedTime !== null) setReminderTime(storedTime);
       if (storedMins !== null) setDailyGoalMinutes(parseInt(storedMins, 10) || 5);
       if (storedFreq !== null) setTrainingFrequency(storedFreq);
+      if (storedHaptics !== null) setHapticsEnabled(storedHaptics === 'true');
+      if (storedSounds !== null) setSoundsEnabled(storedSounds === 'true');
+
+      setIsOffline(false);
     } catch {
-      Alert.alert('Error', 'Could not load your settings.');
+      setIsOffline(true);
     } finally {
       setLoading(false);
     }
@@ -153,27 +214,25 @@ export default function SettingsScreen() {
     loadSettings();
   }, [loadSettings]);
 
-  const toggleAccordion = (section: 'questions' | 'duration' | 'frequency') => {
-    setExpandedSection((prev) => (prev === section ? null : section));
-  };
-
-  // --- Handlers ---
+  // Handlers
   const handleToggleNotifications = async (val: boolean) => {
     setNotificationsEnabled(val);
-    try {
-      await AsyncStorage.setItem(PREF_KEYS.NOTIFICATIONS, val ? 'true' : 'false');
-    } catch (e) {
-      console.error('Failed saving notification preference', e);
-    }
+    await AsyncStorage.setItem(PREF_KEYS.NOTIFICATIONS, val ? 'true' : 'false').catch(() => {});
+  };
+
+  const handleToggleHaptics = async (val: boolean) => {
+    setHapticsEnabled(val);
+    await AsyncStorage.setItem(PREF_KEYS.HAPTICS, val ? 'true' : 'false').catch(() => {});
+  };
+
+  const handleToggleSounds = async (val: boolean) => {
+    setSoundsEnabled(val);
+    await AsyncStorage.setItem(PREF_KEYS.SOUNDS, val ? 'true' : 'false').catch(() => {});
   };
 
   const handleUpdateReminderTime = async (timeStr: string) => {
     setReminderTime(timeStr);
-    try {
-      await AsyncStorage.setItem(PREF_KEYS.REMINDER_TIME, timeStr);
-    } catch (e) {
-      console.error('Failed saving reminder time', e);
-    }
+    await AsyncStorage.setItem(PREF_KEYS.REMINDER_TIME, timeStr).catch(() => {});
   };
 
   const handleSaveCustomTime = async () => {
@@ -189,30 +248,20 @@ export default function SettingsScreen() {
 
   const handleUpdateDuration = async (mins: number) => {
     setDailyGoalMinutes(mins);
-    try {
-      await AsyncStorage.setItem(PREF_KEYS.DAILY_MINUTES, mins.toString());
-    } catch (e) {
-      console.error('Failed saving duration', e);
-    }
+    await AsyncStorage.setItem(PREF_KEYS.DAILY_MINUTES, mins.toString()).catch(() => {});
   };
 
   const handleUpdateFrequency = async (freq: string) => {
     setTrainingFrequency(freq);
-    try {
-      await AsyncStorage.setItem(PREF_KEYS.FREQUENCY, freq);
-    } catch (e) {
-      console.error('Failed saving frequency', e);
-    }
+    await AsyncStorage.setItem(PREF_KEYS.FREQUENCY, freq).catch(() => {});
   };
 
   const handleUpdateQuestions = async (count: number) => {
     if (!userId || settings.daily_question_goal === count) return;
     const prev = settings.daily_question_goal;
     setSettings((p) => ({ ...p, daily_question_goal: count }));
-    setSavingKey('questions');
 
     const res = await saveUserSettings(userId, { daily_question_goal: count });
-    setSavingKey(null);
     if (!res.success) {
       setSettings((p) => ({ ...p, daily_question_goal: prev }));
       Alert.alert('Save Failed', 'Could not update question count.');
@@ -267,13 +316,13 @@ export default function SettingsScreen() {
 
   const handleSaveName = async () => {
     if (!userId || !nameInput.trim()) return;
-    setSavingKey('name');
+    setIsSavingName(true);
     const res = await updateProfileName(userId, nameInput.trim());
-    setSavingKey(null);
+    setIsSavingName(false);
 
     if (res.success) {
       setFullName(nameInput.trim());
-      setIsEditingName(false);
+      setEditNameModalVisible(false);
     } else {
       Alert.alert('Error', res.error || 'Failed to update name.');
     }
@@ -336,30 +385,36 @@ export default function SettingsScreen() {
     return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
+  if (isOffline) {
+    return (
+      <SafeAreaView style={[styles.container, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+        <OfflineNotice onRetry={loadSettings} isRetrying={loading} />
+      </SafeAreaView>
+    );
+  }
+
   if (loading) {
     return (
-      <View style={[styles.centerContainer, { backgroundColor: theme.background }]}>
-        <ActivityIndicator size="large" color={theme.primary} />
+      <View style={[styles.centerContainer, { backgroundColor: screenBg }]}>
+        <ActivityIndicator size="large" color={accentGreen} />
       </View>
     );
   }
 
-  const isLight = !theme.isDark;
-
-  // Determine if active reminder time is a preset or custom
   const isPresetSelected = PRESET_REMINDER_TIMES.some((p) => p.value === reminderTime);
   const customDisplayLabel = !isPresetSelected ? reminderTime : 'Custom';
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]} edges={['top']}>
-      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} />
+    <SafeAreaView style={[styles.container, { backgroundColor: screenBg }]} edges={['top']}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
 
-      {/* HEADER: Centered Title with Back Button */}
+      {/* Header Bar */}
       <View
         style={[
           styles.headerWrapper,
           {
-            backgroundColor: theme.background,
+            backgroundColor: screenBg,
             paddingHorizontal: isNarrow ? 16 : 20,
             paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
           },
@@ -367,15 +422,14 @@ export default function SettingsScreen() {
       >
         <View style={styles.headerBar}>
           <TouchableOpacity
-            style={[styles.headerBackButton, { backgroundColor: isLight ? '#FFFFFF' : theme.card }]}
+            style={[styles.headerBackButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
             onPress={() => router.back()}
             activeOpacity={0.7}
           >
-            <Ionicons name="arrow-back" size={20} color={theme.text} />
+            <Ionicons name="arrow-back" size={20} color={textColor} />
           </TouchableOpacity>
 
-          <Text style={[styles.headerCenteredTitle, { color: theme.text }]}>Settings</Text>
-
+          <Text style={[styles.headerCenteredTitle, { color: textColor }]}>Settings</Text>
           <View style={styles.headerPlaceholder} />
         </View>
       </View>
@@ -386,28 +440,27 @@ export default function SettingsScreen() {
           {
             paddingHorizontal: isNarrow ? 16 : 20,
             paddingTop: 8,
-            paddingBottom: Math.max(insets.bottom, 20) + (isCompact ? 60 : 80),
+            paddingBottom: Math.max(insets.bottom, 20) + 90,
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.wrapper}>
-          {/* SECTION 1: ACCOUNT (Profile Compact Card) */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACCOUNT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={styles.profileRow}>
-              {/* Compact Avatar */}
+          
+          {/* 1. HERO ATHLETE PROFILE CARD */}
+          <View style={[styles.profileHeroCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+            <View style={styles.profileHeroMain}>
               <TouchableOpacity
                 onPress={handlePickAndUploadAvatar}
                 activeOpacity={0.8}
-                style={[styles.compactAvatar, { backgroundColor: theme.pillBg }]}
+                style={[styles.heroAvatarContainer, { borderColor: accentGreen }]}
                 disabled={isUploadingAvatar}
               >
                 {avatarUrl ? (
-                  <Image source={{ uri: avatarUrl }} style={styles.compactAvatarImage} />
+                  <Image source={{ uri: avatarUrl }} style={styles.heroAvatarImage} />
                 ) : (
-                  <View style={[styles.compactAvatarPlaceholder, { backgroundColor: theme.primary }]}>
-                    <Text style={styles.compactAvatarInitials}>
+                  <View style={[styles.heroAvatarPlaceholder, { backgroundColor: accentGreen }]}>
+                    <Text style={[styles.heroAvatarInitials, { color: PALETTE.dark }]}>
                       {getInitials(fullName || session?.user?.email || 'NUMO')}
                     </Text>
                   </View>
@@ -417,246 +470,231 @@ export default function SettingsScreen() {
                     <ActivityIndicator size="small" color="#FFFFFF" />
                   </View>
                 ) : (
-                  <View style={[styles.avatarMiniBadge, { backgroundColor: theme.primary }]}>
-                    <Ionicons name="camera" size={10} color="#FFFFFF" />
+                  <View style={[styles.heroAvatarMiniBadge, { backgroundColor: accentGreen }]}>
+                    <Ionicons name="camera" size={11} color={PALETTE.dark} />
                   </View>
                 )}
               </TouchableOpacity>
 
-              {/* Name & Email Stack */}
-              <View style={styles.profileTextColumn}>
-                {isEditingName ? (
-                  <View style={styles.inlineEditRow}>
-                    <TextInput
-                      value={nameInput}
-                      onChangeText={setNameInput}
-                      placeholder="Full Name"
-                      placeholderTextColor={theme.muted}
-                      style={[styles.inlineNameInput, { color: theme.text, borderColor: theme.primary }]}
-                      autoFocus
-                    />
-                    <TouchableOpacity onPress={handleSaveName} style={[styles.inlineSaveBtn, { backgroundColor: theme.primary }]}>
-                      {savingKey === 'name' ? (
-                        <ActivityIndicator size="small" color="#FFFFFF" />
-                      ) : (
-                        <Text style={styles.inlineSaveText}>Save</Text>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => setIsEditingName(false)} style={styles.inlineCancelBtn}>
-                      <Text style={[styles.inlineCancelText, { color: theme.muted }]}>✕</Text>
-                    </TouchableOpacity>
-                  </View>
-                ) : (
-                  <TouchableOpacity
-                    onPress={() => setIsEditingName(true)}
-                    activeOpacity={0.7}
-                    style={styles.profileNameRow}
-                  >
-                    <Text style={[styles.profileNameText, { color: theme.text }]} numberOfLines={1}>
-                      {fullName || 'Add Name'}
-                    </Text>
-                    <Ionicons name="pencil-outline" size={14} color={theme.muted} style={{ marginLeft: 6 }} />
-                  </TouchableOpacity>
-                )}
+              <View style={styles.heroProfileInfo}>
+                <View style={[styles.athleteTierPill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : accentLilac }]}>
+                  <Text style={[styles.athleteTierText, { color: isDark ? accentGreen : PALETTE.dark }]}>
+                    DAILY ATHLETE
+                  </Text>
+                </View>
 
-                <Text style={[styles.profileEmailText, { color: theme.subtext }]} numberOfLines={1}>
-                  {session?.user?.email || 'No email associated'}
+                <TouchableOpacity
+                  onPress={() => {
+                    setNameInput(fullName);
+                    setEditNameModalVisible(true);
+                  }}
+                  activeOpacity={0.7}
+                  style={styles.heroNameTouchable}
+                >
+                  <Text style={[styles.heroNameText, { color: textColor }]} numberOfLines={1}>
+                    {fullName || 'Add Your Name'}
+                  </Text>
+                  <Ionicons name="pencil-outline" size={14} color={subtextColor} />
+                </TouchableOpacity>
+
+                <Text style={[styles.heroEmailText, { color: subtextColor }]} numberOfLines={1}>
+                  {session?.user?.email || 'Personal Account'}
                 </Text>
 
                 {avatarUrl && (
                   <TouchableOpacity onPress={handleRemoveAvatar} activeOpacity={0.7} style={{ marginTop: 4 }}>
-                    <Text style={styles.removePhotoText}>Remove photo</Text>
+                    <Text style={[styles.removePhotoText, { color: dangerText }]}>Remove photo</Text>
                   </TouchableOpacity>
                 )}
               </View>
             </View>
           </View>
 
-          {/* SECTION 2: WORKOUT PREFERENCES (Dropdown Accordions) */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>WORKOUT PREFERENCES</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            {/* Accordion Item 1: Questions per Workout */}
-            <TouchableOpacity
-              style={styles.accordionHeaderRow}
-              activeOpacity={0.7}
-              onPress={() => toggleAccordion('questions')}
-            >
-              <Text style={[styles.accordionTitle, { color: theme.text }]}>Questions per Workout</Text>
-              <View style={styles.accordionValueRight}>
-                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
-                  {settings.daily_question_goal} questions
+          {/* 2. WORKOUT TARGETS (INLINE CONTROLS) */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>WORKOUT TARGETS</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+            
+            {/* Questions per session */}
+            <View style={styles.targetRowBlock}>
+              <View style={styles.targetLabelRow}>
+                <Text style={[styles.targetLabelTitle, { color: textColor }]}>Questions Per Session</Text>
+                <Text style={[styles.targetLabelValue, { color: accentGreen }]}>
+                  {settings.daily_question_goal} Qs
                 </Text>
-                <Ionicons
-                  name={expandedSection === 'questions' ? 'chevron-down' : 'chevron-forward'}
-                  size={18}
-                  color={theme.muted}
-                />
               </View>
-            </TouchableOpacity>
-
-            {expandedSection === 'questions' && (
-              <View style={styles.accordionBody}>
-                <View style={styles.pillsContainer}>
-                  {QUESTION_OPTIONS.map((count) => {
-                    const isSelected = settings.daily_question_goal === count;
-                    return (
-                      <TouchableOpacity
-                        key={count}
-                        activeOpacity={0.7}
+              <View style={styles.segmentedContainer}>
+                {QUESTION_OPTIONS.map((count) => {
+                  const isSelected = settings.daily_question_goal === count;
+                  return (
+                    <TouchableOpacity
+                      key={count}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.segmentPill,
+                        { backgroundColor: pillBaseBg },
+                        isSelected && { backgroundColor: accentGreen },
+                      ]}
+                      onPress={() => handleUpdateQuestions(count)}
+                    >
+                      <Text
                         style={[
-                          styles.pill,
-                          { backgroundColor: theme.pillBg },
-                          isSelected && {
-                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                            borderColor: theme.primary,
-                          },
+                          styles.segmentPillText,
+                          { color: textColor },
+                          isSelected && { color: PALETTE.dark, fontWeight: '800' },
                         ]}
-                        onPress={() => handleUpdateQuestions(count)}
                       >
-                        <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
-                          {count}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                        {count}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            )}
+            </View>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
-            {/* Accordion Item 2: Target Duration */}
-            <TouchableOpacity
-              style={styles.accordionHeaderRow}
-              activeOpacity={0.7}
-              onPress={() => toggleAccordion('duration')}
-            >
-              <Text style={[styles.accordionTitle, { color: theme.text }]}>Target Duration</Text>
-              <View style={styles.accordionValueRight}>
-                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
-                  {dailyGoalMinutes} mins
+            {/* Target Duration */}
+            <View style={styles.targetRowBlock}>
+              <View style={styles.targetLabelRow}>
+                <Text style={[styles.targetLabelTitle, { color: textColor }]}>Target Duration</Text>
+                <Text style={[styles.targetLabelValue, { color: accentGreen }]}>
+                  {dailyGoalMinutes} min
                 </Text>
-                <Ionicons
-                  name={expandedSection === 'duration' ? 'chevron-down' : 'chevron-forward'}
-                  size={18}
-                  color={theme.muted}
-                />
               </View>
-            </TouchableOpacity>
-
-            {expandedSection === 'duration' && (
-              <View style={styles.accordionBody}>
-                <View style={styles.pillsContainer}>
-                  {DURATION_OPTIONS.map((opt) => {
-                    const isSelected = dailyGoalMinutes === opt.mins;
-                    return (
-                      <TouchableOpacity
-                        key={opt.mins}
-                        activeOpacity={0.7}
+              <View style={styles.segmentedContainer}>
+                {DURATION_OPTIONS.map((opt) => {
+                  const isSelected = dailyGoalMinutes === opt.mins;
+                  return (
+                    <TouchableOpacity
+                      key={opt.mins}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.segmentPill,
+                        { backgroundColor: pillBaseBg },
+                        isSelected && { backgroundColor: accentGreen },
+                      ]}
+                      onPress={() => handleUpdateDuration(opt.mins)}
+                    >
+                      <Text
                         style={[
-                          styles.pill,
-                          { backgroundColor: theme.pillBg },
-                          isSelected && {
-                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                            borderColor: theme.primary,
-                          },
+                          styles.segmentPillText,
+                          { color: textColor },
+                          isSelected && { color: PALETTE.dark, fontWeight: '800' },
                         ]}
-                        onPress={() => handleUpdateDuration(opt.mins)}
                       >
-                        <Text style={[styles.pillText, { color: theme.text }, isSelected && { color: theme.primary }]}>
-                          {opt.label}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            )}
+            </View>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
-            {/* Accordion Item 3: Weekly Frequency */}
-            <TouchableOpacity
-              style={styles.accordionHeaderRow}
-              activeOpacity={0.7}
-              onPress={() => toggleAccordion('frequency')}
-            >
-              <Text style={[styles.accordionTitle, { color: theme.text }]}>Weekly Frequency</Text>
-              <View style={styles.accordionValueRight}>
-                <Text style={[styles.accordionValueText, { color: theme.subtext }]}>
+            {/* Weekly Cadence */}
+            <View style={styles.targetRowBlock}>
+              <View style={styles.targetLabelRow}>
+                <Text style={[styles.targetLabelTitle, { color: textColor }]}>Weekly Cadence</Text>
+                <Text style={[styles.targetLabelValue, { color: accentGreen }]}>
                   {trainingFrequency.replace(' per week', '/wk')}
                 </Text>
-                <Ionicons
-                  name={expandedSection === 'frequency' ? 'chevron-down' : 'chevron-forward'}
-                  size={18}
-                  color={theme.muted}
-                />
               </View>
-            </TouchableOpacity>
-
-            {expandedSection === 'frequency' && (
-              <View style={styles.accordionBody}>
-                <View style={styles.pillsContainer}>
-                  {FREQUENCY_OPTIONS.map((freq) => {
-                    const isSelected = trainingFrequency === freq;
-                    return (
-                      <TouchableOpacity
-                        key={freq}
-                        activeOpacity={0.7}
+              <View style={styles.segmentedContainer}>
+                {FREQUENCY_OPTIONS.map((opt) => {
+                  const isSelected = trainingFrequency === opt.value;
+                  return (
+                    <TouchableOpacity
+                      key={opt.value}
+                      activeOpacity={0.7}
+                      style={[
+                        styles.segmentPill,
+                        { backgroundColor: pillBaseBg },
+                        isSelected && { backgroundColor: accentGreen },
+                      ]}
+                      onPress={() => handleUpdateFrequency(opt.value)}
+                    >
+                      <Text
                         style={[
-                          styles.pill,
-                          { backgroundColor: theme.pillBg },
-                          isSelected && {
-                            backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                            borderColor: theme.primary,
-                          },
+                          styles.segmentPillText,
+                          { color: textColor },
+                          isSelected && { color: PALETTE.dark, fontWeight: '800' },
                         ]}
-                        onPress={() => handleUpdateFrequency(freq)}
                       >
-                        <Text style={[styles.pillTextSmall, { color: theme.text }, isSelected && { color: theme.primary }]}>
-                          {freq.replace(' per week', '/wk')}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
+                        {opt.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
-            )}
+            </View>
           </View>
 
-          {/* SECTION 3: REMINDERS & NOTIFICATIONS */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>REMINDERS & NOTIFICATIONS</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          {/* 3. SENSORY & FEEDBACK (HAPTICS & AUDIO) */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>SENSORY & CADENCE</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
             <View style={styles.switchRow}>
-              <View style={{ flex: 1, marginRight: 12 }}>
-                <Text style={[styles.accordionTitle, { color: theme.text }]}>Reminders & Notifications</Text>
-                <Text style={[styles.settingDescription, { color: theme.subtext, marginBottom: 0 }]}>
-                  Daily workout prompts, streak alerts, and updates.
+              <View style={styles.switchTextCol}>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Haptic Feedback</Text>
+                <Text style={[styles.rowSubtext, { color: subtextColor }]}>Tactile vibrations on arithmetic response.</Text>
+              </View>
+              <Switch
+                value={hapticsEnabled}
+                onValueChange={handleToggleHaptics}
+                trackColor={{
+                  false: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(10,15,11,0.12)',
+                  true: accentGreen,
+                }}
+                thumbColor={isDark ? '#FFFFFF' : '#0A0F0B'}
+              />
+            </View>
+
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
+
+            <View style={styles.switchRow}>
+              <View style={styles.switchTextCol}>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Sound Effects</Text>
+                <Text style={[styles.rowSubtext, { color: subtextColor }]}>Audio cues for completed sets and streaks.</Text>
+              </View>
+              <Switch
+                value={soundsEnabled}
+                onValueChange={handleToggleSounds}
+                trackColor={{
+                  false: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(10,15,11,0.12)',
+                  true: accentGreen,
+                }}
+                thumbColor={isDark ? '#FFFFFF' : '#0A0F0B'}
+              />
+            </View>
+          </View>
+
+          {/* 4. NOTIFICATIONS */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>REMINDERS</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+            <View style={styles.switchRow}>
+              <View style={styles.switchTextCol}>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Daily Reminders</Text>
+                <Text style={[styles.rowSubtext, { color: subtextColor }]}>
+                  Keep your rhythm alive with timed prompts.
                 </Text>
               </View>
-
               <Switch
                 value={notificationsEnabled}
                 onValueChange={handleToggleNotifications}
                 trackColor={{
-                  false: isLight ? '#D1D1D6' : '#3A3A3C',
-                  true: theme.primary,
+                  false: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(10,15,11,0.12)',
+                  true: accentGreen,
                 }}
-                thumbColor="#FFFFFF"
-                ios_backgroundColor={isLight ? '#D1D1D6' : '#3A3A3C'}
+                thumbColor={isDark ? '#FFFFFF' : '#0A0F0B'}
               />
             </View>
 
             {notificationsEnabled && (
               <>
-                <View style={[styles.divider, { backgroundColor: theme.divider }]} />
-                <View style={styles.settingBlock}>
-                  <Text style={[styles.settingLabel, { color: theme.text, marginBottom: 4 }]}>Preferred Time</Text>
-                  <Text style={[styles.settingDescription, { color: theme.subtext }]}>
-                    Choose a preset or enter any custom time you prefer.
-                  </Text>
-                  <View style={styles.pillsContainer}>
-                    {/* 3 Presets */}
+                <View style={[styles.divider, { backgroundColor: dividerColor }]} />
+                <View style={styles.targetRowBlock}>
+                  <Text style={[styles.targetLabelTitle, { color: textColor, marginBottom: 8 }]}>Preferred Prompt Time</Text>
+                  <View style={styles.segmentedContainer}>
                     {PRESET_REMINDER_TIMES.map((time) => {
                       const isSelected = reminderTime === time.value;
                       return (
@@ -664,20 +702,17 @@ export default function SettingsScreen() {
                           key={time.value}
                           activeOpacity={0.7}
                           style={[
-                            styles.pill,
-                            { backgroundColor: theme.pillBg },
-                            isSelected && {
-                              backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                              borderColor: theme.primary,
-                            },
+                            styles.segmentPill,
+                            { backgroundColor: pillBaseBg },
+                            isSelected && { backgroundColor: accentGreen },
                           ]}
                           onPress={() => handleUpdateReminderTime(time.value)}
                         >
                           <Text
                             style={[
-                              styles.pillTextSmall,
-                              { color: theme.text },
-                              isSelected && { color: theme.primary },
+                              styles.segmentPillText,
+                              { color: textColor },
+                              isSelected && { color: PALETTE.dark, fontWeight: '800' },
                             ]}
                           >
                             {time.label}
@@ -686,16 +721,12 @@ export default function SettingsScreen() {
                       );
                     })}
 
-                    {/* 4th Slot: Custom Time Input Option */}
                     <TouchableOpacity
                       activeOpacity={0.7}
                       style={[
-                        styles.pill,
-                        { backgroundColor: theme.pillBg },
-                        !isPresetSelected && {
-                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                          borderColor: theme.primary,
-                        },
+                        styles.segmentPill,
+                        { backgroundColor: pillBaseBg },
+                        !isPresetSelected && { backgroundColor: accentGreen },
                       ]}
                       onPress={() => {
                         setCustomTimeInput(!isPresetSelected ? reminderTime : '');
@@ -704,9 +735,9 @@ export default function SettingsScreen() {
                     >
                       <Text
                         style={[
-                          styles.pillTextSmall,
-                          { color: theme.text },
-                          !isPresetSelected && { color: theme.primary },
+                          styles.segmentPillText,
+                          { color: textColor },
+                          !isPresetSelected && { color: PALETTE.dark, fontWeight: '800' },
                         ]}
                         numberOfLines={1}
                       >
@@ -719,81 +750,80 @@ export default function SettingsScreen() {
             )}
           </View>
 
-          {/* SECTION 4: APPEARANCE */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>APPEARANCE</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
-            <View style={styles.settingBlock}>
-              <Text style={[styles.accordionTitle, { color: theme.text, marginBottom: 4 }]}>Theme Mode</Text>
-              <Text style={[styles.settingDescription, { color: theme.subtext }]}>
-                Choose your preferred interface appearance.
-              </Text>
-              <View style={styles.pillsContainer}>
-                {(['system', 'light', 'dark'] as const).map((mode) => {
-                  const isSelected = themeMode === mode;
-                  return (
-                    <TouchableOpacity
-                      key={mode}
-                      activeOpacity={0.7}
+          {/* 5. APPEARANCE */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>APPEARANCE</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+            <View style={styles.targetLabelRow}>
+              <Text style={[styles.targetLabelTitle, { color: textColor }]}>Theme Mode</Text>
+            </View>
+            <View style={[styles.segmentedContainer, { marginTop: 8 }]}>
+              {(['system', 'light', 'dark'] as const).map((mode) => {
+                const isSelected = themeMode === mode;
+                return (
+                  <TouchableOpacity
+                    key={mode}
+                    activeOpacity={0.7}
+                    style={[
+                      styles.segmentPill,
+                      { backgroundColor: pillBaseBg },
+                      isSelected && { backgroundColor: accentGreen },
+                    ]}
+                    onPress={() => setThemeMode(mode)}
+                  >
+                    <Text
                       style={[
-                        styles.pill,
-                        { backgroundColor: theme.pillBg },
-                        isSelected && {
-                          backgroundColor: theme.isDark ? 'rgba(238, 88, 57, 0.2)' : '#FFF4F0',
-                          borderColor: theme.primary,
-                        },
+                        styles.segmentPillText,
+                        { color: textColor },
+                        isSelected && { color: PALETTE.dark, fontWeight: '800' },
                       ]}
-                      onPress={() => setThemeMode(mode)}
                     >
-                      <Text
-                        style={[
-                          styles.pillText,
-                          { color: theme.text },
-                          isSelected && { color: theme.primary },
-                        ]}
-                      >
-                        {mode.charAt(0).toUpperCase() + mode.slice(1)}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
+                      {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
             </View>
           </View>
 
-          {/* SECTION 5: SUPPORT & FEEDBACK */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>SUPPORT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          {/* 6. SUPPORT & LEGAL (INSET LIST) */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>SUPPORT & ABOUT</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle, paddingVertical: 8 }]}>
+            
             <TouchableOpacity
-              style={styles.navRow}
+              style={styles.insetNavRow}
               activeOpacity={0.7}
               onPress={() =>
                 setInfoModalContent({
                   title: 'Help Center',
-                  body: 'Need assistance with workouts, streak tracking, or your account?\n\nContact support directly at:\nsupport@numo.app',
+                  body: 'Need assistance with workout modes, streak tracking, or account management?\n\nContact support directly at:\nsupport@numo.app',
                 })
               }
             >
-              <Text style={[styles.navLabel, { color: theme.text }]}>Help center</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : accentGreen }]}>
+                  <Ionicons name="help-buoy" size={17} color={isDark ? accentGreen : PALETTE.dark} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Help Center</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
-            <TouchableOpacity
-              style={styles.navRow}
-              activeOpacity={0.7}
-              onPress={() => setFeedbackModalVisible(true)}
-            >
-              <Text style={[styles.navLabel, { color: theme.text }]}>Send feedback</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+            <TouchableOpacity style={styles.insetNavRow} activeOpacity={0.7} onPress={() => setFeedbackModalVisible(true)}>
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.18)' : accentLilac }]}>
+                  <Ionicons name="chatbubble-ellipses" size={17} color={isDark ? accentLilac : PALETTE.dark} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Send Feedback</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
-          </View>
 
-          {/* SECTION 6: ABOUT */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ABOUT</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
+
             <TouchableOpacity
-              style={styles.navRow}
+              style={styles.insetNavRow}
               activeOpacity={0.7}
               onPress={() =>
                 setInfoModalContent({
@@ -802,14 +832,19 @@ export default function SettingsScreen() {
                 })
               }
             >
-              <Text style={[styles.navLabel, { color: theme.text }]}>About NUMO</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: pillBaseBg }]}>
+                  <Ionicons name="information" size={17} color={textColor} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>About NUMO</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
             <TouchableOpacity
-              style={styles.navRow}
+              style={styles.insetNavRow}
               activeOpacity={0.7}
               onPress={() =>
                 setInfoModalContent({
@@ -818,65 +853,121 @@ export default function SettingsScreen() {
                 })
               }
             >
-              <Text style={[styles.navLabel, { color: theme.text }]}>Privacy Policy</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
-            </TouchableOpacity>
-
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
-
-            <TouchableOpacity
-              style={styles.navRow}
-              activeOpacity={0.7}
-              onPress={() =>
-                setInfoModalContent({
-                  title: 'Terms of Service',
-                  body: 'By accessing NUMO, you agree to fair use and learning guidelines.',
-                })
-              }
-            >
-              <Text style={[styles.navLabel, { color: theme.text }]}>Terms of Service</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: pillBaseBg }]}>
+                  <Ionicons name="shield-checkmark" size={17} color={textColor} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Privacy Policy</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
           </View>
 
-          {/* SECTION 7: ACTIONS */}
-          <Text style={[styles.sectionHeader, { color: theme.muted }]}>ACTIONS</Text>
-          <View style={[styles.card, { backgroundColor: theme.card, borderColor: theme.border }]}>
+          {/* 7. ACCOUNT SECURITY & ACTIONS */}
+          <Text style={[styles.sectionHeader, { color: subtextColor }]}>SECURITY & ACTIONS</Text>
+          <View style={[styles.card, { backgroundColor: cardBg, borderColor: borderSubtle, paddingVertical: 8 }]}>
             <TouchableOpacity
-              style={styles.navRow}
+              style={styles.insetNavRow}
               activeOpacity={0.7}
               onPress={() => setPasswordModalVisible(true)}
             >
-              <View style={styles.navLeft}>
-                <Ionicons name="key-outline" size={18} color={theme.text} style={styles.navIcon} />
-                <Text style={[styles.navLabel, { color: theme.text }]}>Change Password</Text>
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: pillBaseBg }]}>
+                  <Ionicons name="key" size={17} color={textColor} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Change Password</Text>
               </View>
-              <Ionicons name="chevron-forward" size={18} color={theme.muted} />
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
-            <TouchableOpacity style={styles.signOutRow} onPress={signOut} activeOpacity={0.7}>
-              <Ionicons name="log-out-outline" size={18} color={theme.primary} style={styles.navIcon} />
-              <Text style={[styles.signOutText, { color: theme.primary }]}>Sign Out</Text>
+            <TouchableOpacity style={styles.insetNavRow} onPress={signOut} activeOpacity={0.7}>
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: pillBaseBg }]}>
+                  <Ionicons name="log-out" size={17} color={textColor} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: textColor }]}>Sign Out</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
 
-            <View style={[styles.divider, { backgroundColor: theme.divider }]} />
+            <View style={[styles.divider, { backgroundColor: dividerColor }]} />
 
             <TouchableOpacity
-              style={styles.deleteRow}
+              style={styles.insetNavRow}
               onPress={() => {
                 setDeleteConfirmText('');
                 setDeleteModalVisible(true);
               }}
               activeOpacity={0.7}
             >
-              <Ionicons name="trash-outline" size={18} color="#FF3B30" style={styles.navIcon} />
-              <Text style={styles.deleteText}>Delete Account</Text>
+              <View style={styles.insetLeft}>
+                <View style={[styles.iconCircle, { backgroundColor: isDark ? PALETTE.dangerBgDark : PALETTE.dangerBgLight }]}>
+                  <Ionicons name="trash" size={17} color={dangerText} />
+                </View>
+                <Text style={[styles.rowTitleText, { color: dangerText }]}>Delete Account</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={subtextColor} />
             </TouchableOpacity>
           </View>
+
+          {/* 8. CLOUD SYNC STATUS FOOTER */}
+          <View style={styles.cloudSyncFooter}>
+            <View style={styles.cloudSyncBadge}>
+              <View style={[styles.syncStatusDot, { backgroundColor: accentGreen }]} />
+              <Text style={[styles.cloudSyncText, { color: subtextColor }]}>
+                NUMO v1.0.0 (Build 2026.09) · Cloud Synced
+              </Text>
+            </View>
+          </View>
+
         </View>
       </ScrollView>
+
+      {/* Edit Name Modal */}
+      <Modal visible={editNameModalVisible} transparent animationType="fade">
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={styles.modalOverlay}
+        >
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: textColor }]}>Edit Name</Text>
+            <Text style={[styles.modalDescription, { color: subtextColor }]}>
+              Enter how you want NUMO to address you across workouts.
+            </Text>
+
+            <TextInput
+              placeholder="Full Name"
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
+              value={nameInput}
+              onChangeText={setNameInput}
+              autoFocus
+            />
+
+            <View style={styles.modalButtonsRow}>
+              <TouchableOpacity
+                style={[styles.modalCancelButton, { backgroundColor: pillBaseBg }]}
+                onPress={() => setEditNameModalVisible(false)}
+              >
+                <Text style={[styles.modalCancelText, { color: textColor }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalSubmitButton, { backgroundColor: accentGreen }]}
+                onPress={handleSaveName}
+                disabled={isSavingName}
+              >
+                {isSavingName ? (
+                  <ActivityIndicator size="small" color={PALETTE.dark} />
+                ) : (
+                  <Text style={[styles.modalSubmitText, { color: PALETTE.dark }]}>Save</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* Custom Time Selection Modal */}
       <Modal visible={customTimeModalVisible} transparent animationType="fade">
@@ -884,16 +975,16 @@ export default function SettingsScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Set Custom Time</Text>
-            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
-              Enter your ideal daily reminder time (e.g., 07:15 AM, 2:30 PM, or 21:00).
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: textColor }]}>Set Custom Time</Text>
+            <Text style={[styles.modalDescription, { color: subtextColor }]}>
+              Enter your ideal daily reminder time (e.g., 07:15 AM or 20:30).
             </Text>
 
             <TextInput
               placeholder="e.g. 07:30 AM"
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
               value={customTimeInput}
               onChangeText={setCustomTimeInput}
               autoFocus
@@ -901,19 +992,19 @@ export default function SettingsScreen() {
 
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                style={[styles.modalCancelButton, { backgroundColor: pillBaseBg }]}
                 onPress={() => {
                   setCustomTimeModalVisible(false);
                   setCustomTimeInput('');
                 }}
               >
-                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: textColor }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
+                style={[styles.modalSubmitButton, { backgroundColor: accentGreen }]}
                 onPress={handleSaveCustomTime}
               >
-                <Text style={styles.modalSubmitText}>Set Time</Text>
+                <Text style={[styles.modalSubmitText, { color: PALETTE.dark }]}>Set Time</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -926,14 +1017,14 @@ export default function SettingsScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Change Password</Text>
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: textColor }]}>Change Password</Text>
 
             <TextInput
               secureTextEntry
               placeholder="Current password"
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
               value={currentPassword}
               onChangeText={setCurrentPassword}
             />
@@ -941,8 +1032,8 @@ export default function SettingsScreen() {
             <TextInput
               secureTextEntry
               placeholder="New password (min 6 characters)"
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
               value={newPassword}
               onChangeText={setNewPassword}
             />
@@ -950,15 +1041,15 @@ export default function SettingsScreen() {
             <TextInput
               secureTextEntry
               placeholder="Confirm new password"
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
               value={confirmPassword}
               onChangeText={setConfirmPassword}
             />
 
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                style={[styles.modalCancelButton, { backgroundColor: pillBaseBg }]}
                 onPress={() => {
                   setPasswordModalVisible(false);
                   setCurrentPassword('');
@@ -966,17 +1057,17 @@ export default function SettingsScreen() {
                   setConfirmPassword('');
                 }}
               >
-                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: textColor }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
+                style={[styles.modalSubmitButton, { backgroundColor: accentGreen }]}
                 onPress={handlePasswordSubmit}
                 disabled={updatingPassword}
               >
                 {updatingPassword ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ActivityIndicator size="small" color={PALETTE.dark} />
                 ) : (
-                  <Text style={styles.modalSubmitText}>Update</Text>
+                  <Text style={[styles.modalSubmitText, { color: PALETTE.dark }]}>Update</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -990,32 +1081,32 @@ export default function SettingsScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>Send Feedback</Text>
-            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: textColor }]}>Send Feedback</Text>
+            <Text style={[styles.modalDescription, { color: subtextColor }]}>
               We are constantly working to improve NUMO. Let us know how we can make mental math training better for you.
             </Text>
             <TextInput
               value={feedbackText}
               onChangeText={setFeedbackText}
               placeholder="Tell us what you think..."
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, styles.modalTextArea, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, styles.modalTextArea, { backgroundColor: pillBaseBg, color: textColor }]}
               multiline
               numberOfLines={4}
             />
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                style={[styles.modalCancelButton, { backgroundColor: pillBaseBg }]}
                 onPress={() => setFeedbackModalVisible(false)}
               >
-                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: textColor }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalSubmitButton, { backgroundColor: theme.primary }]}
+                style={[styles.modalSubmitButton, { backgroundColor: accentGreen }]}
                 onPress={handleSendFeedbackSubmit}
               >
-                <Text style={styles.modalSubmitText}>Submit</Text>
+                <Text style={[styles.modalSubmitText, { color: PALETTE.dark }]}>Submit</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1028,41 +1119,42 @@ export default function SettingsScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           style={styles.modalOverlay}
         >
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: '#FF3B30' }]}>Delete Account</Text>
-            <Text style={[styles.modalDescription, { color: theme.subtext }]}>
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: dangerText }]}>Delete Account</Text>
+            <Text style={[styles.modalDescription, { color: subtextColor }]}>
               This action is permanent. Your profile, workout history, calculation statistics, and settings will be permanently erased.
             </Text>
-            <Text style={[styles.deleteInstructionText, { color: theme.text }]}>
+            <Text style={[styles.deleteInstructionText, { color: textColor }]}>
               Type <Text style={{ fontWeight: '800' }}>DELETE</Text> to confirm:
             </Text>
             <TextInput
               value={deleteConfirmText}
               onChangeText={setDeleteConfirmText}
               placeholder="Type DELETE"
-              placeholderTextColor={theme.muted}
-              style={[styles.modalInput, { backgroundColor: theme.pillBg, color: theme.text }]}
+              placeholderTextColor={subtextColor}
+              style={[styles.modalInput, { backgroundColor: pillBaseBg, color: textColor }]}
               autoCapitalize="characters"
             />
             <View style={styles.modalButtonsRow}>
               <TouchableOpacity
-                style={[styles.modalCancelButton, { backgroundColor: theme.pillBg }]}
+                style={[styles.modalCancelButton, { backgroundColor: pillBaseBg }]}
                 onPress={() => setDeleteModalVisible(false)}
               >
-                <Text style={[styles.modalCancelText, { color: theme.text }]}>Cancel</Text>
+                <Text style={[styles.modalCancelText, { color: textColor }]}>Cancel</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
                   styles.modalDeleteButton,
+                  { backgroundColor: isDark ? PALETTE.dangerBgDark : PALETTE.dangerBgLight },
                   deleteConfirmText !== 'DELETE' && { opacity: 0.4 },
                 ]}
                 disabled={deleteConfirmText !== 'DELETE' || isDeletingAccount}
                 onPress={handleDeleteAccount}
               >
                 {isDeletingAccount ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
+                  <ActivityIndicator size="small" color={dangerText} />
                 ) : (
-                  <Text style={styles.modalDeleteButtonText}>Delete</Text>
+                  <Text style={[styles.modalDeleteButtonText, { color: dangerText }]}>Delete</Text>
                 )}
               </TouchableOpacity>
             </View>
@@ -1073,14 +1165,14 @@ export default function SettingsScreen() {
       {/* Info Modal */}
       <Modal visible={infoModalContent !== null} transparent animationType="fade">
         <View style={styles.modalOverlay}>
-          <View style={[styles.modalContent, { backgroundColor: theme.card }]}>
-            <Text style={[styles.modalTitle, { color: theme.text }]}>{infoModalContent?.title}</Text>
-            <Text style={[styles.infoBodyText, { color: theme.subtext }]}>{infoModalContent?.body}</Text>
+          <View style={[styles.modalContent, { backgroundColor: cardBg, borderColor: borderSubtle, borderWidth: 1 }]}>
+            <Text style={[styles.modalTitle, { color: textColor }]}>{infoModalContent?.title}</Text>
+            <Text style={[styles.infoBodyText, { color: subtextColor }]}>{infoModalContent?.body}</Text>
             <TouchableOpacity
-              style={[styles.infoCloseButton, { backgroundColor: theme.text }]}
+              style={[styles.infoCloseButton, { backgroundColor: accentGreen }]}
               onPress={() => setInfoModalContent(null)}
             >
-              <Text style={[styles.infoCloseButtonText, { color: theme.card }]}>Done</Text>
+              <Text style={[styles.infoCloseButtonText, { color: PALETTE.dark }]}>Done</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -1115,16 +1207,17 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 19,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
+    shadowOpacity: 0.05,
     shadowRadius: 3,
   },
   headerCenteredTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     letterSpacing: -0.3,
     textAlign: 'center',
@@ -1139,18 +1232,18 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 480,
     alignSelf: 'center',
+    gap: 16,
   },
   sectionHeader: {
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '700',
-    marginBottom: 6,
     marginLeft: 4,
+    marginBottom: -6,
     letterSpacing: 0.8,
   },
   card: {
-    borderRadius: 20,
+    borderRadius: 22,
     padding: 16,
-    marginBottom: 18,
     borderWidth: 1,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
@@ -1159,217 +1252,202 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
 
-  /* Profile Compact Card */
-  profileRow: {
+  /* Hero Athlete Profile Card */
+  profileHeroCard: {
+    borderRadius: 24,
+    padding: 20,
+    borderWidth: 1,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  profileHeroMain: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  compactAvatar: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
+  heroAvatarContainer: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2,
     position: 'relative',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
+    marginRight: 16,
   },
-  compactAvatarImage: {
+  heroAvatarImage: {
     width: '100%',
     height: '100%',
-    borderRadius: 27,
+    borderRadius: 30,
   },
-  compactAvatarPlaceholder: {
+  heroAvatarPlaceholder: {
     width: '100%',
     height: '100%',
-    borderRadius: 27,
+    borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  compactAvatarInitials: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
+  heroAvatarInitials: {
+    fontSize: 24,
+    fontWeight: '900',
   },
-  avatarMiniBadge: {
+  heroAvatarMiniBadge: {
     position: 'absolute',
     bottom: -2,
     right: -2,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    borderWidth: 1.5,
-    borderColor: '#FFFFFF',
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: '#0A0F0B',
   },
-  profileTextColumn: {
+  heroProfileInfo: {
     flex: 1,
     justifyContent: 'center',
   },
-  profileNameRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 2,
+  athleteTierPill: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    marginBottom: 4,
   },
-  profileNameText: {
-    fontSize: 17,
+  athleteTierText: {
+    fontSize: 10,
     fontWeight: '800',
-    letterSpacing: -0.2,
+    letterSpacing: 0.6,
   },
-  profileEmailText: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-  inlineEditRow: {
+  heroNameTouchable: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginBottom: 4,
   },
-  inlineNameInput: {
-    fontSize: 15,
-    fontWeight: '700',
-    borderBottomWidth: 1.5,
-    paddingVertical: 1,
-    paddingHorizontal: 4,
-    flex: 1,
-  },
-  inlineSaveBtn: {
-    paddingVertical: 4,
-    paddingHorizontal: 8,
-    borderRadius: 6,
-  },
-  inlineSaveText: {
-    color: '#FFFFFF',
-    fontSize: 11,
+  heroNameText: {
+    fontSize: 18,
     fontWeight: '800',
+    letterSpacing: -0.3,
   },
-  inlineCancelBtn: {
-    paddingHorizontal: 6,
-  },
-  inlineCancelText: {
-    fontSize: 14,
-    fontWeight: '700',
+  heroEmailText: {
+    fontSize: 13,
+    fontWeight: '500',
+    marginTop: 1,
   },
   removePhotoText: {
     fontSize: 11,
     fontWeight: '600',
-    color: '#FF3B30',
   },
 
-  /* Accordion Styles */
-  accordionHeaderRow: {
+  /* Inline Segmented Controls */
+  targetRowBlock: {
+    paddingVertical: 2,
+  },
+  targetLabelRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 8,
+    marginBottom: 10,
   },
-  accordionTitle: {
-    fontSize: 15,
+  targetLabelTitle: {
+    fontSize: 14.5,
     fontWeight: '700',
   },
-  accordionValueRight: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  accordionValueText: {
+  targetLabelValue: {
     fontSize: 14,
-    fontWeight: '600',
+    fontWeight: '800',
   },
-  accordionBody: {
-    paddingTop: 10,
-    paddingBottom: 4,
+  segmentedContainer: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  segmentPill: {
+    flex: 1,
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentPillText: {
+    fontSize: 13.5,
+    fontWeight: '700',
   },
 
-  /* General Settings Blocks */
-  settingBlock: {
-    paddingVertical: 2,
-  },
+  /* Switch & Sensory Rows */
   switchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: 4,
   },
-  settingLabel: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  settingDescription: {
-    fontSize: 12,
-    marginBottom: 8,
-    lineHeight: 16,
-  },
-  pillsContainer: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  pill: {
+  switchTextCol: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1.5,
-    borderColor: 'transparent',
+    marginRight: 14,
   },
-  pillText: {
-    fontSize: 14,
+  rowTitleText: {
+    fontSize: 14.5,
     fontWeight: '700',
   },
-  pillTextSmall: {
+  rowSubtext: {
     fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  divider: {
-    height: 1,
-    marginVertical: 10,
+    lineHeight: 16,
+    marginTop: 2,
   },
 
-  /* Navigation & Action Rows */
-  navRow: {
+  /* Inset Navigation Rows */
+  insetNavRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingVertical: 6,
+    paddingVertical: 8,
   },
-  navLeft: {
+  insetLeft: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 12,
   },
-  navIcon: {
-    marginRight: 10,
+  iconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  navLabel: {
-    fontSize: 15,
+
+  divider: {
+    height: 1,
+    marginVertical: 12,
+  },
+
+  /* Cloud Sync Footer */
+  cloudSyncFooter: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 8,
+    marginBottom: 12,
+  },
+  cloudSyncBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  syncStatusDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+  },
+  cloudSyncText: {
+    fontSize: 12,
     fontWeight: '600',
-  },
-  signOutRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
-  signOutText: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  deleteRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 6,
-  },
-  deleteText: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#FF3B30',
+    letterSpacing: 0.2,
   },
 
   /* Modals */
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.5)',
+    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
@@ -1377,7 +1455,7 @@ const styles = StyleSheet.create({
   modalContent: {
     width: '100%',
     maxWidth: 420,
-    borderRadius: 20,
+    borderRadius: 22,
     padding: 20,
   },
   modalTitle: {
@@ -1429,19 +1507,16 @@ const styles = StyleSheet.create({
   modalSubmitText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#FFFFFF',
   },
   modalDeleteButton: {
     flex: 1,
     paddingVertical: 11,
     borderRadius: 12,
-    backgroundColor: '#FF3B30',
     alignItems: 'center',
   },
   modalDeleteButtonText: {
     fontSize: 14,
     fontWeight: '700',
-    color: '#FFFFFF',
   },
   infoBodyText: {
     fontSize: 13,
@@ -1460,7 +1535,7 @@ const styles = StyleSheet.create({
   avatarLoadingOverlay: {
     ...StyleSheet.absoluteFill,
     backgroundColor: 'rgba(0, 0, 0, 0.45)',
-    borderRadius: 27,
+    borderRadius: 30,
     justifyContent: 'center',
     alignItems: 'center',
   },
