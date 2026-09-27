@@ -1,5 +1,5 @@
 import React from 'react';
-import { Alert, StyleSheet, Platform } from 'react-native';
+import { StyleSheet } from 'react-native';
 import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -9,15 +9,8 @@ export default function AppLayout() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
 
-  const handleComingSoon = (feature: string) => {
-    Alert.alert(feature, 'This feature is coming soon to NUMO!');
-  };
-
   const isDark = theme.isDark;
 
-  // Instagram / TikTok style:
-  // Active is solid deep black (#000000) in light mode, pure crisp white in dark mode.
-  // Inactive is neutral secondary gray (#8E8E93).
   const barBackground = isDark ? '#0A0F0B' : '#FFFFFF';
   const activeColor = isDark ? '#FFFFFF' : '#000000';
   const inactiveColor = isDark ? 'rgba(255, 255, 255, 0.45)' : '#8E8E93';
@@ -87,33 +80,11 @@ export default function AppLayout() {
         }}
       />
 
-      {/* 4. Compete (Disabled) */}
+      {/* 4. Profile */}
       <Tabs.Screen
-        name="compete"
-        listeners={{
-          tabPress: (e) => {
-            e.preventDefault();
-            handleComingSoon('Compete');
-          },
-        }}
+        name="Profile"
         options={{
-          title: 'Compete',
-          tabBarItemStyle: styles.disabledTab,
-          tabBarIcon: ({ color }) => (
-            <Ionicons
-              name="trophy-outline"
-              size={23}
-              color={color}
-            />
-          ),
-        }}
-      />
-
-      {/* 5. Settings */}
-      <Tabs.Screen
-        name="settings"
-        options={{
-          title: 'Settings',
+          title: 'Profile',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? 'person' : 'person-outline'}
@@ -124,14 +95,37 @@ export default function AppLayout() {
         }}
       />
 
-      {/* Full-screen screens without the tab bar */}
+      {/* Hidden Screens: Accessible via in-app navigation, not visible on tab bar */}
+      <Tabs.Screen
+        name="settings"
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
+      />
+
+      <Tabs.Screen
+        name="compete"
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
+      />
+
       <Tabs.Screen
         name="workout"
-        options={{ href: null, tabBarStyle: { display: 'none' } }}
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
       />
+
       <Tabs.Screen
         name="results"
-        options={{ href: null, tabBarStyle: { display: 'none' } }}
+        options={{
+          href: null,
+          tabBarStyle: { display: 'none' },
+        }}
       />
     </Tabs>
   );
@@ -153,8 +147,5 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginTop: 2,
     letterSpacing: -0.1,
-  },
-  disabledTab: {
-    opacity: 0.35,
   },
 });

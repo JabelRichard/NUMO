@@ -469,7 +469,7 @@ export default function DashboardScreen() {
         <TouchableOpacity
           style={[styles.avatarButton, { backgroundColor: cardBg }]}
           activeOpacity={0.8}
-          onPress={() => router.push('/(app)/settings')}
+          onPress={() => router.push('/(app)/Profile')}
         >
           {avatarUrl ? (
             <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
