@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, Animated, StatusBar } from 'react-native';
+import { PALETTE } from '@/src/constants/palette';
 
 export function AppSplashScreen() {
   const scaleAnim = useRef(new Animated.Value(0.85)).current;
@@ -44,7 +45,7 @@ export function AppSplashScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#EC673C', // Full-bleed brand color
+    backgroundColor: PALETTE.primary, // Full-bleed brand color
     alignItems: 'center',
     justifyContent: 'center',
   },

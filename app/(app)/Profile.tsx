@@ -4,6 +4,7 @@ import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
+  ReactNode,
   useCallback,
   useMemo,
   useRef,
@@ -33,6 +34,18 @@ import {
 } from "react-native-safe-area-context";
 import { OfflineNotice } from "../../src/components/OfflineNotice";
 import { PALETTE } from "../../src/constants/palette";
+import {
+  COMFORT_LEVELS,
+  GOALS,
+  IoniconName,
+  NOT_SURE_OPTION,
+  WEAK_SPOTS,
+} from "../../src/constants/planOptions";
+import {
+  FONT_FAMILY,
+  inputTypography,
+  typography,
+} from "../../src/constants/typography";
 import { useOnlineStatus } from "../../src/hooks/useOnlineStatus";
 import { getInitials } from "../../src/utils/getInitials";
 import { useAuth } from "../../src/context/AuthContext";
@@ -44,9 +57,7 @@ import {
 } from "../../src/services/profileService";
 import {
   getUserProfile,
-  getUserSettings,
   removeProfileAvatar,
-  saveUserSettings,
   updateProfileName,
   uploadProfileAvatar,
 } from "../../src/services/settingsService";
@@ -55,22 +66,67 @@ import {
   WorkoutSessionRecord,
 } from "../../src/services/workoutService";
 import {
-  ActivityTimeframe,
+  ComfortLevel,
   DEFAULT_TRAINING_GOALS,
+  FrictionArea,
   UserTrainingGoals,
 } from "../../src/types/profile";
 import {
   formatDurationGoal,
   formatFrequencyGoal,
-  formatQuestionGoal,
+  formatOperationName,
   formatRelativeSessionDate,
 } from "../../src/utils/goalFormatters";
+import {
+  countDayStreak,
+  localDayKey,
+  startOfLocalWeek,
+} from "../../src/utils/localDates";
+import {
+  DURATION_MINUTE_OPTIONS,
+  FREQUENCY_DAY_OPTIONS,
+  OnboardingPrimaryGoal,
+  questionsForDuration,
+} from "../../src/utils/onboardingDraft";
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-const QUESTION_OPTIONS = [5, 10, 20, 30, 50];
-const DURATION_OPTIONS = [2, 5, 10];
-const FREQUENCY_OPTIONS = [3, 5, 7];
+const NAME_MAX_LENGTH = 40;
+const NOT_SET = "Not set";
+
+// Lifetime-question thresholds for each rank, lowest first.
+const RANKS: { min: number; title: string; icon: IoniconName }[] = [
+  { min: 0, title: "Apprentice", icon: "school-outline" },
+  { min: 150, title: "Practitioner", icon: "bar-chart-outline" },
+  { min: 500, title: "Mental Calculist", icon: "sparkles" },
+  { min: 1000, title: "Grandmaster", icon: "flash" },
+];
+
+type SheetType = "duration" | "frequency" | "focus" | "workingOn" | "level";
+
+const SHEET_COPY: Record<SheetType, { title: string; subtitle: string }> = {
+  duration: {
+    title: "Time per day",
+    subtitle: "How long do you want to practice each day?",
+  },
+  frequency: {
+    title: "Days per week",
+    subtitle: "How many days a week do you want to practice?",
+  },
+  // Same questions as onboarding.
+  focus: {
+    title: "What do you want to get better at?",
+    subtitle: "Pick your goal. We'll tailor your workouts around it.",
+  },
+  workingOn: {
+    title: "What's hardest for you?",
+    subtitle: "Pick as many as you like.",
+  },
+  level: {
+    title: "How comfortable are you with math?",
+    subtitle: "We'll pick a starting level that suits you.",
+  },
+};
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -78,7 +134,7 @@ export default function ProfileScreen() {
   const { session } = useAuth();
   const { theme } = useTheme();
 
-  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === "dark");
+  const isDark = theme.isDark;
   const userId = session?.user?.id;
 
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
@@ -86,19 +142,24 @@ export default function ProfileScreen() {
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
   const secondaryText = isDark
     ? PALETTE.textSubtleDark
-    : PALETTE.textSubtleLight;
+    : PALETTE.textSecondaryLight;
   const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
-  const pillBaseBg = isDark
-    ? "rgba(255, 255, 255, 0.07)"
-    : "rgba(10, 15, 11, 0.05)";
-  const dividerColor = isDark
-    ? "rgba(255, 255, 255, 0.07)"
-    : "rgba(10, 15, 11, 0.06)";
-  const accentGreen = PALETTE.primary;
-  const accentLilac = PALETTE.accentLilac;
+  const fillBg = isDark ? PALETTE.fillDark : PALETTE.fillLight;
+  // One sage accent, same as Home, Workout, Settings and Onboarding.
+  // `accent` fills buttons; `accentStrong` (deep sage in light mode) colors icons,
+  // progress bars, accent text and selected borders so they stay readable.
+  const accent = theme.primary;
+  const accentStrong = theme.primaryText;
+  const accentSoft = theme.primarySoft;
+  const onAccent = theme.onPrimary;
 
   const [loading, setLoading] = useState<boolean>(true);
-  const { isOffline, setIsOffline, recheck } = useOnlineStatus();
+  const [hasLoaded, setHasLoaded] = useState<boolean>(false);
+  const [isRetrying, setIsRetrying] = useState<boolean>(false);
+  const loadDataRef = useRef<() => Promise<void>>(async () => {});
+  const { isOffline, recheck } = useOnlineStatus(() => {
+    loadDataRef.current();
+  });
 
   // Profile data
   const [fullName, setFullName] = useState<string>("");
@@ -115,11 +176,10 @@ export default function ProfileScreen() {
   // Bottom Sheets
   const [activitySheetVisible, setActivitySheetVisible] =
     useState<boolean>(false);
-  const [selectedTimeframe, setSelectedTimeframe] =
-    useState<ActivityTimeframe>("7D");
-  const [goalSheetType, setGoalSheetType] = useState<
-    "questions" | "duration" | "frequency" | null
-  >(null);
+  const [sheetType, setSheetType] = useState<SheetType | null>(null);
+  // Unsaved picks in the multi-select "Working on" sheet.
+  const [draftAreas, setDraftAreas] = useState<FrictionArea[]>([]);
+  const [draftUnsure, setDraftUnsure] = useState<boolean>(false);
 
   const sheetAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
   const editNameVisibleRef = useRef(false);
@@ -168,19 +228,19 @@ export default function ProfileScreen() {
       return;
     }
 
+    // Offline: keep whatever is already on screen; the banner or OfflineNotice takes over.
     if (!(await recheck())) {
       setLoading(false);
       return;
     }
 
     try {
-      const [profileData, goalsData, userSettingsData, workoutsResult] =
-        await Promise.all([
-          getUserProfile(userId).catch(() => null),
-          getTrainingGoals(userId).catch(() => DEFAULT_TRAINING_GOALS),
-          getUserSettings(userId).catch(() => null),
-          fetchAllWorkouts(userId).catch(() => []),
-        ]);
+      const [profileData, goalsData, workoutsResult] = await Promise.all([
+        getUserProfile(userId).catch(() => null),
+        // Reads Supabase; falls back to the phone copy on its own if that fails.
+        getTrainingGoals(userId).catch(() => null),
+        fetchAllWorkouts(userId).catch(() => null),
+      ]);
 
       const name = profileData?.full_name || metaFullName || "";
       const avatar = profileData?.avatar_url || metaAvatarUrl || null;
@@ -190,22 +250,26 @@ export default function ProfileScreen() {
       if (!editNameVisibleRef.current) setNameInput(name);
       setAvatarUrl(avatar);
 
-      const mergedGoals: UserTrainingGoals = {
-        ...goalsData,
-        dailyQuestions: userSettingsData?.daily_question_goal
-          ? Number(userSettingsData.daily_question_goal)
-          : goalsData.dailyQuestions,
-      };
-      setGoals(mergedGoals);
-
-      setAllWorkouts(Array.isArray(workoutsResult) ? workoutsResult : []);
-      setIsOffline(false);
+      if (goalsData) setGoals(goalsData);
+      // A failed fetch keeps the workouts already shown instead of blanking them.
+      if (Array.isArray(workoutsResult)) setAllWorkouts(workoutsResult);
+      setHasLoaded(true);
     } catch (err) {
       console.warn("Profile load warning:", err);
     } finally {
       setLoading(false);
     }
-  }, [userId, metaFullName, metaAvatarUrl, recheck, setIsOffline]);
+  }, [userId, metaFullName, metaAvatarUrl, recheck]);
+  loadDataRef.current = loadData;
+
+  const handleRetry = useCallback(async () => {
+    setIsRetrying(true);
+    try {
+      await loadData();
+    } finally {
+      setIsRetrying(false);
+    }
+  }, [loadData]);
 
   // useFocusEffect also fires on first mount, so no separate useEffect is needed.
   useFocusEffect(
@@ -220,54 +284,50 @@ export default function ProfileScreen() {
   }, [allWorkouts]);
 
   const activitySummary = useMemo(() => {
-    return calculateActivitySummary(allWorkouts, selectedTimeframe);
-  }, [allWorkouts, selectedTimeframe]);
+    return calculateActivitySummary(allWorkouts, "30D");
+  }, [allWorkouts]);
 
-  // Mental Math Fluency Rank Calculation
-  const mentalRank = useMemo(() => {
+  // Mental Math Fluency Rank and progress to the next one
+  const rankInfo = useMemo(() => {
     const total = overview.lifetimeQuestions || 0;
-    if (total >= 1000) {
-      return { title: "Grandmaster", subtitle: "Instant Recall", icon: "flash" };
-    }
-    if (total >= 500) {
-      return { title: "Mental Calculist", subtitle: "Rapid Arithmetic", icon: "sparkles" };
-    }
-    if (total >= 150) {
-      return { title: "Practitioner", subtitle: "Building Fluency", icon: "bar-chart-outline" };
-    }
-    return { title: "Apprentice", subtitle: "Foundational Drills", icon: "school-outline" };
+    let index = 0;
+    RANKS.forEach((rank, i) => {
+      if (total >= rank.min) index = i;
+    });
+    const current = RANKS[index];
+    const next = RANKS[index + 1] ?? null;
+    return {
+      current,
+      next,
+      remaining: next ? next.min - total : 0,
+      progress: next ? (total - current.min) / (next.min - current.min) : 1,
+    };
   }, [overview.lifetimeQuestions]);
 
-  // Today's actual progress for the goal bars
+  // Today's and this week's progress, counted in the phone's local days.
   const todayProgress = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const todaySessions = allWorkouts.filter((w) => {
-      const dateStr = (w as any).completed_at || (w as any).completedAt;
-      return dateStr && dateStr.slice(0, 10) === today;
-    });
+    const todayKey = localDayKey(new Date());
+    const weekStart = startOfLocalWeek();
+    let questionsToday = 0;
+    let practicedToday = false;
+    const weekDays = new Set<string>();
 
-    const questionsToday = todaySessions.reduce((acc, s) => {
-      return acc + ((s as any).total_questions ?? (s as any).totalQuestions ?? 0);
-    }, 0);
-
-    const now = new Date();
-    const currentDay = (now.getDay() + 6) % 7; // Monday = 0
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() - currentDay);
-    startOfWeek.setHours(0, 0, 0, 0);
-
-    const weekSessionDates = new Set(
-      allWorkouts
-        .filter((w) => {
-          const d = (w as any).completed_at || (w as any).completedAt;
-          return d && new Date(d) >= startOfWeek;
-        })
-        .map((w) => ((w as any).completed_at || (w as any).completedAt).slice(0, 10)),
-    );
+    for (const w of allWorkouts) {
+      if (!w.completed_at) continue;
+      const completed = new Date(w.completed_at);
+      const dayKey = localDayKey(completed);
+      if (dayKey === todayKey) {
+        practicedToday = true;
+        questionsToday += Number(w.total_questions) || 0;
+      }
+      if (completed >= weekStart) weekDays.add(dayKey);
+    }
 
     return {
       questionsToday,
-      daysTrainedThisWeek: weekSessionDates.size,
+      practicedToday,
+      daysTrainedThisWeek: weekDays.size,
+      streak: countDayStreak(allWorkouts.map((w) => w.completed_at)),
     };
   }, [allWorkouts]);
 
@@ -358,6 +418,13 @@ export default function ProfileScreen() {
     }
   };
 
+  const confirmRemoveAvatar = () => {
+    Alert.alert("Remove your photo?", undefined, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Remove", style: "destructive", onPress: handleRemoveAvatar },
+    ]);
+  };
+
   const handleAvatarPress = () => {
     if (isUploadingAvatar) return;
     triggerHaptic();
@@ -380,7 +447,7 @@ export default function ProfileScreen() {
         (buttonIndex) => {
           if (buttonIndex === 0) handleTakePhoto();
           else if (buttonIndex === 1) handlePickFromLibrary();
-          else if (avatarUrl && buttonIndex === 2) handleRemoveAvatar();
+          else if (avatarUrl && buttonIndex === 2) confirmRemoveAvatar();
         },
       );
     } else {
@@ -391,7 +458,7 @@ export default function ProfileScreen() {
       if (avatarUrl) {
         buttons.push({
           text: "Remove Photo",
-          onPress: handleRemoveAvatar,
+          onPress: confirmRemoveAvatar,
           style: "destructive",
         });
       }
@@ -400,13 +467,17 @@ export default function ProfileScreen() {
     }
   };
 
+  const trimmedName = nameInput.trim();
+  const canSaveName =
+    trimmedName.length > 0 && trimmedName !== fullName.trim() && !isSavingName;
+
   const handleSaveName = async () => {
-    if (!userId || !nameInput.trim()) return;
+    if (!userId || !canSaveName) return;
     setIsSavingName(true);
     try {
-      const res = await updateProfileName(userId, nameInput.trim());
+      const res = await updateProfileName(userId, trimmedName);
       if (res.success) {
-        setFullName(nameInput.trim());
+        setFullName(trimmedName);
         setEditNameVisible(false);
       } else {
         Alert.alert("Error", res.error || "Could not update name.");
@@ -418,37 +489,389 @@ export default function ProfileScreen() {
     }
   };
 
-  const handleSelectGoalValue = async (
-    key: "dailyQuestions" | "sessionDurationMinutes" | "weeklyFrequencyDays",
-    val: number,
-  ) => {
-    triggerHaptic();
-    const updated = { ...goals, [key]: val };
-    setGoals(updated);
-    closeSheet(() => setGoalSheetType(null));
+  // Shows the change right away; puts the old values back if the save fails.
+  const saveGoalChange = async (changes: Partial<UserTrainingGoals>) => {
+    const previous = goals;
+    setGoals((g) => ({ ...g, ...changes }));
 
     try {
-      await saveTrainingGoals({ [key]: val }, userId);
-      if (key === "dailyQuestions" && userId) {
-        const res = await saveUserSettings(userId, { daily_question_goal: val });
-        if (!res.success) throw new Error(res.error);
-      }
+      await saveTrainingGoals(changes, userId);
     } catch (err: any) {
-      Alert.alert("Error", err?.message || "Could not save your goal.");
+      console.warn("Goal save failed:", err);
+      // Only roll back the fields this change touched.
+      const rollback = Object.fromEntries(
+        Object.keys(changes).map((key) => [
+          key,
+          previous[key as keyof UserTrainingGoals],
+        ]),
+      ) as Partial<UserTrainingGoals>;
+      setGoals((g) => ({ ...g, ...rollback }));
+      Alert.alert(
+        "Couldn't save your change",
+        isOffline
+          ? "You're offline. Connect to the internet and try again."
+          : err?.message || "Please try again.",
+      );
     }
   };
 
-  if (isOffline) {
+  const openPlanSheet = (type: SheetType) => {
+    if (type === "workingOn") {
+      const areas = goals.frictionAreas;
+      setDraftAreas(areas ?? []);
+      setDraftUnsure(Array.isArray(areas) && areas.length === 0);
+    }
+    setSheetType(type);
+    openSheet();
+  };
+
+  const closePlanSheet = () => closeSheet(() => setSheetType(null));
+
+  const selectAndClose = (changes: Partial<UserTrainingGoals>, unchanged: boolean) => {
+    triggerHaptic();
+    closePlanSheet();
+    if (!unchanged) saveGoalChange(changes);
+  };
+
+  // Time is the only daily goal; the question count follows from it, like onboarding.
+  const handleSelectDuration = (minutes: number) =>
+    selectAndClose(
+      {
+        sessionDurationMinutes: minutes,
+        dailyQuestions: questionsForDuration(minutes),
+      },
+      minutes === goals.sessionDurationMinutes &&
+        questionsForDuration(minutes) === goals.dailyQuestions,
+    );
+
+  const handleSelectFrequency = (days: number) =>
+    selectAndClose(
+      { weeklyFrequencyDays: days },
+      days === goals.weeklyFrequencyDays,
+    );
+
+  const handleSelectFocus = (id: OnboardingPrimaryGoal) =>
+    selectAndClose({ primaryGoal: id }, id === goals.primaryGoal);
+
+  const handleSelectLevel = (id: ComfortLevel) =>
+    selectAndClose({ comfortLevel: id }, id === goals.comfortLevel);
+
+  const toggleDraftArea = (id: FrictionArea) => {
+    triggerHaptic();
+    setDraftUnsure(false);
+    setDraftAreas((prev) =>
+      prev.includes(id) ? prev.filter((a) => a !== id) : [...prev, id],
+    );
+  };
+
+  const toggleDraftUnsure = () => {
+    triggerHaptic();
+    setDraftAreas([]);
+    setDraftUnsure((prev) => !prev);
+  };
+
+  const canSaveWorkingOn = draftUnsure || draftAreas.length > 0;
+
+  const handleSaveWorkingOn = () => {
+    if (!canSaveWorkingOn) return;
+    // Keep the same order as the list. Empty array = "Not sure, test me".
+    const areas = draftUnsure
+      ? []
+      : WEAK_SPOTS.map((w) => w.id).filter((id) => draftAreas.includes(id));
+    const current = goals.frictionAreas;
+    const unchanged =
+      Array.isArray(current) &&
+      current.length === areas.length &&
+      areas.every((a) => current.includes(a));
+    selectAndClose(
+      // Legacy single field: first pick, or 'mixed' when unsure (same as onboarding).
+      { frictionAreas: areas, frictionArea: areas[0] ?? "mixed" },
+      unchanged,
+    );
+  };
+
+  // Plan values shown on the cards
+  const focusOption = GOALS.find((g) => g.id === goals.primaryGoal);
+  const levelOption = COMFORT_LEVELS.find((c) => c.id === goals.comfortLevel);
+  const workingOnSpots = WEAK_SPOTS.filter((w) =>
+    (goals.frictionAreas ?? []).includes(w.id),
+  );
+  const workingOnValue =
+    goals.frictionAreas === undefined
+      ? NOT_SET
+      : goals.frictionAreas.length === 0
+        ? "Not sure yet"
+        : workingOnSpots.map((w) => w.title).join(", ");
+  const workingOnSymbols = workingOnSpots
+    .map((w) => w.symbol)
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("");
+
+  const renderMathSymbol = (symbol: string, size: "badge" | "option") => (
+    <Text
+      importantForAccessibility="no"
+      accessibilityElementsHidden
+      maxFontSizeMultiplier={1.3}
+      style={[
+        size === "badge" ? styles.badgeSymbol : styles.optionSymbol,
+        { color: size === "badge" ? accentStrong : primaryText },
+      ]}
+    >
+      {symbol}
+    </Text>
+  );
+
+  const renderSettingCard = (opts: {
+    title: string;
+    value: string;
+    leading: ReactNode;
+    onPress: () => void;
+    progress?: { label: string; ratio: number };
+  }) => {
+    const isEmpty = opts.value === NOT_SET;
+    const spokenValue = isEmpty ? "not set" : opts.value;
+    return (
+      <TouchableOpacity
+        style={[
+          styles.goalItemCard,
+          { backgroundColor: cardBg, borderColor: borderSubtle },
+        ]}
+        activeOpacity={0.7}
+        onPress={opts.onPress}
+        accessibilityRole="button"
+        accessibilityLabel={`${opts.title}: ${spokenValue}${
+          opts.progress ? `. ${opts.progress.label}` : ""
+        }`}
+        accessibilityHint="Opens options to change it"
+      >
+        <View style={[styles.goalIconBadge, { backgroundColor: accentSoft }]}>
+          {opts.leading}
+        </View>
+        <View style={styles.goalTextStack}>
+          <Text style={[styles.goalItemTitle, { color: secondaryText }]}>
+            {opts.title}
+          </Text>
+          <Text
+            style={[
+              styles.goalItemValue,
+              { color: isEmpty ? accentStrong : primaryText },
+            ]}
+          >
+            {isEmpty ? "Not set · Tap to choose" : opts.value}
+          </Text>
+          {opts.progress && (
+            <>
+              <View
+                style={[styles.progressBarTrack, { backgroundColor: fillBg }]}
+              >
+                <View
+                  style={[
+                    styles.progressBarFill,
+                    {
+                      backgroundColor: accentStrong,
+                      width: `${Math.round(
+                        Math.min(Math.max(opts.progress.ratio, 0), 1) * 100,
+                      )}%`,
+                    },
+                  ]}
+                />
+              </View>
+              <Text style={[styles.goalItemSubtitle, { color: secondaryText }]}>
+                {opts.progress.label}
+              </Text>
+            </>
+          )}
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={secondaryText} />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderCardIcon = (name: IoniconName) => (
+    <Ionicons name={name} size={20} color={accentStrong} />
+  );
+
+  const renderSheetOption = (opts: {
+    key: string | number;
+    title: string;
+    desc?: string;
+    leading?: ReactNode;
+    selected: boolean;
+    role: "radio" | "checkbox";
+    onPress: () => void;
+  }) => {
+    const indicator =
+      opts.role === "radio"
+        ? opts.selected
+          ? "radio-button-on"
+          : "radio-button-off"
+        : opts.selected
+          ? "checkbox"
+          : "square-outline";
+    return (
+      <TouchableOpacity
+        key={opts.key}
+        style={[
+          styles.goalOptionRow,
+          {
+            backgroundColor: opts.selected ? accentSoft : fillBg,
+            borderColor: opts.selected ? accentStrong : "transparent",
+          },
+        ]}
+        activeOpacity={0.7}
+        onPress={opts.onPress}
+        accessibilityRole={opts.role}
+        accessibilityLabel={opts.desc ? `${opts.title}. ${opts.desc}` : opts.title}
+        accessibilityState={
+          opts.role === "radio"
+            ? { selected: opts.selected }
+            : { selected: opts.selected, checked: opts.selected }
+        }
+      >
+        {opts.leading && <View style={styles.optionLeading}>{opts.leading}</View>}
+        <View style={styles.optionTextStack}>
+          <Text style={[styles.goalOptionText, { color: primaryText }]}>
+            {opts.title}
+          </Text>
+          {opts.desc && (
+            <Text style={[styles.optionDesc, { color: secondaryText }]}>
+              {opts.desc}
+            </Text>
+          )}
+        </View>
+        <Ionicons
+          name={indicator}
+          size={22}
+          color={opts.selected ? accentStrong : secondaryText}
+        />
+      </TouchableOpacity>
+    );
+  };
+
+  const renderOptionIcon = (name: IoniconName) => (
+    <Ionicons name={name} size={22} color={primaryText} />
+  );
+
+  const renderSheetOptions = () => {
+    switch (sheetType) {
+      case "duration":
+        return DURATION_MINUTE_OPTIONS.map((m) =>
+          renderSheetOption({
+            key: m,
+            title: `${m} minutes`,
+            desc: `About ${questionsForDuration(m)} questions`,
+            selected: goals.sessionDurationMinutes === m,
+            role: "radio",
+            onPress: () => handleSelectDuration(m),
+          }),
+        );
+      case "frequency":
+        return FREQUENCY_DAY_OPTIONS.map((opt) =>
+          renderSheetOption({
+            key: opt.days,
+            title: formatFrequencyGoal(opt.days),
+            selected: goals.weeklyFrequencyDays === opt.days,
+            role: "radio",
+            onPress: () => handleSelectFrequency(opt.days),
+          }),
+        );
+      case "focus":
+        return GOALS.map((item) =>
+          renderSheetOption({
+            key: item.id,
+            title: item.title,
+            desc: item.desc,
+            leading: renderOptionIcon(item.icon),
+            selected: goals.primaryGoal === item.id,
+            role: "radio",
+            onPress: () => handleSelectFocus(item.id),
+          }),
+        );
+      case "workingOn":
+        return [
+          ...WEAK_SPOTS.map((item) =>
+            renderSheetOption({
+              key: item.id,
+              title: item.title,
+              desc: item.desc,
+              leading: item.symbol
+                ? renderMathSymbol(item.symbol, "option")
+                : renderOptionIcon(item.icon!),
+              selected: draftAreas.includes(item.id),
+              role: "checkbox",
+              onPress: () => toggleDraftArea(item.id),
+            }),
+          ),
+          renderSheetOption({
+            key: "unsure",
+            title: NOT_SURE_OPTION.title,
+            desc: NOT_SURE_OPTION.desc,
+            leading: renderOptionIcon(NOT_SURE_OPTION.icon),
+            selected: draftUnsure,
+            role: "checkbox",
+            onPress: toggleDraftUnsure,
+          }),
+        ];
+      case "level":
+        return COMFORT_LEVELS.map((item) =>
+          renderSheetOption({
+            key: item.id,
+            title: item.title,
+            desc: item.desc,
+            leading: renderOptionIcon(item.icon),
+            selected: goals.comfortLevel === item.id,
+            role: "radio",
+            onPress: () => handleSelectLevel(item.id),
+          }),
+        );
+      default:
+        return null;
+    }
+  };
+
+  const renderSheetHeader = (title: string, onClose: () => void) => (
+    <View style={styles.sheetTopRow}>
+      <Text
+        style={[styles.sheetMainTitle, { color: primaryText }]}
+        accessibilityRole="header"
+      >
+        {title}
+      </Text>
+      <TouchableOpacity
+        onPress={onClose}
+        style={[styles.sheetCloseIcon, { backgroundColor: fillBg }]}
+        accessibilityRole="button"
+        accessibilityLabel="Close"
+      >
+        <Ionicons name="close" size={20} color={primaryText} />
+      </TouchableOpacity>
+    </View>
+  );
+
+  if (isOffline && !hasLoaded) {
     return (
       <SafeAreaView
         style={[styles.safeArea, { backgroundColor: screenBg }]}
         edges={["top", "bottom"]}
       >
         <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
-        <OfflineNotice onRetry={loadData} isRetrying={loading} />
+        <OfflineNotice onRetry={handleRetry} isRetrying={isRetrying} />
       </SafeAreaView>
     );
   }
+
+  const { streak, practicedToday } = todayProgress;
+  const streakHint =
+    streak === 0
+      ? "Do a workout today to start a streak."
+      : practicedToday
+        ? "You practiced today. Nice work!"
+        : "Practice today to keep it going.";
+  const latestWorkout = overview.latestWorkout;
+  const rankProgressText = rankInfo.next
+    ? `${rankInfo.remaining.toLocaleString()} questions to ${rankInfo.next.title}`
+    : "Top rank reached";
 
   return (
     <SafeAreaView
@@ -467,7 +890,10 @@ export default function ProfileScreen() {
           },
         ]}
       >
-        <Text style={[styles.headerTitle, { color: primaryText }]}>
+        <Text
+          style={[styles.headerTitle, { color: primaryText }]}
+          accessibilityRole="header"
+        >
           My profile
         </Text>
         <TouchableOpacity
@@ -477,14 +903,54 @@ export default function ProfileScreen() {
           ]}
           activeOpacity={0.7}
           onPress={() => router.push("/(app)/settings")}
+          accessibilityRole="button"
+          accessibilityLabel="Settings"
         >
-          <Ionicons name="settings-outline" size={20} color={primaryText} />
+          <Ionicons name="settings-outline" size={22} color={primaryText} />
         </TouchableOpacity>
       </View>
 
+      {/* Offline banner: data loaded earlier stays on screen */}
+      {isOffline && hasLoaded && (
+        <View style={styles.offlineBannerWrap}>
+          <View
+            style={[
+              styles.offlineBanner,
+              { backgroundColor: cardBg, borderColor: borderSubtle },
+            ]}
+            accessibilityLiveRegion="polite"
+          >
+            <Ionicons
+              name="cloud-offline-outline"
+              size={20}
+              color={secondaryText}
+            />
+            <Text style={[styles.offlineBannerText, { color: primaryText }]}>
+              You're offline
+            </Text>
+            <TouchableOpacity
+              onPress={handleRetry}
+              disabled={isRetrying}
+              style={styles.offlineRetryBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Retry connection"
+              accessibilityState={{ busy: isRetrying, disabled: isRetrying }}
+            >
+              {isRetrying ? (
+                <ActivityIndicator size="small" color={accentStrong} />
+              ) : (
+                <Text style={[styles.offlineRetryText, { color: accentStrong }]}>
+                  Retry
+                </Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.centerContainer}>
-          <ActivityIndicator size="large" color={accentGreen} />
+          <ActivityIndicator size="large" color={accentStrong} />
         </View>
       ) : (
         <ScrollView
@@ -506,8 +972,11 @@ export default function ProfileScreen() {
                 <TouchableOpacity
                   onPress={handleAvatarPress}
                   activeOpacity={0.8}
-                  style={[styles.avatarCircle, { borderColor: accentGreen }]}
+                  style={[styles.avatarCircle, { borderColor: accent }]}
                   disabled={isUploadingAvatar}
+                  accessibilityRole="button"
+                  accessibilityLabel="Change profile photo"
+                  accessibilityState={{ busy: isUploadingAvatar }}
                 >
                   {avatarUrl ? (
                     <Image
@@ -518,14 +987,12 @@ export default function ProfileScreen() {
                     <View
                       style={[
                         styles.avatarFallback,
-                        { backgroundColor: accentGreen },
+                        { backgroundColor: accent },
                       ]}
                     >
                       <Text
-                        style={[
-                          styles.avatarInitials,
-                          { color: PALETTE.dark },
-                        ]}
+                        style={[styles.avatarInitials, { color: onAccent }]}
+                        maxFontSizeMultiplier={1.2}
                       >
                         {getInitials(
                           fullName || session?.user?.email || "NUMO",
@@ -535,20 +1002,16 @@ export default function ProfileScreen() {
                   )}
                   {isUploadingAvatar ? (
                     <View style={styles.avatarLoadingOverlay}>
-                      <ActivityIndicator size="small" color="#FFFFFF" />
+                      <ActivityIndicator size="small" color={PALETTE.white} />
                     </View>
                   ) : (
                     <View
                       style={[
                         styles.avatarMiniBadge,
-                        { backgroundColor: accentGreen },
+                        { backgroundColor: accent, borderColor: cardBg },
                       ]}
                     >
-                      <Ionicons
-                        name="camera"
-                        size={12}
-                        color={PALETTE.dark}
-                      />
+                      <Ionicons name="camera" size={12} color={onAccent} />
                     </View>
                   )}
                 </TouchableOpacity>
@@ -561,16 +1024,20 @@ export default function ProfileScreen() {
                     }}
                     activeOpacity={0.7}
                     style={styles.nameRow}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      fullName ? `Edit name, ${fullName}` : "Add your name"
+                    }
                   >
                     <Text
                       style={[styles.displayName, { color: primaryText }]}
-                      numberOfLines={1}
+                      numberOfLines={2}
                     >
-                      {fullName || "Add Name"}
+                      {fullName || "Add your name"}
                     </Text>
                     <Ionicons
                       name="create-outline"
-                      size={16}
+                      size={18}
                       color={secondaryText}
                       style={{ marginLeft: 6 }}
                     />
@@ -585,42 +1052,57 @@ export default function ProfileScreen() {
 
                   {/* Mental Math Fluency Rank Pill */}
                   <View
-                    style={[
-                      styles.tierBadgePill,
-                      {
-                        backgroundColor: isDark
-                          ? "rgba(188, 227, 170, 0.12)"
-                          : "rgba(37, 99, 30, 0.08)",
-                      },
-                    ]}
+                    style={[styles.tierBadgePill, { backgroundColor: accentSoft }]}
                   >
                     <Ionicons
-                      name={mentalRank.icon as any}
-                      size={13}
-                      color={accentGreen}
+                      name={rankInfo.current.icon}
+                      size={14}
+                      color={accentStrong}
                       style={{ marginRight: 5 }}
                     />
                     <Text
-                      style={[
-                        styles.tierBadgeText,
-                        { color: isDark ? accentGreen : "#25631E" },
-                      ]}
+                      style={[styles.tierBadgeText, { color: accentStrong }]}
                     >
-                      Rank: {mentalRank.title}
+                      Rank: {rankInfo.current.title}
                     </Text>
                   </View>
                 </View>
               </View>
 
+              {/* Progress to the next rank */}
+              <View
+                style={styles.rankProgressBlock}
+                accessible
+                accessibilityLabel={`Rank ${rankInfo.current.title}. ${rankProgressText}`}
+              >
+                <View
+                  style={[styles.progressBarTrack, { backgroundColor: fillBg }]}
+                >
+                  <View
+                    style={[
+                      styles.progressBarFill,
+                      {
+                        backgroundColor: accentStrong,
+                        width: `${Math.round(rankInfo.progress * 100)}%`,
+                      },
+                    ]}
+                  />
+                </View>
+                <Text style={[styles.rankProgressText, { color: secondaryText }]}>
+                  {rankProgressText}
+                </Text>
+              </View>
+
               {/* Sub-card Highlight Strip */}
               <View
-                style={[
-                  styles.cardDivider,
-                  { backgroundColor: dividerColor },
-                ]}
+                style={[styles.cardDivider, { backgroundColor: borderSubtle }]}
               />
               <View style={styles.heroHighlightsRow}>
-                <View style={styles.heroStatItem}>
+                <View
+                  style={styles.heroStatItem}
+                  accessible
+                  accessibilityLabel={`Lifetime questions: ${overview.lifetimeQuestions.toLocaleString()}`}
+                >
                   <Text
                     style={[styles.heroStatLabel, { color: secondaryText }]}
                   >
@@ -636,15 +1118,19 @@ export default function ProfileScreen() {
                 <View
                   style={[
                     styles.heroStatSeparator,
-                    { backgroundColor: dividerColor },
+                    { backgroundColor: borderSubtle },
                   ]}
                 />
 
-                <View style={styles.heroStatItem}>
+                <View
+                  style={styles.heroStatItem}
+                  accessible
+                  accessibilityLabel={`Workouts completed: ${overview.lifetimeSessions}`}
+                >
                   <Text
                     style={[styles.heroStatLabel, { color: secondaryText }]}
                   >
-                    DRILLS COMPLETED
+                    WORKOUTS COMPLETED
                   </Text>
                   <Text
                     style={[styles.heroStatValue, { color: primaryText }]}
@@ -664,10 +1150,8 @@ export default function ProfileScreen() {
             >
               <View style={styles.activityCardHeader}>
                 <Text
-                  style={[
-                    styles.activityCardHeading,
-                    { color: primaryText },
-                  ]}
+                  style={[styles.activityCardHeading, { color: primaryText }]}
+                  accessibilityRole="header"
                 >
                   Training activity
                 </Text>
@@ -677,319 +1161,137 @@ export default function ProfileScreen() {
                     openSheet();
                   }}
                   activeOpacity={0.7}
+                  style={styles.seeActivityBtn}
+                  accessibilityRole="button"
+                  accessibilityLabel="See activity"
                 >
-                  <Text
-                    style={[
-                      styles.seeActivityLink,
-                      { color: isDark ? accentGreen : "#2B6327" },
-                    ]}
-                  >
+                  <Text style={[styles.seeActivityLink, { color: accentStrong }]}>
                     See activity →
                   </Text>
                 </TouchableOpacity>
               </View>
 
-              <View style={styles.overviewMetricsRow}>
-                <View style={styles.metricBlock}>
-                  <Text style={[styles.metricLabel, { color: secondaryText }]}>
-                    Today's questions
-                  </Text>
-                  <Text style={[styles.metricValue, { color: primaryText }]}>
-                    {todayProgress.questionsToday}{" "}
-                    <Text style={styles.metricUnit}>solved</Text>
-                  </Text>
+              <View
+                style={styles.streakRow}
+                accessible
+                accessibilityLabel={`${streak} ${streak === 1 ? "day" : "days"} in a row. ${streakHint}`}
+              >
+                <View
+                  style={[styles.goalIconBadge, { backgroundColor: accentSoft }]}
+                >
+                  <Ionicons name="flame-outline" size={20} color={accentStrong} />
                 </View>
-                <View style={styles.metricBlock}>
-                  <Text style={[styles.metricLabel, { color: secondaryText }]}>
-                    Weekly active days
+                <View style={styles.goalTextStack}>
+                  <Text style={[styles.streakValue, { color: primaryText }]}>
+                    {streak} {streak === 1 ? "day" : "days"} in a row
                   </Text>
-                  <Text style={[styles.metricValue, { color: primaryText }]}>
-                    {todayProgress.daysTrainedThisWeek}{" "}
-                    <Text style={styles.metricUnit}>
-                      / {goals.weeklyFrequencyDays}d
-                    </Text>
+                  <Text style={[styles.streakHint, { color: secondaryText }]}>
+                    {streakHint}
                   </Text>
                 </View>
               </View>
 
-              {overview.latestWorkout && (
+              {latestWorkout && (
                 <View
-                  style={[
-                    styles.lastSessionNote,
-                    { borderTopColor: dividerColor },
-                  ]}
+                  style={[styles.lastSessionNote, { borderTopColor: borderSubtle }]}
                 >
                   <Ionicons
                     name="time-outline"
-                    size={15}
+                    size={18}
                     color={secondaryText}
                   />
-                  <Text
-                    style={[
-                      styles.lastSessionText,
-                      { color: secondaryText },
-                    ]}
-                    numberOfLines={1}
-                  >
+                  <Text style={[styles.lastSessionText, { color: secondaryText }]}>
                     Last session:{" "}
-                    <Text style={{ fontWeight: "700", color: primaryText }}>
-                      {overview.latestWorkout.operation
-                        .charAt(0)
-                        .toUpperCase() +
-                        overview.latestWorkout.operation.slice(1)}
+                    <Text style={{ fontWeight: "600", color: primaryText }}>
+                      {formatOperationName(latestWorkout.operation)}
                     </Text>
                     {" · "}
-                    {overview.latestWorkout.totalQuestions}Q{" · "}
-                    {formatRelativeSessionDate(
-                      (overview.latestWorkout as any).completed_at ||
-                        (overview.latestWorkout as any).completedAt,
-                    )}
+                    {latestWorkout.totalQuestions} questions{" · "}
+                    {formatRelativeSessionDate(latestWorkout.completedAt)}
                   </Text>
                 </View>
               )}
             </View>
 
-            {/* 3. Training Goals Section */}
-            <Text style={[styles.sectionHeading, { color: secondaryText }]}>
+            {/* 3. Your Plan Section (choices from onboarding) */}
+            <Text
+              style={[styles.sectionHeading, { color: secondaryText }]}
+              accessibilityRole="header"
+            >
+              YOUR PLAN
+            </Text>
+            <View style={styles.goalsList}>
+              {renderSettingCard({
+                title: "Focus",
+                value: focusOption?.title ?? NOT_SET,
+                leading: renderCardIcon(focusOption?.icon ?? "flag-outline"),
+                onPress: () => openPlanSheet("focus"),
+              })}
+              {renderSettingCard({
+                title: "Working on",
+                value: workingOnValue,
+                leading: workingOnSymbols
+                  ? renderMathSymbol(workingOnSymbols, "badge")
+                  : workingOnSpots.some((w) => w.id === "mixed")
+                    ? renderCardIcon("shuffle")
+                    : renderMathSymbol("?", "badge"),
+                onPress: () => openPlanSheet("workingOn"),
+              })}
+              {renderSettingCard({
+                title: "Level",
+                value: levelOption?.title ?? NOT_SET,
+                leading: renderCardIcon(levelOption?.icon ?? "speedometer-outline"),
+                onPress: () => openPlanSheet("level"),
+              })}
+            </View>
+
+            {/* 4. Training Goals Section */}
+            <Text
+              style={[styles.sectionHeading, { color: secondaryText }]}
+              accessibilityRole="header"
+            >
               TRAINING GOALS
             </Text>
             <View style={styles.goalsList}>
-              {/* Daily Questions Goal */}
-              <TouchableOpacity
-                style={[
-                  styles.goalItemCard,
-                  { backgroundColor: cardBg, borderColor: borderSubtle },
-                ]}
-                activeOpacity={0.7}
-                onPress={() => {
-                  setGoalSheetType("questions");
-                  openSheet();
-                }}
-              >
-                <View
-                  style={[
-                    styles.goalIconBadge,
-                    {
-                      backgroundColor: isDark
-                        ? "rgba(188, 227, 170, 0.18)"
-                        : "#EAF7E4",
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name="sparkles"
-                    size={18}
-                    color={isDark ? accentGreen : "#25631E"}
-                  />
-                </View>
-                <View style={styles.goalTextStack}>
-                  <View style={styles.goalHeaderRow}>
-                    <Text
-                      style={[
-                        styles.goalItemTitle,
-                        { color: primaryText },
-                      ]}
-                    >
-                      Daily questions
-                    </Text>
-                    <Text
-                      style={[
-                        styles.goalProgressLabel,
-                        { color: secondaryText },
-                      ]}
-                    >
-                      {todayProgress.questionsToday}/{goals.dailyQuestions}
-                    </Text>
-                  </View>
-
-                  {/* Progress Bar */}
-                  <View
-                    style={[
-                      styles.progressBarTrack,
-                      { backgroundColor: pillBaseBg },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          backgroundColor: accentGreen,
-                          width: `${Math.min(
-                            (todayProgress.questionsToday /
-                              goals.dailyQuestions) *
-                              100,
-                            100,
-                          )}%`,
-                        },
-                      ]}
-                    />
-                  </View>
-
-                  <Text
-                    style={[
-                      styles.goalItemSubtitle,
-                      { color: secondaryText },
-                    ]}
-                  >
-                    {formatQuestionGoal(goals.dailyQuestions)}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={secondaryText}
-                />
-              </TouchableOpacity>
-
-              {/* Session Duration Goal */}
-              <TouchableOpacity
-                style={[
-                  styles.goalItemCard,
-                  { backgroundColor: cardBg, borderColor: borderSubtle },
-                ]}
-                activeOpacity={0.7}
-                onPress={() => {
-                  setGoalSheetType("duration");
-                  openSheet();
-                }}
-              >
-                <View
-                  style={[
-                    styles.goalIconBadge,
-                    {
-                      backgroundColor: isDark
-                        ? "rgba(242, 202, 236, 0.18)"
-                        : "#FCEFF9",
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name="timer-outline"
-                    size={19}
-                    color={isDark ? accentLilac : "#8C2B7E"}
-                  />
-                </View>
-                <View style={styles.goalTextStack}>
-                  <Text
-                    style={[styles.goalItemTitle, { color: primaryText }]}
-                  >
-                    Session duration
-                  </Text>
-                  <Text
-                    style={[
-                      styles.goalItemSubtitle,
-                      { color: secondaryText },
-                    ]}
-                  >
-                    {formatDurationGoal(goals.sessionDurationMinutes)}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={secondaryText}
-                />
-              </TouchableOpacity>
-
-              {/* Weekly Frequency Goal */}
-              <TouchableOpacity
-                style={[
-                  styles.goalItemCard,
-                  { backgroundColor: cardBg, borderColor: borderSubtle },
-                ]}
-                activeOpacity={0.7}
-                onPress={() => {
-                  setGoalSheetType("frequency");
-                  openSheet();
-                }}
-              >
-                <View
-                  style={[
-                    styles.goalIconBadge,
-                    {
-                      backgroundColor: isDark
-                        ? "rgba(188, 227, 170, 0.18)"
-                        : "#EAF7E4",
-                    },
-                  ]}
-                >
-                  <Ionicons
-                    name="calendar-outline"
-                    size={18}
-                    color={isDark ? accentGreen : "#25631E"}
-                  />
-                </View>
-                <View style={styles.goalTextStack}>
-                  <View style={styles.goalHeaderRow}>
-                    <Text
-                      style={[
-                        styles.goalItemTitle,
-                        { color: primaryText },
-                      ]}
-                    >
-                      Weekly training
-                    </Text>
-                    <Text
-                      style={[
-                        styles.goalProgressLabel,
-                        { color: secondaryText },
-                      ]}
-                    >
-                      {todayProgress.daysTrainedThisWeek}/
-                      {goals.weeklyFrequencyDays}d
-                    </Text>
-                  </View>
-
-                  {/* Progress Bar */}
-                  <View
-                    style={[
-                      styles.progressBarTrack,
-                      { backgroundColor: pillBaseBg },
-                    ]}
-                  >
-                    <View
-                      style={[
-                        styles.progressBarFill,
-                        {
-                          backgroundColor: accentGreen,
-                          width: `${Math.min(
-                            (todayProgress.daysTrainedThisWeek /
-                              goals.weeklyFrequencyDays) *
-                              100,
-                            100,
-                          )}%`,
-                        },
-                      ]}
-                    />
-                  </View>
-
-                  <Text
-                    style={[
-                      styles.goalItemSubtitle,
-                      { color: secondaryText },
-                    ]}
-                  >
-                    {formatFrequencyGoal(goals.weeklyFrequencyDays)}
-                  </Text>
-                </View>
-                <Ionicons
-                  name="chevron-forward"
-                  size={18}
-                  color={secondaryText}
-                />
-              </TouchableOpacity>
+              {renderSettingCard({
+                title: "Time per day",
+                value: `${formatDurationGoal(goals.sessionDurationMinutes)} · about ${goals.dailyQuestions} questions`,
+                leading: renderCardIcon("timer-outline"),
+                onPress: () => openPlanSheet("duration"),
+                progress: {
+                  label: `${todayProgress.questionsToday} of ${goals.dailyQuestions} questions today`,
+                  ratio: todayProgress.questionsToday / goals.dailyQuestions,
+                },
+              })}
+              {renderSettingCard({
+                title: "Days per week",
+                value: formatFrequencyGoal(goals.weeklyFrequencyDays),
+                leading: renderCardIcon("calendar-outline"),
+                onPress: () => openPlanSheet("frequency"),
+                progress: {
+                  label: `${todayProgress.daysTrainedThisWeek} of ${goals.weeklyFrequencyDays} days this week`,
+                  ratio:
+                    todayProgress.daysTrainedThisWeek / goals.weeklyFrequencyDays,
+                },
+              })}
             </View>
           </View>
         </ScrollView>
       )}
 
-      {/* Activity Bottom Sheet with Full Scrolling */}
-      <Modal visible={activitySheetVisible} transparent animationType="none">
+      {/* Activity Bottom Sheet: last 30 days */}
+      <Modal
+        visible={activitySheetVisible}
+        transparent
+        animationType="none"
+        onRequestClose={() => closeSheet(() => setActivitySheetVisible(false))}
+      >
         <View style={styles.sheetBackdrop}>
           <TouchableOpacity
             style={styles.sheetDismissArea}
             activeOpacity={1}
             onPress={() => closeSheet(() => setActivitySheetVisible(false))}
+            accessible={false}
           />
 
           <Animated.View
@@ -1003,65 +1305,16 @@ export default function ProfileScreen() {
               },
             ]}
           >
-            {/* Top Grab Handle */}
             <View style={styles.handleContainer}>
               <View
                 style={[styles.grabHandle, { backgroundColor: secondaryText }]}
               />
             </View>
 
-            {/* Header */}
-            <View style={styles.sheetTopRow}>
-              <Text style={[styles.sheetMainTitle, { color: primaryText }]}>
-                Training activity
-              </Text>
-              <TouchableOpacity
-                onPress={() => closeSheet(() => setActivitySheetVisible(false))}
-                style={[styles.sheetCloseIcon, { backgroundColor: pillBaseBg }]}
-              >
-                <Ionicons name="close" size={18} color={primaryText} />
-              </TouchableOpacity>
-            </View>
+            {renderSheetHeader("Training activity", () =>
+              closeSheet(() => setActivitySheetVisible(false)),
+            )}
 
-            {/* Timeframe Selector */}
-            <View
-              style={[
-                styles.timeframeSegment,
-                { backgroundColor: pillBaseBg },
-              ]}
-            >
-              {(["7D", "30D", "3M"] as ActivityTimeframe[]).map((tf) => {
-                const isSelected = selectedTimeframe === tf;
-                return (
-                  <TouchableOpacity
-                    key={tf}
-                    style={[
-                      styles.timeframePill,
-                      isSelected && { backgroundColor: accentGreen },
-                    ]}
-                    onPress={() => {
-                      triggerHaptic();
-                      setSelectedTimeframe(tf);
-                    }}
-                  >
-                    <Text
-                      style={[
-                        styles.timeframeText,
-                        { color: primaryText },
-                        isSelected && {
-                          color: PALETTE.dark,
-                          fontWeight: "800",
-                        },
-                      ]}
-                    >
-                      {tf}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            {/* Scrollable Sessions Container */}
             <View style={styles.scrollWrapper}>
               <ScrollView
                 style={styles.activityScrollArea}
@@ -1071,12 +1324,10 @@ export default function ProfileScreen() {
                 bounces={true}
               >
                 <Text
-                  style={[
-                    styles.recentSessionsHeader,
-                    { color: secondaryText },
-                  ]}
+                  style={[styles.recentSessionsHeader, { color: secondaryText }]}
+                  accessibilityRole="header"
                 >
-                  SESSIONS IN TIMEFRAME ({activitySummary.recentSessions.length})
+                  LAST 30 DAYS ({activitySummary.recentSessions.length})
                 </Text>
 
                 {activitySummary.recentSessions.length === 0 ? (
@@ -1084,72 +1335,67 @@ export default function ProfileScreen() {
                     <Text
                       style={[styles.emptySessionText, { color: secondaryText }]}
                     >
-                      No sessions recorded in this timeframe.
+                      No workouts in the last 30 days.
                     </Text>
                   </View>
                 ) : (
-                  activitySummary.recentSessions.map((item) => (
-                    <View
-                      key={item.id}
-                      style={[
-                        styles.sessionItemRow,
-                        { borderBottomColor: dividerColor },
-                      ]}
-                    >
-                      <View style={styles.sessionLeftStack}>
-                        <Text
-                          style={[
-                            styles.sessionOpTitle,
-                            { color: primaryText },
-                          ]}
-                        >
-                          {item.operation.charAt(0).toUpperCase() +
-                            item.operation.slice(1)}
-                        </Text>
-                        <Text
-                          style={[
-                            styles.sessionDetailSub,
-                            { color: secondaryText },
-                          ]}
-                        >
-                          {(item as any).total_questions ??
-                            (item as any).totalQuestions}{" "}
-                          questions ·{" "}
-                          {formatRelativeSessionDate(
-                            (item as any).completed_at ||
-                              (item as any).completedAt,
-                          )}
-                        </Text>
+                  activitySummary.recentSessions.map((item) => {
+                    const name = formatOperationName(item.operation);
+                    const when = formatRelativeSessionDate(item.completedAt);
+                    return (
+                      <View
+                        key={item.id}
+                        style={[
+                          styles.sessionItemRow,
+                          { borderBottomColor: borderSubtle },
+                        ]}
+                        accessible
+                        accessibilityLabel={`${name}, ${item.totalQuestions} questions, ${when}, ${item.accuracy} percent correct`}
+                      >
+                        <View style={styles.sessionLeftStack}>
+                          <Text
+                            style={[styles.sessionOpTitle, { color: primaryText }]}
+                          >
+                            {name}
+                          </Text>
+                          <Text
+                            style={[
+                              styles.sessionDetailSub,
+                              { color: secondaryText },
+                            ]}
+                          >
+                            {item.totalQuestions} questions · {when}
+                          </Text>
+                        </View>
+                        <View style={styles.sessionRightPill}>
+                          <Text
+                            style={[
+                              styles.sessionAccuracyText,
+                              { color: accentStrong },
+                            ]}
+                          >
+                            {item.accuracy}%
+                          </Text>
+                        </View>
                       </View>
-                      <View style={styles.sessionRightPill}>
-                        <Text
-                          style={[
-                            styles.sessionAccuracyText,
-                            { color: isDark ? accentGreen : "#25631E" },
-                          ]}
-                        >
-                          {item.accuracy}%
-                        </Text>
-                      </View>
-                    </View>
-                  ))
+                    );
+                  })
                 )}
               </ScrollView>
             </View>
 
             <TouchableOpacity
-              style={[
-                styles.viewStatsCtaBtn,
-                { backgroundColor: accentGreen },
-              ]}
+              style={[styles.viewStatsCtaBtn, { backgroundColor: accent }]}
               onPress={() => {
                 closeSheet(() => {
                   setActivitySheetVisible(false);
                   router.push("/(app)/statistics");
                 });
               }}
+              accessibilityRole="button"
+              accessibilityLabel="View full statistics"
             >
-              <Text style={styles.viewStatsCtaText}>
+              <Text style={[styles.viewStatsCtaText, { color: onAccent }]}>
                 View Full Statistics →
               </Text>
             </TouchableOpacity>
@@ -1157,13 +1403,19 @@ export default function ProfileScreen() {
         </View>
       </Modal>
 
-      {/* Goal Selector Bottom Sheet */}
-      <Modal visible={goalSheetType !== null} transparent animationType="none">
+      {/* Plan & Goal Selector Bottom Sheet */}
+      <Modal
+        visible={sheetType !== null}
+        transparent
+        animationType="none"
+        onRequestClose={closePlanSheet}
+      >
         <View style={styles.sheetBackdrop}>
           <TouchableOpacity
             style={styles.sheetDismissArea}
             activeOpacity={1}
-            onPress={() => closeSheet(() => setGoalSheetType(null))}
+            onPress={closePlanSheet}
+            accessible={false}
           />
 
           <Animated.View
@@ -1183,133 +1435,55 @@ export default function ProfileScreen() {
               />
             </View>
 
-            <Text
-              style={[
-                styles.sheetMainTitle,
-                { color: primaryText, marginBottom: 4 },
-              ]}
+            {sheetType && (
+              <>
+                {renderSheetHeader(SHEET_COPY[sheetType].title, closePlanSheet)}
+                <Text
+                  style={[styles.sheetDescSubtitle, { color: secondaryText }]}
+                >
+                  {SHEET_COPY[sheetType].subtitle}
+                </Text>
+              </>
+            )}
+
+            <ScrollView
+              style={styles.goalOptionsScroll}
+              contentContainerStyle={styles.goalPillsWrapper}
+              showsVerticalScrollIndicator={false}
+              accessibilityRole={sheetType === "workingOn" ? undefined : "radiogroup"}
             >
-              {goalSheetType === "questions" && "Daily question goal"}
-              {goalSheetType === "duration" && "Session duration"}
-              {goalSheetType === "frequency" && "Weekly training"}
-            </Text>
+              {renderSheetOptions()}
+            </ScrollView>
 
-            <Text style={[styles.sheetDescSubtitle, { color: secondaryText }]}>
-              {goalSheetType === "questions" &&
-                "How many arithmetic drills do you aim to complete each day?"}
-              {goalSheetType === "duration" &&
-                "Target duration for your daily calculation sessions."}
-              {goalSheetType === "frequency" &&
-                "How many days per week do you want to train your recall?"}
-            </Text>
-
-            <View style={styles.goalPillsWrapper}>
-              {goalSheetType === "questions" &&
-                QUESTION_OPTIONS.map((q) => {
-                  const isSelected = goals.dailyQuestions === q;
-                  return (
-                    <TouchableOpacity
-                      key={q}
-                      style={[
-                        styles.goalOptionRow,
-                        { backgroundColor: pillBaseBg },
-                        isSelected && {
-                          borderColor: accentGreen,
-                          borderWidth: 1.5,
-                        },
-                      ]}
-                      onPress={() => handleSelectGoalValue("dailyQuestions", q)}
-                    >
-                      <Text
-                        style={[styles.goalOptionText, { color: primaryText }]}
-                      >
-                        {q} questions
-                      </Text>
-                      <Ionicons
-                        name={
-                          isSelected ? "radio-button-on" : "radio-button-off"
-                        }
-                        size={20}
-                        color={isSelected ? accentGreen : secondaryText}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-
-              {goalSheetType === "duration" &&
-                DURATION_OPTIONS.map((m) => {
-                  const isSelected = goals.sessionDurationMinutes === m;
-                  return (
-                    <TouchableOpacity
-                      key={m}
-                      style={[
-                        styles.goalOptionRow,
-                        { backgroundColor: pillBaseBg },
-                        isSelected && {
-                          borderColor: accentGreen,
-                          borderWidth: 1.5,
-                        },
-                      ]}
-                      onPress={() =>
-                        handleSelectGoalValue("sessionDurationMinutes", m)
-                      }
-                    >
-                      <Text
-                        style={[styles.goalOptionText, { color: primaryText }]}
-                      >
-                        {m} minutes
-                      </Text>
-                      <Ionicons
-                        name={
-                          isSelected ? "radio-button-on" : "radio-button-off"
-                        }
-                        size={20}
-                        color={isSelected ? accentGreen : secondaryText}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-
-              {goalSheetType === "frequency" &&
-                FREQUENCY_OPTIONS.map((d) => {
-                  const isSelected = goals.weeklyFrequencyDays === d;
-                  return (
-                    <TouchableOpacity
-                      key={d}
-                      style={[
-                        styles.goalOptionRow,
-                        { backgroundColor: pillBaseBg },
-                        isSelected && {
-                          borderColor: accentGreen,
-                          borderWidth: 1.5,
-                        },
-                      ]}
-                      onPress={() =>
-                        handleSelectGoalValue("weeklyFrequencyDays", d)
-                      }
-                    >
-                      <Text
-                        style={[styles.goalOptionText, { color: primaryText }]}
-                      >
-                        {d === 7 ? "Every day" : `${d} days / week`}
-                      </Text>
-                      <Ionicons
-                        name={
-                          isSelected ? "radio-button-on" : "radio-button-off"
-                        }
-                        size={20}
-                        color={isSelected ? accentGreen : secondaryText}
-                      />
-                    </TouchableOpacity>
-                  );
-                })}
-            </View>
+            {sheetType === "workingOn" && (
+              <TouchableOpacity
+                style={[
+                  styles.sheetSaveBtn,
+                  { backgroundColor: accent },
+                  !canSaveWorkingOn && styles.disabledBtn,
+                ]}
+                onPress={handleSaveWorkingOn}
+                disabled={!canSaveWorkingOn}
+                accessibilityRole="button"
+                accessibilityLabel="Save"
+                accessibilityState={{ disabled: !canSaveWorkingOn }}
+              >
+                <Text style={[styles.viewStatsCtaText, { color: onAccent }]}>
+                  Save
+                </Text>
+              </TouchableOpacity>
+            )}
           </Animated.View>
         </View>
       </Modal>
 
       {/* Edit Name Modal */}
-      <Modal visible={editNameVisible} transparent animationType="fade">
+      <Modal
+        visible={editNameVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setEditNameVisible(false)}
+      >
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : "height"}
           style={styles.modalOverlay}
@@ -1320,46 +1494,63 @@ export default function ProfileScreen() {
               { backgroundColor: cardBg, borderColor: borderSubtle },
             ]}
           >
-            <Text style={[styles.modalHeading, { color: primaryText }]}>
-              Edit Name
+            <Text
+              style={[styles.modalHeading, { color: primaryText }]}
+              accessibilityRole="header"
+            >
+              Edit name
             </Text>
             <Text style={[styles.modalSubheading, { color: secondaryText }]}>
-              Enter how you want your coach to greet you.
+              What should we call you?
             </Text>
             <TextInput
               value={nameInput}
               onChangeText={setNameInput}
-              placeholder="Full Name"
+              placeholder="Your name"
               placeholderTextColor={secondaryText}
+              maxLength={NAME_MAX_LENGTH}
+              autoCapitalize="words"
+              autoCorrect={false}
+              returnKeyType="done"
+              onSubmitEditing={handleSaveName}
+              accessibilityLabel="Your name"
+              accessibilityHint={`Up to ${NAME_MAX_LENGTH} characters`}
               style={[
                 styles.modalInput,
-                { backgroundColor: pillBaseBg, color: primaryText },
+                { backgroundColor: fillBg, color: primaryText },
               ]}
               autoFocus
             />
+            <Text style={[styles.charCount, { color: secondaryText }]}>
+              {nameInput.length}/{NAME_MAX_LENGTH}
+            </Text>
             <View style={styles.modalBtnRow}>
               <TouchableOpacity
-                style={[styles.modalBtn, { backgroundColor: pillBaseBg }]}
+                style={[styles.modalBtn, { backgroundColor: fillBg }]}
                 onPress={() => setEditNameVisible(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel"
               >
                 <Text style={[styles.modalBtnText, { color: primaryText }]}>
                   Cancel
                 </Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.modalBtn, { backgroundColor: accentGreen }]}
+                style={[
+                  styles.modalBtn,
+                  { backgroundColor: accent },
+                  !canSaveName && !isSavingName && styles.disabledBtn,
+                ]}
                 onPress={handleSaveName}
-                disabled={isSavingName}
+                disabled={!canSaveName}
+                accessibilityRole="button"
+                accessibilityLabel="Save name"
+                accessibilityState={{ disabled: !canSaveName, busy: isSavingName }}
               >
                 {isSavingName ? (
-                  <ActivityIndicator size="small" color={PALETTE.dark} />
+                  <ActivityIndicator size="small" color={onAccent} />
                 ) : (
-                  <Text
-                    style={[
-                      styles.modalBtnText,
-                      { color: PALETTE.dark, fontWeight: "800" },
-                    ]}
-                  >
+                  <Text style={[styles.modalBtnText, { color: onAccent }]}>
                     Save
                   </Text>
                 )}
@@ -1371,6 +1562,8 @@ export default function ProfileScreen() {
     </SafeAreaView>
   );
 }
+
+const MIN_TAP = 44;
 
 const styles = StyleSheet.create({
   safeArea: {
@@ -1391,22 +1584,55 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   headerTitle: {
-    fontSize: 26,
-    fontWeight: "800",
+    ...typography.screenTitle,
     letterSpacing: -0.5,
+    flexShrink: 1,
   },
   gearButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: MIN_TAP,
+    height: MIN_TAP,
+    borderRadius: MIN_TAP / 2,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
     elevation: 2,
-    shadowColor: "#000",
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.04,
     shadowRadius: 5,
+  },
+  // Offline banner
+  offlineBannerWrap: {
+    width: "100%",
+    maxWidth: 440,
+    alignSelf: "center",
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+  },
+  offlineBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingLeft: 14,
+    paddingRight: 6,
+    minHeight: 52,
+  },
+  offlineBannerText: {
+    ...typography.secondary,
+    fontWeight: "600",
+    flex: 1,
+  },
+  offlineRetryBtn: {
+    minHeight: MIN_TAP,
+    minWidth: 64,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  offlineRetryText: {
+    ...typography.button,
   },
   scrollContent: {
     paddingTop: 8,
@@ -1424,7 +1650,7 @@ const styles = StyleSheet.create({
     padding: 18,
     borderWidth: 1,
     elevation: 2,
-    shadowColor: "#000",
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.04,
     shadowRadius: 10,
@@ -1456,12 +1682,11 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   avatarInitials: {
-    fontSize: 26,
-    fontWeight: "900",
+    ...typography.screenTitle,
   },
   avatarLoadingOverlay: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: PALETTE.scrim,
     borderRadius: 34,
     alignItems: "center",
     justifyContent: "center",
@@ -1476,7 +1701,6 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     borderWidth: 2,
-    borderColor: "#0A0F0B",
   },
   heroDetailsCol: {
     flex: 1,
@@ -1485,30 +1709,34 @@ const styles = StyleSheet.create({
   nameRow: {
     flexDirection: "row",
     alignItems: "center",
+    minHeight: MIN_TAP,
   },
   displayName: {
-    fontSize: 20,
-    fontWeight: "800",
+    ...typography.sectionHeading,
     letterSpacing: -0.3,
+    flexShrink: 1,
   },
   displayEmail: {
-    fontSize: 12.5,
-    fontWeight: "500",
-    marginTop: 2,
+    ...typography.secondary,
   },
   tierBadgePill: {
     flexDirection: "row",
     alignItems: "center",
     alignSelf: "flex-start",
-    paddingHorizontal: 9,
-    paddingVertical: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
     borderRadius: 20,
     marginTop: 8,
   },
   tierBadgeText: {
-    fontSize: 11.5,
-    fontWeight: "700",
-    letterSpacing: 0.2,
+    ...typography.secondary,
+    fontWeight: "600",
+  },
+  rankProgressBlock: {
+    marginTop: 14,
+  },
+  rankProgressText: {
+    ...typography.secondary,
   },
   cardDivider: {
     height: 1,
@@ -1520,28 +1748,29 @@ const styles = StyleSheet.create({
     justifyContent: "space-around",
   },
   heroStatItem: {
+    flex: 1,
     alignItems: "center",
+    paddingHorizontal: 4,
   },
   heroStatLabel: {
-    fontSize: 10,
-    fontWeight: "700",
-    letterSpacing: 0.6,
+    ...typography.secondary,
+    letterSpacing: 0.4,
+    textAlign: "center",
     marginBottom: 3,
   },
   heroStatValue: {
-    fontSize: 16,
-    fontWeight: "900",
+    ...typography.sectionHeading,
   },
   heroStatSeparator: {
     width: 1,
-    height: 24,
+    alignSelf: "stretch",
   },
   // Training Activity Card
   activityOverviewCard: {
     borderRadius: 20,
     padding: 18,
     borderWidth: 1,
-    shadowColor: "#000",
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.04,
     shadowRadius: 8,
@@ -1549,55 +1778,51 @@ const styles = StyleSheet.create({
   },
   activityCardHeader: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 12,
+    marginBottom: 8,
   },
   activityCardHeading: {
-    fontSize: 16,
-    fontWeight: "800",
+    ...typography.button,
+    fontSize: 17,
+  },
+  seeActivityBtn: {
+    minHeight: MIN_TAP,
+    justifyContent: "center",
+    paddingLeft: 8,
   },
   seeActivityLink: {
-    fontSize: 13,
-    fontWeight: "700",
+    ...typography.secondary,
+    fontWeight: "600",
   },
-  overviewMetricsRow: {
+  streakRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
+    alignItems: "center",
     marginBottom: 12,
   },
-  metricBlock: {
-    flex: 1,
+  streakValue: {
+    ...typography.sectionHeading,
   },
-  metricLabel: {
-    fontSize: 11.5,
-    fontWeight: "600",
-    marginBottom: 4,
-  },
-  metricValue: {
-    fontSize: 18,
-    fontWeight: "900",
-  },
-  metricUnit: {
-    fontSize: 12.5,
-    fontWeight: "600",
+  streakHint: {
+    ...typography.secondary,
+    marginTop: 2,
   },
   lastSessionNote: {
     flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
+    alignItems: "flex-start",
+    gap: 8,
     borderTopWidth: 1,
-    paddingTop: 10,
+    paddingTop: 12,
   },
   lastSessionText: {
-    fontSize: 12.5,
-    fontWeight: "500",
+    ...typography.secondary,
     flex: 1,
   },
-  // Goals Section
+  // Plan & Goals Sections
   sectionHeading: {
-    fontSize: 11.5,
-    fontWeight: "700",
+    ...typography.secondary,
+    fontWeight: "600",
     letterSpacing: 0.8,
     marginLeft: 4,
     marginBottom: -6,
@@ -1610,9 +1835,10 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingVertical: 14,
     paddingHorizontal: 16,
+    minHeight: 64,
     borderRadius: 18,
     borderWidth: 1,
-    shadowColor: "#000",
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.02,
     shadowRadius: 4,
@@ -1626,43 +1852,41 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginRight: 14,
   },
+  badgeSymbol: {
+    fontFamily: FONT_FAMILY.heading,
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 24,
+  },
   goalTextStack: {
     flex: 1,
     marginRight: 10,
   },
-  goalHeaderRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
   goalItemTitle: {
-    fontSize: 15,
-    fontWeight: "700",
-    letterSpacing: -0.2,
+    ...typography.secondary,
   },
-  goalProgressLabel: {
-    fontSize: 12,
-    fontWeight: "700",
+  goalItemValue: {
+    ...typography.body,
+    fontWeight: "600",
   },
   progressBarTrack: {
-    height: 4,
-    borderRadius: 2,
+    height: 6,
+    borderRadius: 3,
     overflow: "hidden",
     marginVertical: 6,
     width: "100%",
   },
   progressBarFill: {
     height: "100%",
-    borderRadius: 2,
+    borderRadius: 3,
   },
   goalItemSubtitle: {
-    fontSize: 12.5,
-    fontWeight: "600",
+    ...typography.secondary,
   },
   // Bottom Sheet Base
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.6)",
+    backgroundColor: PALETTE.scrim,
     justifyContent: "flex-end",
   },
   sheetDismissArea: {
@@ -1682,6 +1906,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderBottomWidth: 0,
     paddingHorizontal: 20,
+    maxHeight: SCREEN_HEIGHT * 0.88,
   },
   handleContainer: {
     alignItems: "center",
@@ -1697,44 +1922,27 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginBottom: 14,
+    gap: 12,
+    marginBottom: 6,
   },
   sheetMainTitle: {
-    fontSize: 19,
-    fontWeight: "800",
+    ...typography.sectionHeading,
+    flex: 1,
   },
   sheetDescSubtitle: {
-    fontSize: 13,
-    lineHeight: 18,
+    ...typography.secondary,
     marginBottom: 16,
   },
   sheetCloseIcon: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: MIN_TAP,
+    height: MIN_TAP,
+    borderRadius: MIN_TAP / 2,
     alignItems: "center",
     justifyContent: "center",
-  },
-  timeframeSegment: {
-    flexDirection: "row",
-    borderRadius: 12,
-    padding: 3,
-    marginBottom: 14,
-  },
-  timeframePill: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  timeframeText: {
-    fontSize: 13,
-    fontWeight: "700",
   },
   recentSessionsHeader: {
-    fontSize: 11,
-    fontWeight: "700",
+    ...typography.secondary,
+    fontWeight: "600",
     letterSpacing: 0.8,
     marginBottom: 8,
     marginTop: 4,
@@ -1761,11 +1969,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   sessionOpTitle: {
-    fontSize: 14.5,
-    fontWeight: "700",
+    ...typography.button,
   },
   sessionDetailSub: {
-    fontSize: 12,
+    ...typography.secondary,
     marginTop: 2,
   },
   sessionRightPill: {
@@ -1774,8 +1981,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   sessionAccuracyText: {
-    fontSize: 14,
-    fontWeight: "800",
+    ...typography.button,
   },
   emptySessionBox: {
     paddingVertical: 40,
@@ -1783,40 +1989,72 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   emptySessionText: {
-    fontSize: 13,
-    fontWeight: "500",
+    ...typography.body,
+    textAlign: "center",
   },
   viewStatsCtaBtn: {
+    minHeight: 52,
     paddingVertical: 14,
     borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },
   viewStatsCtaText: {
-    color: "#0A0F0B",
-    fontSize: 14,
-    fontWeight: "800",
+    ...typography.button,
+  },
+  goalOptionsScroll: {
+    flexGrow: 0,
   },
   goalPillsWrapper: {
     gap: 8,
-    marginBottom: 12,
+    paddingBottom: 12,
   },
   goalOptionRow: {
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
     paddingVertical: 14,
     paddingHorizontal: 16,
+    minHeight: 56,
     borderRadius: 14,
+    borderWidth: 1.5,
+    gap: 12,
+  },
+  optionLeading: {
+    width: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  optionSymbol: {
+    fontFamily: FONT_FAMILY.heading,
+    fontSize: 26,
+    fontWeight: "700",
+    lineHeight: 32,
+  },
+  optionTextStack: {
+    flex: 1,
   },
   goalOptionText: {
-    fontSize: 15,
-    fontWeight: "700",
+    ...typography.button,
+    fontSize: 16,
+  },
+  optionDesc: {
+    ...typography.secondary,
+    marginTop: 2,
+  },
+  sheetSaveBtn: {
+    minHeight: 52,
+    borderRadius: 14,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 4,
+  },
+  disabledBtn: {
+    opacity: 0.45,
   },
   // Modal Edit
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.65)",
+    backgroundColor: PALETTE.scrim,
     alignItems: "center",
     justifyContent: "center",
     paddingHorizontal: 20,
@@ -1829,21 +2067,25 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   modalHeading: {
-    fontSize: 18,
-    fontWeight: "800",
+    ...typography.sectionHeading,
     marginBottom: 4,
   },
   modalSubheading: {
-    fontSize: 13,
+    ...typography.body,
     marginBottom: 16,
   },
   modalInput: {
+    ...inputTypography("body"),
     borderRadius: 12,
     paddingHorizontal: 14,
-    paddingVertical: 11,
-    fontSize: 15,
-    fontWeight: "600",
-    marginBottom: 16,
+    paddingVertical: 12,
+    minHeight: 48,
+  },
+  charCount: {
+    ...typography.secondary,
+    textAlign: "right",
+    marginTop: 6,
+    marginBottom: 12,
   },
   modalBtnRow: {
     flexDirection: "row",
@@ -1851,12 +2093,13 @@ const styles = StyleSheet.create({
   },
   modalBtn: {
     flex: 1,
+    minHeight: 48,
     paddingVertical: 12,
     borderRadius: 12,
     alignItems: "center",
+    justifyContent: "center",
   },
   modalBtnText: {
-    fontSize: 14,
-    fontWeight: "700",
+    ...typography.button,
   },
 });

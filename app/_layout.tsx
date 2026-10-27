@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Stack } from 'expo-router';
+import { useFonts } from 'expo-font';
+import { FONT_DEFINITIONS } from '../src/constants/typography';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { useProtectedRoute } from '../src/hooks/useProtectedRoute';
@@ -15,6 +17,8 @@ if (__DEV__) {
 function RootLayoutNav() {
   const { isLoading } = useAuth();
   const { theme } = useTheme();
+  const [fontsLoaded, fontError] = useFonts(FONT_DEFINITIONS);
+  const fontsReady = fontsLoaded || !!fontError;
 
   const [minSplashDone, setMinSplashDone] = useState(false);
   const [forceDismiss, setForceDismiss] = useState(false);
@@ -43,7 +47,7 @@ function RootLayoutNav() {
 
   // CRITICAL FIX: Return ONLY the splash screen when loading.
   // This prevents the screen from splitting 50/50 with the Stack!
-  if ((isLoading || !minSplashDone) && !forceDismiss) {
+  if ((isLoading || !minSplashDone || !fontsReady) && !forceDismiss) {
     return <AppSplashScreen />;
   }
 

@@ -3,6 +3,8 @@ import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { TrainingProgram } from '../types/training';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
+import { typography } from '@/src/constants/typography';
 
 interface ProgramCardProps {
   program: TrainingProgram;
@@ -42,7 +44,8 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
             <Text
               style={[
                 styles.symbolText,
-                { color: theme.text },
+                // Badges are pastel in both themes, so the symbol stays dark
+                { color: PALETTE.onPrimary },
                 isLocked && { color: theme.muted },
               ]}
             >
@@ -52,7 +55,7 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
             <Ionicons
               name={iconName || 'help-outline'}
               size={20}
-              color={isLocked ? theme.muted : theme.text}
+              color={isLocked ? theme.muted : PALETTE.onPrimary}
             />
           )}
         </View>
@@ -121,8 +124,7 @@ const styles = StyleSheet.create({
     marginRight: 14,
   },
   symbolText: {
-    fontSize: 22,
-    fontWeight: '700',
+    ...typography.sectionHeading,
     color: '#1C1C1E',
   },
   textContainer: {
@@ -130,18 +132,16 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
     color: '#1C1C1E',
   },
   subtitle: {
-    fontSize: 12,
+    ...typography.caption,
     color: '#8E8E93',
     marginTop: 2,
   },
   progressText: {
-    fontSize: 15,
-    fontWeight: '700',
+    ...typography.button,
     color: '#1C1C1E',
   },
   lockBadge: {
@@ -154,8 +154,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   lockText: {
-    fontSize: 10,
-    fontWeight: '700',
+    ...typography.caption,
     color: '#8E8E93',
     letterSpacing: 0.5,
   },

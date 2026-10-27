@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useColorScheme as useSystemColorScheme } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { PALETTE } from '../constants/palette';
 
 export const lightTheme = {
   background: '#E6E6E6',
@@ -11,7 +12,10 @@ export const lightTheme = {
   border: '#EFEFEF',
   divider: 'rgba(0, 0, 0, 0.06)',
   pillBg: '#F2F2F7',
-  primary: '#EC673C',
+  primary: PALETTE.primary,
+  primaryText: PALETTE.primaryDeep, // links and accent text
+  primarySoft: PALETTE.primarySoftLight, // badge/chip background
+  onPrimary: PALETTE.onPrimary, // text and icons on primary buttons
   accentPurple: '#AFA2FE',
   accentYellow: '#F6FE91',
   isDark: false,
@@ -26,7 +30,10 @@ export const darkTheme = {
   border: '#2C2C2E',
   divider: 'rgba(255, 255, 255, 0.08)',
   pillBg: '#2C2C2E',
-  primary: '#EE5839',
+  primary: PALETTE.primary,
+  primaryText: PALETTE.primary,
+  primarySoft: PALETTE.primarySoftDark,
+  onPrimary: PALETTE.onPrimary,
   accentPurple: '#8E82FE',
   accentYellow: '#E5ED72',
   isDark: true,

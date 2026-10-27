@@ -12,6 +12,8 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
+import { typography, inputTypography } from '@/src/constants/typography';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
@@ -81,7 +83,7 @@ export default function ForgotPasswordScreen() {
         onPress={handleSendCode}
         disabled={loading}
       >
-        {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.buttonText}>Send Code</Text>}
+        {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Send Code</Text>}
       </TouchableOpacity>
 
       <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
@@ -99,12 +101,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: {
-    fontSize: 24,
-    fontWeight: '800',
+    ...typography.screenTitle,
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 14,
+    ...typography.secondary,
     textAlign: 'center',
     marginBottom: 24,
     paddingHorizontal: 16,
@@ -125,10 +126,10 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   input: {
+    ...inputTypography('body'),
     flex: 1,
     paddingLeft: 42,
     paddingRight: 14,
-    fontSize: 15,
   },
   button: {
     width: '100%',
@@ -142,21 +143,18 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   buttonText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
+    color: PALETTE.onPrimary,
   },
   errorText: {
+    ...typography.secondary,
     color: '#D93838',
-    fontSize: 13,
-    fontWeight: '600',
     marginBottom: 12,
   },
   backButton: {
     marginTop: 20,
   },
   backText: {
-    fontSize: 14,
-    fontWeight: '600',
+    ...typography.button,
   },
 });

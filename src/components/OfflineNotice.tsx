@@ -9,6 +9,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
 
 interface OfflineNoticeProps {
   onRetry: () => void;
@@ -106,17 +107,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   title: {
-    fontSize: 28,
-    fontWeight: '800',
+    ...typography.screenTitle,
     textAlign: 'center',
     letterSpacing: -0.6,
     marginBottom: 12,
   },
   subtitle: {
-    fontSize: 15,
-    fontWeight: '500',
+    ...typography.body,
     textAlign: 'center',
-    lineHeight: 22,
     paddingHorizontal: 12,
   },
   subtitleNarrow: {
@@ -143,8 +141,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   reloadButtonText: {
-    fontSize: 17,
-    fontWeight: '700',
+    ...typography.button,
     color: '#0A0F0B',
     letterSpacing: 0.5,
   },

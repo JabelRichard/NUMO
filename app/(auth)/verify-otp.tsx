@@ -11,6 +11,8 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
+import { typography, inputTypography } from '@/src/constants/typography';
 
 export default function VerifyOtpScreen() {
   const router = useRouter();
@@ -112,7 +114,7 @@ useEffect(() => {
         onPress={handleVerify}
         disabled={loading}
       >
-        {loading ? <ActivityIndicator color="#FFF" /> : <Text style={styles.buttonText}>Verify Code</Text>}
+        {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Verify Code</Text>}
       </TouchableOpacity>
 
       {/* Resend Section */}
@@ -122,7 +124,7 @@ useEffect(() => {
           <Text
             style={[
               styles.resendLink,
-              { color: theme.primary },
+              { color: theme.primaryText },
               (countdown > 0 || resending) && styles.resendDisabled,
             ]}
           >
@@ -146,23 +148,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   title: {
-    fontSize: 22,
-    fontWeight: '800',
+    ...typography.screenTitle,
     marginBottom: 8,
   },
   subtitle: {
-    fontSize: 14,
+    ...typography.secondary,
     textAlign: 'center',
     marginBottom: 24,
   },
   input: {
+    ...inputTypography('screenTitle'),
     width: '100%',
     maxWidth: 240,
     height: 56,
     borderWidth: 1,
     borderRadius: 14,
-    fontSize: 24,
-    fontWeight: '700',
     textAlign: 'center',
     letterSpacing: 8,
     marginBottom: 20,
@@ -179,14 +179,12 @@ const styles = StyleSheet.create({
     opacity: 0.6,
   },
   buttonText: {
-    color: '#FFF',
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
+    color: PALETTE.onPrimary,
   },
   errorText: {
+    ...typography.secondary,
     color: '#D93838',
-    fontSize: 13,
-    fontWeight: '600',
     marginBottom: 12,
   },
   resendContainer: {
@@ -195,11 +193,11 @@ const styles = StyleSheet.create({
     marginTop: 20,
   },
   resendText: {
-    fontSize: 13,
+    ...typography.secondary,
   },
   resendLink: {
-    fontSize: 13,
-    fontWeight: '700',
+    ...typography.secondary,
+    fontWeight: '600',
   },
   resendDisabled: {
     opacity: 0.5,

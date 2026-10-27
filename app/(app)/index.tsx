@@ -31,9 +31,12 @@ import {
 } from '../../src/services/workoutService';
 import { supabase } from '../../src/config/supabase';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { getInitials } from '../../src/utils/getInitials';
+import { getTrainingGoals } from '../../src/services/profileService';
+import { comfortToDifficulty } from '../../src/types/profile';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
 type OperationType = FocusOperation;
@@ -141,6 +144,8 @@ export default function DashboardScreen() {
   const { isOffline, setIsOffline, recheck } = useOnlineStatus(() => loadDashboardState());
   const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
   const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
+  // First-workout difficulty from the onboarding comfort level.
+  const [startingDifficulty, setStartingDifficulty] = useState<Difficulty>('easy');
   const [allWorkouts, setAllWorkouts] = useState<WorkoutSessionRecord[]>([]);
   const [totalSolved, setTotalSolved] = useState<number>(0);
 
@@ -193,14 +198,18 @@ export default function DashboardScreen() {
         await flushWorkoutOutbox(session.user.id);
       }
 
-      const [workoutsData, statsData, settingsData, profileData] = await Promise.all([
+      const [workoutsData, statsData, settingsData, profileData, trainingGoals] = await Promise.all([
         session?.user?.id ? fetchUserWorkouts(session.user.id).catch(() => getRecentWorkouts()) : getRecentWorkouts(),
         getWeeklyStats(),
         session?.user?.id ? getUserSettings(session.user.id).catch(() => null) : null,
         session?.user?.id ? getUserProfile(session.user.id).catch(() => null) : null,
+        getTrainingGoals().catch(() => null),
       ]);
 
       if (profileData) setProfile(profileData);
+      setStartingDifficulty(
+        comfortToDifficulty(settingsData?.comfort_level ?? trainingGoals?.comfortLevel)
+      );
       if (settingsData?.daily_question_goal) {
         setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
       }
@@ -313,7 +322,7 @@ export default function DashboardScreen() {
   }, [latestWorkout]);
 
   const determineAdaptiveDifficulty = (): Difficulty => {
-    if (allWorkouts.length === 0) return 'easy';
+    if (allWorkouts.length === 0) return startingDifficulty;
     const sample = allWorkouts.slice(0, 5);
     const avgAccuracy = sample.reduce((acc, curr) => acc + (Number(curr.accuracy) || 0), 0) / sample.length;
     const avgTimePerQuestionMs = sample.reduce((acc, curr) => acc + (Number(curr.average_time_per_question) || 0), 0) / sample.length;
@@ -408,7 +417,7 @@ export default function DashboardScreen() {
       pathname: '/workout' as any,
       params: {
         mode: focusOp === 'mixed' ? 'adaptive_mix' : focusOp,
-        difficulty: isNewUser ? 'easy' : recommendedDifficulty,
+        difficulty: isNewUser ? startingDifficulty : recommendedDifficulty,
         count: questionCount.toString(),
         source: selectedOverrideOp ? 'home_manual_selection' : 'home_coach',
         reset: 'true',
@@ -650,8 +659,7 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   brandTitle: {
-    fontSize: 22,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     letterSpacing: -0.5,
   },
   avatarButton: {
@@ -677,9 +685,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   avatarText: {
+    ...typography.button,
     color: '#0A0F0B',
-    fontSize: 15,
-    fontWeight: '600',
   },
   mainContainer: {
     flex: 1,
@@ -702,23 +709,18 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   tagBadgeText: {
-    fontSize: 12,
-    fontWeight: '600',
+    ...typography.caption,
     letterSpacing: 1,
   },
   clarityHeading: {
-    fontSize: 32,
-    fontWeight: '700',
+    ...typography.display,
     textAlign: 'center',
-    lineHeight: 40,
     letterSpacing: -0.8,
   },
   claritySubheading: {
-    fontSize: 15,
-    fontWeight: '500',
+    ...typography.body,
     textAlign: 'center',
     marginTop: 8,
-    lineHeight: 22,
     paddingHorizontal: 14,
   },
   centerStageWrapper: {
@@ -773,8 +775,7 @@ const styles = StyleSheet.create({
     elevation: 4,
   },
   startButtonText: {
-    fontSize: 18,
-    fontWeight: '700',
+    ...typography.button,
     color: '#0A0F0B',
     letterSpacing: 1.2,
   },

@@ -2,6 +2,7 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { GlassCard } from './GlassCard';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
 
 interface StatCardProps {
   icon: string;
@@ -38,13 +39,11 @@ const styles = StyleSheet.create({
     fontSize: 20,
   },
   value: {
-    fontSize: 22,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     color: '#1A1A1A',
   },
   label: {
-    fontSize: 12,
-    fontWeight: '600',
+    ...typography.caption,
     color: '#666666',
     textTransform: 'uppercase',
     letterSpacing: 0.5,

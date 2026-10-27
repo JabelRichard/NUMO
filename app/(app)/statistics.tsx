@@ -21,6 +21,7 @@ import { getTrainingGoals } from '../../src/services/profileService';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { PALETTE } from '../../src/constants/palette';
+import { typography, FONT_FAMILY } from '../../src/constants/typography';
 
 
 const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
@@ -601,7 +602,7 @@ export default function StatisticsScreen() {
 
               <View style={styles.monthSwitcherRow}>
                 <Text style={[styles.monthLabel, { color: primaryText }]}>
-                  {MONTH_NAMES[calMonth]} <Text style={{ fontWeight: '400', color: secondaryText }}>{calYear}</Text>
+                  {MONTH_NAMES[calMonth]} <Text style={{ fontFamily: FONT_FAMILY.text, fontWeight: '400', color: secondaryText }}>{calYear}</Text>
                 </Text>
 
                 <View style={styles.arrowsGroup}>
@@ -682,7 +683,7 @@ export default function StatisticsScreen() {
                                     : item.active
                                     ? PALETTE.dark
                                     : secondaryText,
-                                  fontWeight: isSelected || item.active || item.isRealToday ? '800' : '600',
+                                  fontWeight: isSelected || item.active || item.isRealToday ? '600' : '500',
                                 },
                               ]}
                             >
@@ -950,8 +951,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '700',
+    ...typography.sectionHeading,
     letterSpacing: -0.4,
   },
   loadingCenter: {
@@ -980,14 +980,14 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   heroDayNumber: {
+    ...typography.problem,
+    // Decorative hero number: keeps its original size, larger than any named role.
     fontSize: 96,
-    fontWeight: '900',
     lineHeight: 96,
     letterSpacing: -3,
   },
   heroDayWeekday: {
-    fontSize: 15,
-    fontWeight: '800',
+    ...typography.button,
     letterSpacing: 1.5,
     marginTop: 10,
   },
@@ -998,8 +998,7 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   monthLabel: {
-    fontSize: 22,
-    fontWeight: '900',
+    ...typography.sectionHeading,
     letterSpacing: 0.5,
   },
   arrowsGroup: {
@@ -1032,8 +1031,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   weekDayText: {
-    fontSize: 13,
-    fontWeight: '800',
+    ...typography.caption,
     textAlign: 'center',
   },
   weeksContainer: {
@@ -1048,7 +1046,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   dotCellText: {
-    fontSize: 14,
+    ...typography.secondary,
   },
   dayRecapRow: {
     flexDirection: 'row',
@@ -1062,15 +1060,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   recapLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    ...typography.caption,
     textTransform: 'uppercase',
     marginBottom: 4,
     letterSpacing: 0.5,
   },
   recapValue: {
-    fontSize: 16,
-    fontWeight: '800',
+    ...typography.button,
   },
   recapDivider: {
     width: 1,
@@ -1095,21 +1091,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   statusBadgeText: {
+    ...typography.caption,
     color: '#0A0F0B',
-    fontSize: 11,
-    fontWeight: '800',
     letterSpacing: 0.8,
   },
   heroHeadline: {
-    fontSize: 22,
-    fontWeight: '800',
-    lineHeight: 28,
+    ...typography.sectionHeading,
     letterSpacing: -0.5,
     marginBottom: 8,
   },
   heroSubtext: {
-    fontSize: 14,
-    lineHeight: 20,
+    ...typography.secondary,
     marginBottom: 14,
   },
 
@@ -1126,14 +1118,12 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   sparklineTitle: {
-    fontSize: 11.5,
-    fontWeight: '700',
+    ...typography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
   sparklineCurrent: {
-    fontSize: 12.5,
-    fontWeight: '800',
+    ...typography.caption,
   },
   sparklineChartWrapper: {
     alignItems: 'center',
@@ -1155,8 +1145,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   growthPillText: {
-    fontSize: 13.5,
-    fontWeight: '700',
+    ...typography.secondary,
   },
   pillDivider: {
     width: 1,
@@ -1183,20 +1172,17 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   directiveLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    ...typography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 4,
   },
   directiveValue: {
-    fontSize: 17,
-    fontWeight: '800',
+    ...typography.button,
     marginBottom: 2,
   },
   directiveDetail: {
-    fontSize: 12.5,
-    fontWeight: '600',
+    ...typography.caption,
   },
 
   /* Section Cards */
@@ -1212,12 +1198,10 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   sectionTitle: {
-    fontSize: 17,
-    fontWeight: '800',
+    ...typography.sectionHeading,
   },
   sectionSubtitle: {
-    fontSize: 12,
-    fontWeight: '700',
+    ...typography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.4,
   },
@@ -1235,12 +1219,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   skillName: {
-    fontSize: 14.5,
-    fontWeight: '700',
+    ...typography.button,
   },
   skillStat: {
-    fontSize: 12.5,
-    fontWeight: '700',
+    ...typography.caption,
   },
   skillTrack: {
     width: '100%',
@@ -1265,12 +1247,10 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   recordValue: {
-    fontSize: 19,
-    fontWeight: '800',
+    ...typography.sectionHeading,
   },
   recordLabel: {
-    fontSize: 12,
-    fontWeight: '600',
+    ...typography.caption,
   },
   recordDivider: {
     width: 1,

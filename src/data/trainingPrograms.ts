@@ -1,4 +1,5 @@
 import { TrainingProgram } from '../types/training';
+import { PALETTE } from '../constants/palette';
 
 export const CORE_PROGRAMS: TrainingProgram[] = [
   {
@@ -22,7 +23,7 @@ export const CORE_PROGRAMS: TrainingProgram[] = [
     title: 'Multiplication',
     symbol: '×',
     progress: 0,
-    iconBgColor: '#EC673C',
+    iconBgColor: PALETTE.primary,
     isLocked: false,
   },
   {
@@ -38,7 +39,7 @@ export const CORE_PROGRAMS: TrainingProgram[] = [
     title: 'Mixed Challenge',
     iconName: 'shuffle',
     progress: 0,
-    iconBgColor: '#EE5839',
+    iconBgColor: PALETTE.accentLilac,
     isLocked: false,
   },
 ];

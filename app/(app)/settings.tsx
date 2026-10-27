@@ -20,6 +20,7 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography, inputTypography } from '@/src/constants/typography';
 import { supabase } from '../../src/config/supabase';
 import {
   scheduleDailyReminder,
@@ -552,7 +553,7 @@ export default function SettingsScreen() {
                   <View style={[styles.iconCircle, { backgroundColor: '#FEE2E2' }]}>
                     <Ionicons name="trash-outline" size={17} color={redDanger} />
                   </View>
-                  <Text style={[styles.settingTitle, { color: redDanger, fontWeight: '700' }]}>
+                  <Text style={[styles.settingTitle, { color: redDanger }]}>
                     {isDeleting ? 'Deleting Account...' : 'Delete Account'}
                   </Text>
                 </View>
@@ -681,7 +682,7 @@ export default function SettingsScreen() {
                       style={[
                         styles.timeItemText,
                         { color: primaryText },
-                        isSelected && { fontWeight: '800', color: isDark ? greenAccent : '#23611C' },
+                        isSelected && { color: isDark ? greenAccent : '#23611C' },
                       ]}
                     >
                       {time}
@@ -725,8 +726,7 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   headerTitle: {
-    fontSize: 20,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     letterSpacing: -0.4,
   },
   backBtn: {
@@ -756,8 +756,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   sectionHeaderLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    ...typography.caption,
     letterSpacing: 0.8,
     marginLeft: 6,
     marginTop: 10,
@@ -789,8 +788,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   settingTitle: {
-    fontSize: 15,
-    fontWeight: '600',
+    ...typography.button,
     letterSpacing: -0.2,
   },
   settingRightGroup: {
@@ -799,8 +797,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   settingValueText: {
-    fontSize: 14,
-    fontWeight: '500',
+    ...typography.secondary,
   },
   rowDivider: {
     width: '100%',
@@ -824,12 +821,10 @@ const styles = StyleSheet.create({
     borderRadius: 3.5,
   },
   syncStatusText: {
-    fontSize: 12,
-    fontWeight: '500',
+    ...typography.caption,
   },
   appVersionText: {
-    fontSize: 11.5,
-    fontWeight: '500',
+    ...typography.caption,
   },
   modalBackdrop: {
     flex: 1,
@@ -846,24 +841,22 @@ const styles = StyleSheet.create({
     padding: 20,
   },
   modalTitle: {
-    fontSize: 17,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     textAlign: 'center',
     marginBottom: 6,
   },
   modalSubtitle: {
-    fontSize: 13,
+    ...typography.secondary,
     textAlign: 'center',
     marginBottom: 16,
-    lineHeight: 18,
   },
   modalInput: {
+    ...inputTypography('body'),
     width: '100%',
     height: 48,
     borderRadius: 12,
     borderWidth: 1,
     paddingHorizontal: 14,
-    fontSize: 15,
     marginBottom: 12,
   },
   modalBtnRow: {
@@ -880,8 +873,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modalBtnCancelText: {
-    fontSize: 15,
-    fontWeight: '700',
+    ...typography.button,
   },
   modalBtnPrimary: {
     flex: 1,
@@ -891,8 +883,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modalBtnPrimaryText: {
-    fontSize: 15,
-    fontWeight: '800',
+    ...typography.button,
     color: '#0A0F0B',
   },
   timeList: {
@@ -908,8 +899,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   timeItemText: {
-    fontSize: 14.5,
-    fontWeight: '600',
+    ...typography.button,
   },
   modalCloseBtn: {
     paddingVertical: 12,
@@ -919,7 +909,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   modalCloseText: {
-    fontSize: 14,
-    fontWeight: '700',
+    ...typography.button,
   },
 });

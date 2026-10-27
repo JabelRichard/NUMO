@@ -1,3 +1,5 @@
+import { OperationType } from '../lib/math/types';
+
 export function formatQuestionGoal(count: number): string {
   return `${count} questions`;
 }
@@ -8,7 +10,24 @@ export function formatDurationGoal(minutes: number): string {
 
 export function formatFrequencyGoal(days: number): string {
   if (days >= 7) return 'Every day';
-  return `${days} days / week`;
+  return `${days} days a week`;
+}
+
+const OPERATION_NAMES: Record<OperationType, string> = {
+  addition: 'Addition',
+  subtraction: 'Subtraction',
+  multiplication: 'Multiplication',
+  division: 'Division',
+  mixed: 'Mixed',
+};
+
+/** "mixed" → "Mixed", "multiplication" → "Multiplication". */
+export function formatOperationName(operation: string | null | undefined): string {
+  if (!operation) return 'Workout';
+  return (
+    OPERATION_NAMES[operation as OperationType] ??
+    operation.charAt(0).toUpperCase() + operation.slice(1)
+  );
 }
 
 export function formatRelativeSessionDate(isoString: string): string {

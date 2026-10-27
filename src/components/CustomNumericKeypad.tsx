@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
 
 interface KeypadProps {
   onKeyPress: (val: string) => void;
@@ -66,7 +67,7 @@ export const CustomNumericKeypad: React.FC<KeypadProps> = ({
               hitSlop={HIT_SLOP}
               onPress={() => handleDigitPress(digit)}
             >
-              <Text style={[styles.digitText, { color: theme.text }]}>{digit}</Text>
+              <Text style={[styles.digitText, { color: theme.text }]} maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}>{digit}</Text>
             </TouchableOpacity>
           </View>
         ))}
@@ -93,7 +94,7 @@ export const CustomNumericKeypad: React.FC<KeypadProps> = ({
             hitSlop={HIT_SLOP}
             onPress={() => handleDigitPress('0')}
           >
-            <Text style={[styles.digitText, { color: theme.text }]}>0</Text>
+            <Text style={[styles.digitText, { color: theme.text }]} maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}>0</Text>
           </TouchableOpacity>
         </View>
 
@@ -146,8 +147,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   digitText: {
-    fontSize: 27,
-    fontWeight: '600',
+    ...typography.screenTitle,
     letterSpacing: -0.5,
   },
   submitCircle: {

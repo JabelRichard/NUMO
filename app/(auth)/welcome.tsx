@@ -15,6 +15,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import { typography } from '@/src/constants/typography';
+import { PALETTE } from '@/src/constants/palette';
 
 const ORIGINAL_SLIDES = [
   { id: '1', image: require('../../assets/images/homescreen.png') },
@@ -232,7 +234,7 @@ export default function WelcomeScreen() {
             onPress={() => router.push('/(auth)/onboarding')}
           >
             <Text style={styles.startTrainingText}>Start Training</Text>
-            <Ionicons name="arrow-forward" size={18} color="#FFFFFF" style={{ marginLeft: 8 }} />
+            <Ionicons name="arrow-forward" size={18} color={PALETTE.onPrimary} style={{ marginLeft: 8 }} />
           </TouchableOpacity>
 
           {/* Already have an account */}
@@ -287,12 +289,11 @@ const styles = StyleSheet.create({
     width: 12,
     height: 12,
     borderRadius: 6,
-    backgroundColor: '#EC673C',
+    backgroundColor: PALETTE.primary,
   },
   brandLogoText: {
+    ...typography.button,
     color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '900',
     letterSpacing: 1.5,
   },
 
@@ -330,7 +331,7 @@ const styles = StyleSheet.create({
   },
   paginationDotActive: {
     width: 20,
-    backgroundColor: '#EC673C',
+    backgroundColor: PALETTE.primary,
   },
   paginationDotInactive: {
     width: 6,
@@ -347,33 +348,29 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   mainHeadline: {
-    fontSize: 30,
-    fontWeight: '800',
+    ...typography.display,
     color: '#FFFFFF',
     textAlign: 'center',
-    lineHeight: 36,
     letterSpacing: -0.6,
   },
   gradientHighlight: {
-    color: '#EC673C',
+    color: PALETTE.primary,
   },
   subHeadline: {
-    fontSize: 13,
-    fontWeight: '500',
+    ...typography.secondary,
     color: '#8E9993',
     textAlign: 'center',
-    lineHeight: 19,
     marginTop: 8,
   },
   startTrainingButton: {
     width: '100%',
-    backgroundColor: '#EC673C',
+    backgroundColor: PALETTE.primary,
     minHeight: 56,
     borderRadius: 28,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#EC673C',
+    shadowColor: PALETTE.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.35,
     shadowRadius: 14,
@@ -381,9 +378,8 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   startTrainingText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
+    ...typography.button,
+    color: PALETTE.onPrimary,
     letterSpacing: -0.2,
   },
   accountRow: {
@@ -393,15 +389,14 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   accountPrompt: {
+    ...typography.secondary,
     color: '#8E9993',
-    fontSize: 13,
-    fontWeight: '500',
   },
   loginHighlight: {
-    color: '#EC673C',
-    fontSize: 13,
-    fontWeight: '800',
+    ...typography.secondary,
+    color: PALETTE.primary,
     textDecorationLine: 'underline',
+    fontWeight: '600',
   },
   legalFooterRow: {
     flexDirection: 'row',
@@ -410,13 +405,12 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   legalLink: {
-    color: '#EC673C',
-    fontSize: 12,
-    fontWeight: '600',
+    ...typography.caption,
+    color: PALETTE.primary,
     textDecorationLine: 'underline',
   },
   legalDot: {
+    ...typography.caption,
     color: '#8E9993',
-    fontSize: 10,
   },
 });

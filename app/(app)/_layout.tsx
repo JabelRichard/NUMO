@@ -4,6 +4,7 @@ import { Tabs } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
 
 export default function AppLayout() {
   const insets = useSafeAreaInsets();
@@ -141,8 +142,7 @@ const styles = StyleSheet.create({
     shadowOpacity: 0,
   },
   label: {
-    fontSize: 10.5,
-    fontWeight: '600',
+    ...typography.caption,
     marginTop: 2,
     letterSpacing: -0.1,
   },

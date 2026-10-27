@@ -15,7 +15,10 @@ import { Ionicons } from '@expo/vector-icons';
 import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
 import { getUserSettings } from '../../../src/services/settingsService';
+import { getTrainingGoals } from '../../../src/services/profileService';
+import { comfortToDifficulty } from '../../../src/types/profile';
 import {
   fetchAllWorkouts,
   getNextFocus,
@@ -89,6 +92,8 @@ export default function TrainingSelectionScreen() {
   const [isOffline, setIsOffline] = useState(false);
   const [workouts, setWorkouts] = useState<WorkoutSessionRecord[]>([]);
   const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
+  // First-workout difficulty from the onboarding comfort level.
+  const [startingDifficulty, setStartingDifficulty] = useState<Difficulty>('easy');
 
   // Selected state for modal
   const [selectedOperation, setSelectedOperation] = useState<OperationData | null>(null);
@@ -107,12 +112,16 @@ export default function TrainingSelectionScreen() {
   const loadScreenData = useCallback(async () => {
     if (!user?.id) return;
     try {
-      const [workoutsData, settingsData] = await Promise.all([
+      const [workoutsData, settingsData, trainingGoals] = await Promise.all([
         fetchAllWorkouts(user.id).catch(() => []),
         getUserSettings(user.id).catch(() => null),
+        getTrainingGoals().catch(() => null),
       ]);
 
       setWorkouts(workoutsData || []);
+      setStartingDifficulty(
+        comfortToDifficulty(settingsData?.comfort_level ?? trainingGoals?.comfortLevel)
+      );
       if (settingsData?.daily_question_goal) {
         setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
       }
@@ -156,7 +165,7 @@ export default function TrainingSelectionScreen() {
 
   // Dynamic baseline adaptive difficulty
   const adaptiveDifficulty = useMemo((): Difficulty => {
-    if (workouts.length === 0) return 'easy';
+    if (workouts.length === 0) return startingDifficulty;
     const sample = workouts.slice(0, 5);
     const avgAccuracy = sample.reduce((acc, curr) => acc + (Number(curr.accuracy) || 0), 0) / sample.length;
     const avgTimePerQuestionMs =
@@ -165,7 +174,7 @@ export default function TrainingSelectionScreen() {
     if (avgAccuracy >= 85 && avgTimePerQuestionMs <= 3500) return 'hard';
     if (avgAccuracy >= 70) return 'medium';
     return 'easy';
-  }, [workouts]);
+  }, [workouts, startingDifficulty]);
 
   const screenBg = isDark ? '#0A0F0B' : '#F1ECE9';
   const cardBg = isDark ? '#141C15' : '#FFFFFF';
@@ -414,7 +423,7 @@ export default function TrainingSelectionScreen() {
                     <Text
                       style={[
                         styles.diffCardTitle,
-                        { color: primaryText, fontWeight: isSelected ? '800' : '600' },
+                        { color: primaryText, fontWeight: isSelected ? '600' : '500' },
                       ]}
                     >
                       {label}
@@ -483,8 +492,7 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   headerTitle: {
-    fontSize: 18,
-    fontWeight: '600',
+    ...typography.sectionHeading,
     letterSpacing: -0.4,
   },
   headerPlaceholder: {
@@ -510,19 +518,16 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   tagBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '600',
+    ...typography.caption,
     letterSpacing: 0.8,
   },
   mainHeading: {
-    fontSize: 27,
-    fontWeight: '600',
+    ...typography.screenTitle,
     letterSpacing: -0.6,
     marginBottom: 4,
   },
   subHeading: {
-    fontSize: 14,
-    fontWeight: '500',
+    ...typography.secondary,
   },
   groupedCard: {
     borderRadius: 22,
@@ -550,9 +555,7 @@ const styles = StyleSheet.create({
     marginRight: 14,
   },
   glyphText: {
-    fontSize: 24,
-    lineHeight: 28,
-    fontWeight: '700',
+    ...typography.sectionHeading,
     color: '#0A0F0B',
     textAlign: 'center',
   },
@@ -565,8 +568,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   programTitle: {
-    fontSize: 15.5,
-    fontWeight: '600',
+    ...typography.button,
     letterSpacing: -0.2,
   },
   recPill: {
@@ -575,14 +577,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   recPillText: {
-    fontSize: 9.5,
-    fontWeight: '800',
+    ...typography.caption,
     color: '#0A0F0B',
     letterSpacing: 0.5,
   },
   programSubtitle: {
-    fontSize: 12.5,
-    fontWeight: '500',
+    ...typography.caption,
     marginTop: 2,
   },
   cardDivider: {
@@ -603,11 +603,10 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   othersTitle: {
-    fontSize: 15.5,
-    fontWeight: '700',
+    ...typography.button,
   },
   othersSubtitle: {
-    fontSize: 12,
+    ...typography.caption,
     marginTop: 2,
   },
   futureList: {
@@ -646,8 +645,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   sheetTitle: {
-    fontSize: 21,
-    fontWeight: '600',
+    ...typography.sectionHeading,
     letterSpacing: -0.4,
     textAlign: 'center',
   },
@@ -665,7 +663,7 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   diffCardTitle: {
-    fontSize: 15,
+    ...typography.button,
   },
   checkCircle: {
     width: 22,
@@ -689,8 +687,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   continueButtonText: {
-    fontSize: 15,
-    fontWeight: '600',
+    ...typography.button,
     color: '#0A0F0B',
     letterSpacing: 1,
   },

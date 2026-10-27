@@ -20,6 +20,7 @@ import Animated, {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
+import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
 import { getUserSettings } from '../../src/services/settingsService';
 import {
   saveWorkoutSession,
@@ -391,8 +392,9 @@ export default function MathWorkoutScreen() {
     return primaryText;
   };
 
-  const equationFontSize = isNarrow ? 44 : isCompact ? 52 : 62;
-  const answerFontSize = isNarrow ? 40 : isCompact ? 48 : 56;
+  // Base size comes from typography.problem; narrow/compact screens shrink it.
+  const equationFontSize = isNarrow ? 44 : isCompact ? 52 : typography.problem.fontSize;
+  const answerFontSize = isNarrow ? 40 : isCompact ? 48 : typography.problem.fontSize;
   const cursorHeight = isNarrow ? 36 : isCompact ? 42 : 48;
 
   if (isOffline) {
@@ -458,11 +460,16 @@ export default function MathWorkoutScreen() {
           <Text
             style={[
               styles.equationText,
-              { fontSize: equationFontSize, color: primaryText },
+              {
+                fontSize: equationFontSize,
+                lineHeight: Math.round(equationFontSize * 1.2),
+                color: primaryText,
+              },
               isCompact && styles.equationTextCompact,
             ]}
             numberOfLines={1}
             adjustsFontSizeToFit
+            maxFontSizeMultiplier={MAX_FONT_SCALE.problem}
           >
             {currentQuestion.equation}
           </Text>
@@ -471,9 +478,14 @@ export default function MathWorkoutScreen() {
             <Text
               style={[
                 styles.answerText,
-                { fontSize: answerFontSize, color: getInputColor() },
+                {
+                  fontSize: answerFontSize,
+                  lineHeight: Math.round(answerFontSize * 1.2),
+                  color: getInputColor(),
+                },
               ]}
               numberOfLines={1}
+              maxFontSizeMultiplier={MAX_FONT_SCALE.problem}
             >
               {userAnswer}
             </Text>
@@ -543,18 +555,17 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   brandBadgeText: {
+    ...typography.button,
     color: '#0A0F0B',
-    fontSize: 15,
-    fontWeight: '800',
     letterSpacing: 1.5,
   },
   brandBadgeTextCompact: {
     fontSize: 13,
+    lineHeight: 18,
     letterSpacing: 1.2,
   },
   counterText: {
-    fontSize: 14,
-    fontWeight: '700',
+    ...typography.secondary,
     minWidth: 36,
     textAlign: 'right',
   },
@@ -573,15 +584,15 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   operationTitle: {
+    ...typography.caption,
     textAlign: 'center',
-    fontSize: 12,
-    fontWeight: '800',
     letterSpacing: 1.5,
     marginTop: 10,
   },
   operationTitleCompact: {
     marginTop: 6,
     fontSize: 11,
+    lineHeight: 15,
   },
   displayArea: {
     flex: 1,
@@ -594,7 +605,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   equationText: {
-    fontWeight: '900',
+    ...typography.problem,
     letterSpacing: 2,
     marginBottom: 12,
     textAlign: 'center',
@@ -612,7 +623,7 @@ const styles = StyleSheet.create({
     minHeight: 46,
   },
   answerText: {
-    fontWeight: '900',
+    ...typography.problem,
     letterSpacing: 2,
     textAlign: 'center',
   },

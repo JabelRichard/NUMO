@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   ScrollView,
   StatusBar,
+  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,60 +23,71 @@ import Animated, {
 
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { FONT_FAMILY, MAX_FONT_SCALE, typography } from '@/src/constants/typography';
+import { PALETTE } from '@/src/constants/palette';
 import { saveUserSettings } from '@/src/services/settingsService';
 import { saveTrainingGoals } from '@/src/services/profileService';
-import { OfflineNotice } from '@/src/components/OfflineNotice';
-import { FrictionArea } from '@/src/types/profile';
+import { ComfortLevel, FrictionArea } from '@/src/types/profile';
 import {
   DURATION_MINUTE_OPTIONS,
   FREQUENCY_DAY_OPTIONS,
   ONBOARDING_COMPLETED_KEY,
   ONBOARDING_DRAFT_KEY,
   OnboardingPrimaryGoal,
-  QUESTION_GOAL_OPTIONS,
+  RECOMMENDED_DURATION_MINUTES,
+  RECOMMENDED_FREQUENCY_DAYS,
   buildOnboardingDraft,
-  frequencyLabel,
+  questionsForDuration,
 } from '@/src/utils/onboardingDraft';
-import { formatDurationGoal, formatQuestionGoal } from '@/src/utils/goalFormatters';
+import {
+  COMFORT_LEVELS,
+  GOALS,
+  IoniconName,
+  NOT_SURE_OPTION,
+  WEAK_SPOTS,
+} from '@/src/constants/planOptions';
 
-const TOTAL_STEPS = 4;
+const TOTAL_STEPS = 5;
+
+const FIRST_WORKOUT_LABEL: Record<ComfortLevel, string> = {
+  starting: 'A quick, easy warm-up',
+  getting_there: 'A quick warm-up',
+  confident: 'A quick warm-up challenge',
+};
+
+const OFFLINE_MESSAGE = "You're offline. Connect to the internet to save your plan.";
+const SAVE_FAILED_MESSAGE =
+  "We couldn't save your plan just now. Your answers are kept on this device, so please try again.";
+
+function daysPhrase(days: number): string {
+  return days >= 7 ? 'every day' : `${days} days a week`;
+}
 
 export default function OnboardingScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width, height } = useWindowDimensions();
+  const { width } = useWindowDimensions();
   const { user } = useAuth();
   const { theme } = useTheme();
   const isDark = Boolean(theme.isDark ?? true);
 
   const isNarrow = width < 360;
-  const isTall = height > 780;
 
   const [currentStep, setCurrentStep] = useState(1);
-  const [isOffline, setIsOffline] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  // User Selections (initialized without pre-selections)
+  // User selections. Step 4 starts on the recommended values so Next works right away.
   const [primaryGoal, setPrimaryGoal] = useState<OnboardingPrimaryGoal | null>(null);
-  const [frictionArea, setFrictionArea] = useState<FrictionArea | null>(null);
-  const [trainingDays, setTrainingDays] = useState<number | null>(null);
-  const [questionGoal, setQuestionGoal] = useState<number | null>(null);
-  const [sessionDuration, setSessionDuration] = useState<number | null>(null);
-
-  // NetInfo network connectivity listener
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-    });
-
-    return () => unsubscribe();
-  }, []);
+  const [weakSpots, setWeakSpots] = useState<FrictionArea[]>([]);
+  const [isUnsure, setIsUnsure] = useState(false);
+  const [comfortLevel, setComfortLevel] = useState<ComfortLevel | null>(null);
+  const [sessionDuration, setSessionDuration] = useState<number>(RECOMMENDED_DURATION_MINUTES);
+  const [trainingDays, setTrainingDays] = useState<number>(RECOMMENDED_FREQUENCY_DAYS);
 
   const checkConnectivity = async (): Promise<boolean> => {
     const state = await NetInfo.fetch();
-    const offline = state.isConnected === false || state.isInternetReachable === false;
-    setIsOffline(offline);
-    return !offline;
+    return !(state.isConnected === false || state.isInternetReachable === false);
   };
 
   // Progress bar animation
@@ -94,10 +106,8 @@ export default function OnboardingScreen() {
 
   const canProceedCurrentStep = () => {
     if (currentStep === 1) return Boolean(primaryGoal);
-    if (currentStep === 2) return Boolean(frictionArea);
-    if (currentStep === 3) {
-      return Boolean(questionGoal) && Boolean(trainingDays) && Boolean(sessionDuration);
-    }
+    if (currentStep === 2) return isUnsure || weakSpots.length > 0;
+    if (currentStep === 3) return Boolean(comfortLevel);
     return true;
   };
 
@@ -114,6 +124,7 @@ export default function OnboardingScreen() {
   };
 
   const handleBack = () => {
+    setSaveError(null);
     if (currentStep > 1) {
       const prev = currentStep - 1;
       setCurrentStep(prev);
@@ -123,44 +134,59 @@ export default function OnboardingScreen() {
     }
   };
 
-  // Only allowed on Step 3
-  const handleSkipStep3 = () => {
-    if (!trainingDays) setTrainingDays(5);
-    if (!questionGoal) setQuestionGoal(10);
-    if (!sessionDuration) setSessionDuration(2);
+  // "Not sure" and the specific weak spots exclude each other.
+  const toggleWeakSpot = (id: FrictionArea) => {
+    setIsUnsure(false);
+    setWeakSpots((prev) => (prev.includes(id) ? prev.filter((w) => w !== id) : [...prev, id]));
+  };
 
-    const next = currentStep + 1;
-    setCurrentStep(next);
-    updateProgress(next);
+  const toggleUnsure = () => {
+    setWeakSpots([]);
+    setIsUnsure((prev) => !prev);
   };
 
   const handleCompleteAndGoSignup = async () => {
-    const isOnline = await checkConnectivity();
-    if (!isOnline) return;
+    if (isSaving) return;
+    setSaveError(null);
+    setIsSaving(true);
 
     try {
+      const isOnline = await checkConnectivity();
+      if (!isOnline) {
+        setSaveError(OFFLINE_MESSAGE);
+        return;
+      }
+
       const draft = buildOnboardingDraft({
         primaryGoal,
-        frictionArea,
-        dailyQuestions: questionGoal,
+        frictionAreas: weakSpots,
+        comfortLevel,
         weeklyFrequencyDays: trainingDays,
         sessionDurationMinutes: sessionDuration,
       });
 
-      await AsyncStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
+      // Store the draft first so the answers survive a failed save.
+      // useProtectedRoute syncs any leftover draft once the user is signed in.
       await AsyncStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft));
       await saveTrainingGoals(draft.trainingGoals);
 
       if (user?.id) {
-        await saveUserSettings(user.id, draft.settings);
+        const result = await saveUserSettings(user.id, draft.settings);
+        if (!result.success) throw new Error(result.error);
         await saveTrainingGoals(draft.trainingGoals, user.id);
+
+        await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+        await AsyncStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
         router.replace('/(app)');
       } else {
+        await AsyncStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
         router.replace('/(auth)/signup');
       }
     } catch (err) {
       console.error('Failed to complete onboarding:', err);
-      router.replace('/(auth)/signup');
+      setSaveError(SAVE_FAILED_MESSAGE);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -169,398 +195,324 @@ export default function OnboardingScreen() {
   const textColor = theme.text;
   const textSubtle = theme.muted;
   const cardBg = theme.card;
-  const accentGreen = '#BCE3AA';
-  const accentLilac = '#F2CAEC';
   const borderColor = theme.border;
+  // One accent for every selected state. Light mode uses the deep sage so the border stays visible.
+  const accent = theme.primary;
+  const selectedBorder = isDark ? theme.primary : theme.primaryText;
+  const selectedSoft = theme.primarySoft;
+  const checkColor = isDark ? theme.onPrimary : PALETTE.white;
+  const iconBoxIdle = theme.pillBg;
 
-  // Offline blocker
-  if (isOffline) {
-    return <OfflineNotice onRetry={checkConnectivity} />;
-  }
+  const renderHeader = (title: string, subtitle: string) => (
+    <View style={styles.headerBlock}>
+      <Text
+        accessibilityRole="header"
+        maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}
+        style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 24, lineHeight: 30 }]}
+      >
+        {title}
+      </Text>
+      <Text style={[styles.subheadline, { color: textSubtle }]}>{subtitle}</Text>
+    </View>
+  );
 
-  // ================= STEP 1: Core Motivation =================
-  const renderStep1 = () => {
-    const goals = [
-      {
-        id: 'everyday' as const,
-        icon: 'cart-outline' as const,
-        title: 'Everyday Quick Math',
-        desc: 'Calculate shopping, tips, discounts, and split bills on the spot.',
-      },
-      {
-        id: 'memory' as const,
-        icon: 'bulb-outline' as const,
-        title: 'Sharper Focus & Memory',
-        desc: 'Boost mental agility, recall speed, and overall cognitive sharpness.',
-      },
-      {
-        id: 'career' as const,
-        icon: 'briefcase-outline' as const,
-        title: 'Career & Exam Prep',
-        desc: 'High-speed mental math for interviews, exams, and business meetings.',
-      },
-      {
-        id: 'speed' as const,
-        icon: 'flash-outline' as const,
-        title: 'Pure Calculation Speed',
-        desc: 'Eliminate hesitation and cut down mental math lag to under 2 seconds.',
-      },
-    ];
+  const renderSelectionMark = (selected: boolean, shape: 'radio' | 'checkbox') => (
+    <View
+      style={[
+        styles.selectionMark,
+        shape === 'checkbox' && styles.selectionMarkSquare,
+        selected
+          ? { backgroundColor: selectedBorder, borderColor: selectedBorder }
+          : { borderColor: theme.border, backgroundColor: 'transparent' },
+      ]}
+    >
+      {selected && <Ionicons name="checkmark" size={16} color={checkColor} />}
+    </View>
+  );
 
-    return (
-      <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
-        <View style={styles.headerBlock}>
-          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : accentLilac }]}>
-            <Ionicons name="sparkles" size={13} color={isDark ? accentGreen : '#0A0F0B'} style={{ marginRight: 6 }} />
-            <Text style={[styles.badgeText, { color: isDark ? accentGreen : '#0A0F0B' }]}>YOUR GOAL</Text>
-          </View>
-          <Text style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
-            What do you want to{'\n'}get better at?
-          </Text>
-          <Text style={[styles.subheadline, { color: textSubtle }]}>
-            Pick your goal. We'll tailor your workouts around it.
-          </Text>
-        </View>
+  const renderOptionCard = (opts: {
+    key: string;
+    title: string;
+    desc: string;
+    selected: boolean;
+    role: 'radio' | 'checkbox';
+    onPress: () => void;
+    leading: React.ReactNode;
+  }) => (
+    <TouchableOpacity
+      key={opts.key}
+      activeOpacity={0.85}
+      onPress={opts.onPress}
+      accessibilityRole={opts.role}
+      accessibilityState={opts.role === 'radio' ? { selected: opts.selected } : { checked: opts.selected }}
+      accessibilityLabel={`${opts.title}. ${opts.desc}`}
+      style={[
+        styles.interactiveCard,
+        {
+          backgroundColor: cardBg,
+          borderColor: opts.selected ? selectedBorder : borderColor,
+        },
+      ]}
+    >
+      <View style={[styles.iconBox, { backgroundColor: opts.selected ? selectedSoft : iconBoxIdle }]}>
+        {opts.leading}
+      </View>
+      <View style={styles.cardText}>
+        <Text style={[styles.cardTitle, { color: textColor }]}>{opts.title}</Text>
+        <Text style={[styles.cardDesc, { color: textSubtle }]}>{opts.desc}</Text>
+      </View>
+      {renderSelectionMark(opts.selected, opts.role)}
+    </TouchableOpacity>
+  );
 
-        <View style={[styles.cardsList, isTall && { gap: 14 }]}>
-          {goals.map((item) => {
-            const isSelected = primaryGoal === item.id;
-            return (
-              <TouchableOpacity
-                key={item.id}
-                activeOpacity={0.85}
-                onPress={() => setPrimaryGoal(item.id)}
-                style={[
-                  styles.interactiveCard,
-                  {
-                    backgroundColor: cardBg,
-                    borderColor: isSelected ? accentGreen : borderColor,
-                    borderWidth: isSelected ? 2 : 1,
-                  },
-                ]}
+  const renderIcon = (name: IoniconName) => <Ionicons name={name} size={22} color={textColor} />;
+
+  // ================= STEP 1: Goal =================
+  const renderStep1 = () => (
+    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+      {renderHeader('What do you want to get better at?', "Pick your goal. We'll tailor your workouts around it.")}
+
+      <View style={styles.cardsList} accessibilityRole="radiogroup">
+        {GOALS.map((item) =>
+          renderOptionCard({
+            key: item.id,
+            title: item.title,
+            desc: item.desc,
+            selected: primaryGoal === item.id,
+            role: 'radio',
+            onPress: () => setPrimaryGoal(item.id),
+            leading: renderIcon(item.icon),
+          })
+        )}
+      </View>
+    </ScrollView>
+  );
+
+  // ================= STEP 2: Weak spots (multi-select) =================
+  const renderStep2 = () => (
+    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+      {renderHeader("What's hardest for you?", 'Pick as many as you like.')}
+
+      <View style={styles.cardsList}>
+        {WEAK_SPOTS.map((item) =>
+          renderOptionCard({
+            key: item.id,
+            title: item.title,
+            desc: item.desc,
+            selected: weakSpots.includes(item.id),
+            role: 'checkbox',
+            onPress: () => toggleWeakSpot(item.id),
+            leading: item.symbol ? (
+              <Text
+                importantForAccessibility="no"
+                accessibilityElementsHidden
+                maxFontSizeMultiplier={1.3}
+                style={[styles.mathSymbol, { color: textColor }]}
               >
-                <View
-                  style={[
-                    styles.iconBox,
-                    {
-                      backgroundColor: isSelected
-                        ? (isDark ? 'rgba(188, 227, 170, 0.25)' : accentGreen)
-                        : (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)'),
-                    },
-                  ]}
-                >
-                  <Ionicons name={item.icon} size={22} color={textColor} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.cardTitle, { color: textColor }]}>{item.title}</Text>
-                  <Text style={[styles.cardDesc, { color: textSubtle }]}>{item.desc}</Text>
-                </View>
-                <View style={[styles.radioOuter, { borderColor: isSelected ? accentGreen : 'rgba(255, 255, 255, 0.25)' }]}>
-                  {isSelected && <View style={[styles.radioInner, { backgroundColor: isDark ? accentGreen : '#0A0F0B' }]} />}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </ScrollView>
-    );
-  };
-
-  // ================= STEP 2: Mental Barrier =================
-  const renderStep2 = () => {
-    const barriers = [
-      {
-        id: 'addition' as const,
-        icon: 'add' as const,
-        title: 'Mental Addition & Carries',
-        desc: 'Quick sums with carrying numbers takes extra mental effort.',
-      },
-      {
-        id: 'subtraction' as const,
-        icon: 'remove' as const,
-        title: 'Mental Subtraction & Borrowing',
-        desc: 'Borrowing numbers takes too long to do in your head.',
-      },
-      {
-        id: 'multiplication' as const,
-        icon: 'close' as const,
-        title: 'Multiplication Tables',
-        desc: 'Freezing on 7s, 8s, 12s, or double-digit calculations.',
-      },
-      {
-        id: 'division' as const,
-        icon: 'git-commit-outline' as const,
-        title: 'Quick Division & Factors',
-        desc: 'Spotting quotients and dividing numbers mentally slows you down.',
-      },
-      {
-        id: 'mixed' as const,
-        icon: 'shuffle' as const,
-        title: 'Switching Operations on the Fly',
-        desc: 'Losing momentum when switching between plus, minus, and times.',
-      },
-    ];
-
-    return (
-      <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
-        <View style={styles.headerBlock}>
-          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.2)' : accentLilac }]}>
-            <Ionicons name="flash-outline" size={13} color={isDark ? accentLilac : '#0A0F0B'} style={{ marginRight: 6 }} />
-            <Text style={[styles.badgeText, { color: isDark ? accentLilac : '#0A0F0B' }]}>SMART DIAGNOSTIC</Text>
-          </View>
-          <Text style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
-            What slows you{'\n'}down most?
-          </Text>
-          <Text style={[styles.subheadline, { color: textSubtle }]}>
-            Tell us where you struggle. We'll build around it.
-          </Text>
-        </View>
-
-        <View style={[styles.cardsList, isTall && { gap: 12 }]}>
-          {barriers.map((item) => {
-            const isSelected = frictionArea === item.id;
-            return (
-              <TouchableOpacity
-                key={item.id}
-                activeOpacity={0.85}
-                onPress={() => setFrictionArea(item.id)}
-                style={[
-                  styles.interactiveCard,
-                  {
-                    backgroundColor: cardBg,
-                    borderColor: isSelected ? accentLilac : borderColor,
-                    borderWidth: isSelected ? 2 : 1,
-                  },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.iconBox,
-                    {
-                      backgroundColor: isSelected
-                        ? (isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac)
-                        : (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)'),
-                    },
-                  ]}
-                >
-                  <Ionicons name={item.icon} size={22} color={textColor} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={[styles.cardTitle, { color: textColor }]}>{item.title}</Text>
-                  <Text style={[styles.cardDesc, { color: textSubtle }]}>{item.desc}</Text>
-                </View>
-                <View style={[styles.radioOuter, { borderColor: isSelected ? accentLilac : 'rgba(255, 255, 255, 0.25)' }]}>
-                  {isSelected && <View style={[styles.radioInner, { backgroundColor: isDark ? accentLilac : '#0A0F0B' }]} />}
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </ScrollView>
-    );
-  };
-
-  // ================= STEP 3: Habit Routine =================
-  const renderStep3 = () => {
-    // Matched with ProfileScreen options [5, 10, 20, 30, 50]
-    const questionOptions = [5, 10, 20, 30, 50];
-
-    const currentQuestions = questionGoal || 10;
-    const currentDays = trainingDays || 5;
-    const monthlyMultiplier = currentDays >= 7 ? 30 : currentDays === 5 ? 22 : 14;
-    const monthlyEquations = currentQuestions * monthlyMultiplier;
-
-    return (
-      <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
-        <View style={styles.headerBlock}>
-          <Text style={[styles.headline, { color: textColor }]}>
-            How much do you{'\n'}want to train?
-          </Text>
-          <Text style={[styles.subheadline, { color: textSubtle }]}>
-            Short, focused practice works best. Build a sustainable daily rhythm.
-          </Text>
-        </View>
-
-        {/* 1. Questions per workout */}
-        <View style={styles.goalSection}>
-          <Text style={[styles.goalSectionTitle, { color: textColor }]}>Questions per workout</Text>
-          <View style={styles.pillsRow}>
-            {questionOptions.map((count) => {
-              const active = questionGoal === count;
-              return (
-                <TouchableOpacity
-                  key={count}
-                  activeOpacity={0.85}
-                  onPress={() => setQuestionGoal(count)}
-                  style={[
-                    styles.goalPillCompact,
-                    {
-                      backgroundColor: active ? accentGreen : cardBg,
-                      borderColor: active ? accentGreen : borderColor,
-                    },
-                  ]}
-                >
-                  <Text style={[styles.questionCountText, { color: active ? '#0A0F0B' : textColor }]}>
-                    {count}
-                  </Text>
-                  <Text style={[styles.questionSubText, { color: active ? '#0A0F0B' : textSubtle }]}>
-                    questions
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* 2. Training frequency */}
-        <View style={styles.goalSection}>
-          <Text style={[styles.goalSectionTitle, { color: textColor }]}>Training frequency</Text>
-          <View style={styles.pillsRow}>
-            {FREQUENCY_DAY_OPTIONS.map((opt) => {
-              const active = trainingDays === opt.days;
-              return (
-                <TouchableOpacity
-                  key={opt.days}
-                  activeOpacity={0.85}
-                  onPress={() => setTrainingDays(opt.days)}
-                  style={[
-                    styles.goalPill,
-                    {
-                      backgroundColor: active ? (isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen) : cardBg,
-                      borderColor: active ? accentGreen : borderColor,
-                      borderWidth: active ? 1.5 : 1,
-                    },
-                  ]}
-                >
-                  <Text style={[styles.goalPillText, { color: textColor }]}>
-                    {opt.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* 3. 2-Minute Commitment Card */}
-        {questionGoal && trainingDays ? (
-          <View
-            style={[
-              styles.projectionCard,
-              {
-                backgroundColor: isDark ? 'rgba(188, 227, 170, 0.12)' : '#E9F5E3',
-                borderColor: isDark ? 'rgba(188, 227, 170, 0.28)' : '#D0E7C7',
-              },
-            ]}
-          >
-            <View style={styles.projectionHeader}>
-              <Ionicons name="time-outline" size={20} color={isDark ? accentGreen : '#1D4511'} style={{ marginRight: 8 }} />
-              <Text style={[styles.projectionTitle, { color: isDark ? accentGreen : '#1D4511' }]}>
-                Your workout takes about 2 minutes.
+                {item.symbol}
               </Text>
-            </View>
-            <Text style={[styles.projectionBody, { color: textSubtle }]}>
-              That's up to <Text style={{ fontWeight: '800', color: textColor }}>{monthlyEquations} questions</Text> a month at your current goal.
-            </Text>
-          </View>
-        ) : null}
-      </ScrollView>
-    );
-  };
+            ) : (
+              renderIcon(item.icon!)
+            ),
+          })
+        )}
+        {renderOptionCard({
+          key: 'unsure',
+          title: NOT_SURE_OPTION.title,
+          desc: NOT_SURE_OPTION.desc,
+          selected: isUnsure,
+          role: 'checkbox',
+          onPress: toggleUnsure,
+          leading: renderIcon(NOT_SURE_OPTION.icon),
+        })}
+      </View>
+    </ScrollView>
+  );
 
-  // ================= STEP 4: Custom Plan Reveal & Sign-up Sale =================
-  const renderStep4 = () => {
-    return (
-      <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
-        <View style={styles.headerBlock}>
-          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : accentGreen }]}>
-            <Ionicons name="checkmark-circle" size={14} color="#0A0F0B" style={{ marginRight: 6 }} />
-            <Text style={[styles.badgeText, { color: '#0A0F0B' }]}>PLAN GENERATED</Text>
-          </View>
-          <Text style={[styles.headline, isTall && { fontSize: 32, lineHeight: 38 }, { color: textColor }]}>
-            Your personalized plan{'\n'}is ready.
-          </Text>
-          <Text style={[styles.subheadline, { color: textSubtle }]}>
-            Built around your goal, your weak spot, and the routine you chose.
+  // ================= STEP 3: Comfort level =================
+  const renderStep3 = () => (
+    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+      {renderHeader('How comfortable are you with math?', "We'll pick a starting level that suits you.")}
+
+      <View style={styles.cardsList} accessibilityRole="radiogroup">
+        {COMFORT_LEVELS.map((item) =>
+          renderOptionCard({
+            key: item.id,
+            title: item.title,
+            desc: item.desc,
+            selected: comfortLevel === item.id,
+            role: 'radio',
+            onPress: () => setComfortLevel(item.id),
+            leading: renderIcon(item.icon),
+          })
+        )}
+      </View>
+    </ScrollView>
+  );
+
+  const renderPill = (opts: {
+    key: string | number;
+    label: string;
+    spokenLabel: string;
+    selected: boolean;
+    recommended: boolean;
+    onPress: () => void;
+  }) => (
+    <TouchableOpacity
+      key={opts.key}
+      activeOpacity={0.85}
+      onPress={opts.onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ selected: opts.selected }}
+      accessibilityLabel={opts.recommended ? `${opts.spokenLabel}, recommended` : opts.spokenLabel}
+      style={[
+        styles.goalPill,
+        {
+          backgroundColor: opts.selected ? selectedSoft : cardBg,
+          borderColor: opts.selected ? selectedBorder : borderColor,
+        },
+      ]}
+    >
+      <View style={styles.goalPillRow}>
+        {opts.selected && (
+          <Ionicons name="checkmark-circle" size={18} color={selectedBorder} style={{ marginRight: 4 }} />
+        )}
+        <Text style={[styles.goalPillText, { color: textColor }]}>{opts.label}</Text>
+      </View>
+      {opts.recommended && (
+        <Text style={[styles.recommendedText, { color: theme.primaryText }]}>Recommended</Text>
+      )}
+    </TouchableOpacity>
+  );
+
+  // ================= STEP 4: Training amount =================
+  const renderStep4 = () => (
+    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+      {renderHeader('How much do you want to train?', 'Short, regular practice works best.')}
+
+      <View style={styles.goalSection}>
+        <Text style={[styles.goalSectionTitle, { color: textColor }]} accessibilityRole="header">
+          Time per day
+        </Text>
+        <View style={styles.pillsRow} accessibilityRole="radiogroup">
+          {DURATION_MINUTE_OPTIONS.map((minutes) =>
+            renderPill({
+              key: minutes,
+              label: `${minutes} min`,
+              spokenLabel: `${minutes} minutes a day`,
+              selected: sessionDuration === minutes,
+              recommended: minutes === RECOMMENDED_DURATION_MINUTES,
+              onPress: () => setSessionDuration(minutes),
+            })
+          )}
+        </View>
+      </View>
+
+      <View style={styles.goalSection}>
+        <Text style={[styles.goalSectionTitle, { color: textColor }]} accessibilityRole="header">
+          Days per week
+        </Text>
+        <View style={styles.pillsRow} accessibilityRole="radiogroup">
+          {FREQUENCY_DAY_OPTIONS.map((opt) =>
+            renderPill({
+              key: opt.days,
+              label: opt.label,
+              spokenLabel: opt.days >= 7 ? 'Every day' : `${opt.days} days a week`,
+              selected: trainingDays === opt.days,
+              recommended: opt.days === RECOMMENDED_FREQUENCY_DAYS,
+              onPress: () => setTrainingDays(opt.days),
+            })
+          )}
+        </View>
+      </View>
+
+      <View
+        accessible
+        style={[styles.projectionCard, { backgroundColor: selectedSoft, borderColor: borderColor }]}
+      >
+        <View style={styles.projectionHeader}>
+          <Ionicons name="time-outline" size={20} color={theme.primaryText} style={{ marginRight: 8 }} />
+          <Text style={[styles.projectionTitle, { color: textColor }]}>
+            About {sessionDuration} minutes a day, {daysPhrase(trainingDays)}.
           </Text>
         </View>
+        <Text style={[styles.projectionBody, { color: textSubtle }]}>
+          That's around {questionsForDuration(sessionDuration)} questions per workout.
+        </Text>
+      </View>
+    </ScrollView>
+  );
 
-        {/* Plan Summary Card */}
-        <View style={[styles.summaryCard, { backgroundColor: cardBg, borderColor: borderColor }]}>
-          <View style={styles.summaryItem}>
-            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen }]}>
-              <Ionicons name="compass-outline" size={20} color={textColor} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Focus Track</Text>
-              <Text style={[styles.summaryValue, { color: textColor }]}>
-                {primaryGoal === 'speed'
-                  ? 'Pure Calculation Speed'
-                  : primaryGoal === 'memory'
-                  ? 'Memory & Cognitive Focus'
-                  : primaryGoal === 'career'
-                  ? 'Career & Professional Math'
-                  : 'Everyday Quick Math'}
-              </Text>
-            </View>
-          </View>
+  const weakSpotSummary = isUnsure || weakSpots.length === 0
+    ? "Not sure yet, we'll test you"
+    : WEAK_SPOTS.filter((w) => weakSpots.includes(w.id)).map((w) => w.title).join(', ');
 
-          <View style={styles.summaryItem}>
-            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac }]}>
-              <Ionicons name="options-outline" size={20} color={textColor} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Target Weak Spot</Text>
-              <Text style={[styles.summaryValue, { color: textColor }]}>
-                {frictionArea === 'addition'
-                  ? 'Addition & Carrying'
-                  : frictionArea === 'multiplication'
-                  ? 'Multiplication Tables'
-                  : frictionArea === 'subtraction'
-                  ? 'Mental Differences & Borrowing'
-                  : frictionArea === 'division'
-                  ? 'Factor Quotients'
-                  : 'Mixed Operation Switching'}
-              </Text>
-            </View>
-          </View>
+  const summaryRows: { icon: IoniconName; label: string; value: string }[] = [
+    {
+      icon: 'compass-outline',
+      label: 'Your goal',
+      value: GOALS.find((g) => g.id === primaryGoal)?.title ?? GOALS[0].title,
+    },
+    { icon: 'options-outline', label: 'Hardest for you', value: weakSpotSummary },
+    {
+      icon: 'speedometer-outline',
+      label: 'Comfort level',
+      value: COMFORT_LEVELS.find((c) => c.id === comfortLevel)?.title ?? COMFORT_LEVELS[0].title,
+    },
+    {
+      icon: 'calendar-outline',
+      label: 'Daily habit',
+      value: `${sessionDuration} min a day • ${daysPhrase(trainingDays)}`,
+    },
+    {
+      icon: 'play-outline',
+      label: 'First workout',
+      value: FIRST_WORKOUT_LABEL[comfortLevel ?? 'starting'],
+    },
+  ];
 
-          <View style={styles.summaryItem}>
-            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen }]}>
-              <Ionicons name="calendar-outline" size={20} color={textColor} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Daily Habit</Text>
-              <Text style={[styles.summaryValue, { color: textColor }]}>
-                {questionGoal || 10} questions / workout • {frequencyLabel(trainingDays)}
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.summaryItem}>
-            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac }]}>
-              <Ionicons name="shuffle" size={20} color={textColor} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.summaryLabel, { color: textSubtle }]}>First Workout</Text>
-              <Text style={[styles.summaryValue, { color: textColor }]}>
-                Mixed Baseline Challenge (Easy)
-              </Text>
-            </View>
-          </View>
+  // ================= STEP 5: Plan ready =================
+  const renderStep5 = () => (
+    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+      <View style={styles.headerBlock}>
+        <View style={[styles.badgePill, { backgroundColor: selectedSoft }]}>
+          <Ionicons name="checkmark-circle" size={14} color={theme.primaryText} style={{ marginRight: 6 }} />
+          <Text style={[styles.badgeText, { color: theme.primaryText }]}>PLAN GENERATED</Text>
         </View>
+        <Text
+          accessibilityRole="header"
+          maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}
+          style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 24, lineHeight: 30 }]}
+        >
+          Your personalized plan is ready.
+        </Text>
+        <Text style={[styles.subheadline, { color: textSubtle }]}>
+          Built around your goal, your weak spots, and the routine you chose.
+        </Text>
+      </View>
 
-        {/* Sell the Signup */}
-        <View style={styles.signupPitchBox}>
-          <Text style={[styles.pitchHeading, { color: textColor }]}>
-            Save your plan and start training.
-          </Text>
-          <Text style={[styles.pitchSubheading, { color: textSubtle }]}>
-            Create your free account to save your plan and track your progress.
-          </Text>
-        </View>
-      </ScrollView>
-    );
-  };
+      <View style={[styles.summaryCard, { backgroundColor: cardBg, borderColor: borderColor }]}>
+        {summaryRows.map((row) => (
+          <View key={row.label} style={styles.summaryItem} accessible accessibilityLabel={`${row.label}: ${row.value}`}>
+            <View style={[styles.summaryIcon, { backgroundColor: selectedSoft }]}>
+              <Ionicons name={row.icon} size={20} color={textColor} />
+            </View>
+            <View style={styles.cardText}>
+              <Text style={[styles.summaryLabel, { color: textSubtle }]}>{row.label}</Text>
+              <Text style={[styles.summaryValue, { color: textColor }]}>{row.value}</Text>
+            </View>
+          </View>
+        ))}
+      </View>
+
+      <View style={styles.signupPitchBox}>
+        <Text style={[styles.pitchHeading, { color: textColor }]}>Save your plan and start training.</Text>
+        <Text style={[styles.pitchSubheading, { color: textSubtle }]}>
+          Create your free account to save your plan and track your progress.
+        </Text>
+      </View>
+    </ScrollView>
+  );
 
   const renderActiveStep = () => {
     switch (currentStep) {
@@ -572,12 +524,17 @@ export default function OnboardingScreen() {
         return renderStep3();
       case 4:
         return renderStep4();
+      case 5:
+        return renderStep5();
       default:
         return null;
     }
   };
 
-  const canProceed = canProceedCurrentStep();
+  const canProceed = canProceedCurrentStep() && !isSaving;
+  const isLastStep = currentStep === TOTAL_STEPS;
+  const nextLabel = isLastStep ? 'Create my free account' : 'Next';
+  const disabledFg = isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(10, 15, 11, 0.4)';
 
   return (
     <View style={[styles.container, { backgroundColor: screenBg }]}>
@@ -586,62 +543,87 @@ export default function OnboardingScreen() {
       <SafeAreaView style={styles.safeArea}>
         {/* HEADER */}
         <View style={[styles.topHeader, { paddingTop: Math.max(insets.top > 0 ? 0 : 8, 4) }]}>
-          <TouchableOpacity style={[styles.backButton, { backgroundColor: cardBg }]} onPress={handleBack} activeOpacity={0.7}>
-            <Ionicons name="chevron-back" size={20} color={textColor} />
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: cardBg }]}
+            onPress={handleBack}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel={currentStep > 1 ? 'Back to previous question' : 'Back to welcome screen'}
+          >
+            <Ionicons name="chevron-back" size={22} color={textColor} />
           </TouchableOpacity>
 
-          <View style={styles.progressTrackWrapper}>
+          <View
+            style={styles.progressTrackWrapper}
+            accessible
+            accessibilityRole="progressbar"
+            accessibilityLabel={`Step ${currentStep} of ${TOTAL_STEPS}`}
+            accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: currentStep }}
+          >
             <View style={[styles.progressTrackBackground, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)' }]}>
-              <Animated.View style={[styles.progressFill, { backgroundColor: accentGreen }, progressAnimatedStyle]} />
+              <Animated.View style={[styles.progressFill, { backgroundColor: accent }, progressAnimatedStyle]} />
             </View>
           </View>
 
-          <View style={styles.stepIndicatorPill}>
-            <Text style={[styles.stepCountText, { color: textSubtle }]}>
-              {currentStep}/{TOTAL_STEPS}
-            </Text>
-          </View>
-
-          {/* Skip button only allowed on Step 3 */}
-          {currentStep === 3 ? (
-            <TouchableOpacity onPress={handleSkipStep3} activeOpacity={0.7} style={styles.skipButton}>
-              <Text style={[styles.skipButtonText, { color: textSubtle }]}>Skip</Text>
-            </TouchableOpacity>
-          ) : (
-            <View style={{ width: 34 }} />
-          )}
+          <Text
+            importantForAccessibility="no"
+            accessibilityElementsHidden
+            style={[styles.stepCountText, { color: textSubtle }]}
+          >
+            {currentStep}/{TOTAL_STEPS}
+          </Text>
         </View>
 
         {/* STEP CONTENT BODY */}
         <View style={styles.contentBody}>{renderActiveStep()}</View>
 
-        {/* BOTTOM ACTION BUTTON */}
+        {/* BOTTOM ACTION AREA */}
         <View style={[styles.footerContainer, { paddingBottom: Math.max(insets.bottom + 12, 22) }]}>
+          {saveError && isLastStep ? (
+            <View
+              accessibilityRole="alert"
+              accessibilityLiveRegion="polite"
+              style={[styles.errorBox, { backgroundColor: cardBg, borderColor: PALETTE.dangerText }]}
+            >
+              <Ionicons
+                name={saveError === OFFLINE_MESSAGE ? 'cloud-offline-outline' : 'alert-circle-outline'}
+                size={22}
+                color={PALETTE.dangerText}
+                style={{ marginRight: 10 }}
+              />
+              <Text style={[styles.errorText, { color: textColor }]}>{saveError}</Text>
+            </View>
+          ) : null}
+
           <TouchableOpacity
             style={[
               styles.nextButton,
               {
-                backgroundColor: canProceed ? accentGreen : (isDark ? 'rgba(188, 227, 170, 0.25)' : 'rgba(10, 15, 11, 0.15)'),
+                backgroundColor: canProceed ? accent : (isDark ? 'rgba(188, 227, 170, 0.25)' : 'rgba(10, 15, 11, 0.15)'),
               },
             ]}
             disabled={!canProceed}
             activeOpacity={0.88}
             onPress={handleNext}
+            accessibilityRole="button"
+            accessibilityLabel={saveError && isLastStep ? 'Try again' : nextLabel}
+            accessibilityState={{ disabled: !canProceed, busy: isSaving }}
           >
-            <Text
-              style={[
-                styles.nextButtonText,
-                { color: canProceed ? '#0A0F0B' : (isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(10, 15, 11, 0.4)') },
-              ]}
-            >
-              {currentStep === TOTAL_STEPS ? 'Create my free account' : 'Next'}
-            </Text>
-            <Ionicons
-              name="arrow-forward"
-              size={18}
-              color={canProceed ? '#0A0F0B' : (isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(10, 15, 11, 0.4)')}
-              style={{ marginLeft: 6 }}
-            />
+            {isSaving ? (
+              <ActivityIndicator color={theme.onPrimary} />
+            ) : (
+              <>
+                <Text style={[styles.nextButtonText, { color: canProceed ? theme.onPrimary : disabledFg }]}>
+                  {saveError && isLastStep ? 'Try again' : nextLabel}
+                </Text>
+                <Ionicons
+                  name={saveError && isLastStep ? 'refresh' : 'arrow-forward'}
+                  size={18}
+                  color={canProceed ? theme.onPrimary : disabledFg}
+                  style={{ marginLeft: 6 }}
+                />
+              </>
+            )}
           </TouchableOpacity>
         </View>
       </SafeAreaView>
@@ -663,23 +645,24 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 10,
-    gap: 10,
+    paddingVertical: 8,
+    gap: 12,
   },
   backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 48,
+    height: 48,
+    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 1,
   },
   progressTrackWrapper: {
     flex: 1,
+    minHeight: 44,
     justifyContent: 'center',
   },
   progressTrackBackground: {
-    height: 5,
+    height: 6,
     borderRadius: 3,
     overflow: 'hidden',
   },
@@ -687,21 +670,10 @@ const styles = StyleSheet.create({
     height: '100%',
     borderRadius: 3,
   },
-  stepIndicatorPill: {
-    paddingHorizontal: 6,
-    paddingVertical: 3,
-  },
   stepCountText: {
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  skipButton: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-  },
-  skipButtonText: {
-    fontSize: 14,
-    fontWeight: '600',
+    ...typography.secondary,
+    minWidth: 32,
+    textAlign: 'right',
   },
 
   /* BODY */
@@ -730,22 +702,17 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   badgeText: {
-    fontSize: 11,
-    fontWeight: '800',
+    ...typography.caption,
     letterSpacing: 0.8,
   },
   headline: {
-    fontSize: 28,
-    fontWeight: '800',
+    ...typography.screenTitle,
     textAlign: 'center',
-    lineHeight: 34,
     letterSpacing: -0.5,
   },
   subheadline: {
-    fontSize: 14,
-    fontWeight: '500',
+    ...typography.body,
     textAlign: 'center',
-    lineHeight: 20,
     marginTop: 6,
     paddingHorizontal: 12,
   },
@@ -757,87 +724,90 @@ const styles = StyleSheet.create({
   interactiveCard: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: 16,
+    minHeight: 72,
+    padding: 14,
     borderRadius: 20,
+    // Fixed width in both states so selecting a card doesn't shift its content.
+    borderWidth: 2,
   },
   iconBox: {
-    width: 44,
-    height: 44,
+    minWidth: 48,
+    minHeight: 48,
     borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 14,
   },
-  cardTitle: {
-    fontSize: 15,
+  mathSymbol: {
+    fontFamily: FONT_FAMILY.heading,
+    fontSize: 28,
     fontWeight: '700',
-    marginBottom: 3,
+    lineHeight: 34,
+  },
+  cardText: {
+    flex: 1,
+    flexShrink: 1,
+  },
+  cardTitle: {
+    ...typography.body,
+    fontWeight: '600',
+    marginBottom: 2,
   },
   cardDesc: {
-    fontSize: 12,
-    fontWeight: '500',
-    lineHeight: 17,
+    ...typography.body,
   },
-  radioOuter: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+  selectionMark: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
     borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
     marginLeft: 10,
   },
-  radioInner: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
+  selectionMarkSquare: {
+    borderRadius: 7,
   },
 
-  /* STEP 3 GOAL PILLS */
+  /* STEP 4 GOAL PILLS */
   goalSection: {
     marginBottom: 18,
   },
   goalSectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
+    ...typography.body,
+    fontWeight: '600',
     marginBottom: 10,
   },
+  // Pills size to their content and wrap onto a new line when large text doesn't fit.
   pillsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: 8,
   },
   goalPill: {
-    flex: 1,
-    minHeight: 54,
-    paddingVertical: 10,
-    paddingHorizontal: 4,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  goalPillCompact: {
-    flex: 1,
-    minHeight: 54,
+    flexGrow: 1,
+    flexShrink: 0,
+    minWidth: 92,
+    minHeight: 56,
     paddingVertical: 8,
-    paddingHorizontal: 4,
-    borderRadius: 14,
-    borderWidth: 1,
+    paddingHorizontal: 12,
+    borderRadius: 16,
+    borderWidth: 2,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  questionCountText: {
-    fontSize: 18,
-    fontWeight: '800',
-  },
-  questionSubText: {
-    fontSize: 11,
-    fontWeight: '600',
-    textTransform: 'uppercase',
+  goalPillRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   goalPillText: {
-    fontSize: 14,
-    fontWeight: '700',
+    ...typography.body,
+    fontWeight: '600',
     textAlign: 'center',
+  },
+  recommendedText: {
+    ...typography.caption,
+    marginTop: 2,
   },
   projectionCard: {
     padding: 16,
@@ -851,17 +821,15 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   projectionTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    letterSpacing: -0.2,
+    ...typography.body,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   projectionBody: {
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '500',
+    ...typography.body,
   },
 
-  /* STEP 4 SUMMARY */
+  /* STEP 5 SUMMARY */
   summaryCard: {
     padding: 16,
     borderRadius: 22,
@@ -881,15 +849,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   summaryLabel: {
-    fontSize: 11,
-    fontWeight: '600',
+    ...typography.caption,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
     marginBottom: 2,
   },
   summaryValue: {
-    fontSize: 15,
-    fontWeight: '700',
+    ...typography.body,
+    fontWeight: '600',
   },
   signupPitchBox: {
     marginTop: 16,
@@ -897,16 +864,14 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
   },
   pitchHeading: {
-    fontSize: 15,
-    fontWeight: '800',
+    ...typography.body,
+    fontWeight: '600',
     marginBottom: 4,
     textAlign: 'center',
   },
   pitchSubheading: {
-    fontSize: 13,
-    fontWeight: '500',
+    ...typography.secondary,
     textAlign: 'center',
-    lineHeight: 18,
   },
 
   /* FOOTER */
@@ -914,8 +879,21 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 8,
   },
+  errorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+    marginBottom: 10,
+  },
+  errorText: {
+    ...typography.body,
+    flex: 1,
+  },
   nextButton: {
-    height: 60,
+    minHeight: 60,
+    paddingVertical: 12,
     borderRadius: 30,
     flexDirection: 'row',
     alignItems: 'center',
@@ -927,8 +905,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   nextButtonText: {
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
     letterSpacing: 0.5,
   },
 });

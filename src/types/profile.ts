@@ -8,6 +8,22 @@ export type FrictionArea =
   | 'division'
   | 'mixed';
 
+export type ComfortLevel = 'starting' | 'getting_there' | 'confident';
+
+export type StartingDifficulty = 'easy' | 'medium' | 'hard';
+
+const COMFORT_LEVELS: readonly ComfortLevel[] = ['starting', 'getting_there', 'confident'];
+
+export function normalizeComfortLevel(value: unknown): ComfortLevel | undefined {
+  return COMFORT_LEVELS.includes(value as ComfortLevel) ? (value as ComfortLevel) : undefined;
+}
+
+export function comfortToDifficulty(level: ComfortLevel | null | undefined): StartingDifficulty {
+  if (level === 'confident') return 'hard';
+  if (level === 'getting_there') return 'medium';
+  return 'easy';
+}
+
 /**
  * Normalized training commitment values (stored as numbers, not strings)
  */
@@ -15,7 +31,9 @@ export interface UserTrainingGoals {
   dailyQuestions: number;       // e.g., 5, 10, 20, 30, 50
   sessionDurationMinutes: number; // e.g., 2, 5, 10
   weeklyFrequencyDays: number;   // e.g., 3, 5, 7
-  frictionArea?: FrictionArea;
+  frictionArea?: FrictionArea;     // Legacy single pick; kept in sync with frictionAreas[0]
+  frictionAreas?: FrictionArea[];  // Empty array = "Not sure, test me"
+  comfortLevel?: ComfortLevel;
   primaryGoal?: UserGoal;
 }
 

@@ -44,8 +44,12 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
               // Update profiles table using your existing service
               await saveUserSettings(userId, {
                 daily_question_goal: settings?.daily_question_goal ?? 10,
-                goals: settings?.goals ?? ['speed'],
+                goals: settings?.goals ?? ['everyday'],
                 has_completed_onboarding: true,
+                // Missing from drafts saved by older app versions; undefined keys are left untouched.
+                comfort_level: settings?.comfort_level,
+                friction_areas: settings?.friction_areas,
+                friction_area: settings?.friction_area,
               });
 
               // Insert baseline workout stats into workout_sessions

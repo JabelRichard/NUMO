@@ -8,6 +8,8 @@ import {
   TextStyle,
 } from 'react-native';
 import { useTheme } from '@/src/context/ThemeContext';
+import { typography } from '@/src/constants/typography';
+import { PALETTE } from '@/src/constants/palette';
 
 interface PrimaryButtonProps {
   title: string;
@@ -47,7 +49,7 @@ export const PrimaryButton: React.FC<PrimaryButtonProps> = ({
 
 const styles = StyleSheet.create({
   button: {
-    backgroundColor: '#EE5839',
+    backgroundColor: PALETTE.primary,
     height: 56,
     borderRadius: 28,
     flexDirection: 'row',
@@ -55,15 +57,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: 24,
     gap: 8,
-    shadowColor: '#EE5839',
+    shadowColor: PALETTE.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.3,
     shadowRadius: 10,
     elevation: 5,
   },
   text: {
-    color: '#FFFFFF',
-    fontSize: 18,
-    fontWeight: '700',
+    ...typography.button,
+    color: PALETTE.onPrimary,
   },
 });

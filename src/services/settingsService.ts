@@ -2,6 +2,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
 import { UserSettings, DEFAULT_USER_SETTINGS } from '../types/settings';
+import { normalizeComfortLevel } from '../types/profile';
 import { saveTrainingGoals } from './profileService';
 import {
   ONBOARDING_COMPLETED_KEY,
@@ -41,7 +42,9 @@ function decodeBase64ToArrayBuffer(base64: string): ArrayBuffer {
 export async function getUserSettings(userId: string): Promise<UserSettings | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('daily_question_goal, goals, has_completed_onboarding')
+    .select(
+      'daily_question_goal, session_duration_minutes, weekly_frequency_days, goals, has_completed_onboarding, comfort_level, friction_areas, friction_area'
+    )
     .eq('id', userId)
     .single();
 
@@ -51,8 +54,18 @@ export async function getUserSettings(userId: string): Promise<UserSettings | nu
 
   return {
     daily_question_goal: data.daily_question_goal ?? DEFAULT_USER_SETTINGS.daily_question_goal,
+    session_duration_minutes: data.session_duration_minutes ?? null,
+    weekly_frequency_days: data.weekly_frequency_days ?? null,
     goals: data.goals ?? DEFAULT_USER_SETTINGS.goals,
     has_completed_onboarding: data.has_completed_onboarding ?? false,
+    comfort_level: normalizeComfortLevel(data.comfort_level) ?? null,
+    // Rows saved before friction_areas existed only have the single friction_area.
+    friction_areas: Array.isArray(data.friction_areas)
+      ? data.friction_areas
+      : data.friction_area
+      ? [data.friction_area]
+      : null,
+    friction_area: data.friction_area ?? null,
   };
 }
 
@@ -90,8 +103,11 @@ export async function syncOnboardingDraftIfPresent(userId: string): Promise<void
     if (settings) {
       await saveUserSettings(userId, {
         daily_question_goal: settings.daily_question_goal ?? 10,
-        goals: settings.goals ?? ['speed'],
+        goals: settings.goals ?? ['everyday'],
         has_completed_onboarding: true,
+        comfort_level: settings.comfort_level,
+        friction_areas: settings.friction_areas,
+        friction_area: settings.friction_area,
       });
     }
 

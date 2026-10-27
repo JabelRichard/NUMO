@@ -18,6 +18,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
 import { AuthBackground } from '../../src/components/AuthBackground';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
+import { typography, inputTypography } from '@/src/constants/typography';
 
 export default function LoginScreen() {
   const router = useRouter();
@@ -101,17 +103,13 @@ export default function LoginScreen() {
               <View
                 style={[
                   styles.brandBadge,
-                  {
-                    backgroundColor: theme.isDark
-                      ? 'rgba(238, 88, 57, 0.2)'
-                      : 'rgba(238, 88, 57, 0.12)',
-                  },
+                  { backgroundColor: theme.primarySoft },
                 ]}
               >
                 <Text
                   style={[
                     styles.brandBadgeText,
-                    { color: theme.primary },
+                    { color: theme.primaryText },
                     isCompact && styles.brandBadgeTextCompact,
                   ]}
                 >
@@ -251,7 +249,7 @@ export default function LoginScreen() {
                 activeOpacity={0.7}
                 onPress={() => router.push('/(auth)/forgot-password' as any)}
               >
-                <Text style={[styles.forgotText, { color: theme.primary }]}>
+                <Text style={[styles.forgotText, { color: theme.primaryText }]}>
                   Forgot password?
                 </Text>
               </TouchableOpacity>
@@ -270,7 +268,7 @@ export default function LoginScreen() {
               activeOpacity={0.85}
             >
               {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={theme.onPrimary} />
               ) : (
                 <Text style={styles.submitButtonText}>Login</Text>
               )}
@@ -285,7 +283,7 @@ export default function LoginScreen() {
                 onPress={() => router.push('/(auth)/signup')}
                 activeOpacity={0.7}
               >
-                <Text style={[styles.linkText, { color: theme.primary }]}>Sign up</Text>
+                <Text style={[styles.linkText, { color: theme.primaryText }]}>Sign up</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -322,21 +320,21 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   brandBadge: {
-    backgroundColor: 'rgba(238, 88, 57, 0.12)',
+    backgroundColor: PALETTE.primarySoftLight,
     paddingHorizontal: 16,
     paddingVertical: 6,
     borderRadius: 14,
     alignItems: 'center',
   },
   brandBadgeText: {
-    color: '#EE5839',
-    fontSize: 26,
-    fontWeight: '800',
+    ...typography.screenTitle,
+    color: PALETTE.primaryDeep,
     letterSpacing: 1.5,
   },
   brandBadgeTextCompact: {
     fontSize: 20,
     letterSpacing: 1,
+    lineHeight: 24,
   },
   header: {
     alignItems: 'center',
@@ -346,21 +344,20 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {
-    fontSize: 28,
-    fontWeight: '800',
+    ...typography.screenTitle,
     color: '#1C1C1E',
     letterSpacing: -0.5,
     textAlign: 'center',
   },
   titleCompact: {
     fontSize: 24,
+    lineHeight: 29,
   },
   subtitle: {
-    fontSize: 14,
+    ...typography.secondary,
     color: '#636366',
     marginTop: 4,
     textAlign: 'center',
-    lineHeight: 19,
     paddingHorizontal: 12,
   },
   subtitleCompact: {
@@ -382,11 +379,9 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   errorText: {
+    ...typography.secondary,
     color: '#D93838',
-    fontSize: 13,
-    fontWeight: '600',
     flex: 1,
-    lineHeight: 18,
   },
   form: {
     gap: 12,
@@ -398,8 +393,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   label: {
-    fontSize: 13,
-    fontWeight: '700',
+    ...typography.caption,
     color: '#1C1C1E',
     marginBottom: 5,
     marginLeft: 4,
@@ -424,12 +418,11 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   input: {
+    ...inputTypography('body'),
     flex: 1,
     height: 52,
     paddingLeft: 48,
     paddingRight: 16,
-    fontSize: 15,
-    fontWeight: '500',
     color: '#1C1C1E',
   },
   inputCompact: {
@@ -452,18 +445,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   forgotText: {
-    color: '#EE5839',
-    fontSize: 13,
-    fontWeight: '600',
+    ...typography.button,
+    color: PALETTE.primaryDeep,
   },
   submitButton: {
-    backgroundColor: '#EE5839',
+    backgroundColor: PALETTE.primary,
     minHeight: 52,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 16,
-    shadowColor: '#EE5839',
+    shadowColor: PALETTE.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
@@ -477,9 +469,8 @@ const styles = StyleSheet.create({
     opacity: 0.65,
   },
   submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '800',
+    ...typography.button,
+    color: PALETTE.onPrimary,
     letterSpacing: 0.2,
   },
   footerRow: {
@@ -492,13 +483,12 @@ const styles = StyleSheet.create({
     marginTop: 12,
   },
   footerText: {
+    ...typography.secondary,
     color: '#636366',
-    fontSize: 13,
-    fontWeight: '500',
   },
   linkText: {
-    color: '#EE5839',
-    fontSize: 13,
-    fontWeight: '800',
+    ...typography.secondary,
+    color: PALETTE.primaryDeep,
+    fontWeight: '600',
   },
 });

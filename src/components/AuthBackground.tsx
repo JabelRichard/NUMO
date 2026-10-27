@@ -1,6 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, useWindowDimensions } from 'react-native';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
 
 export const AuthBackground = () => {
   const { width } = useWindowDimensions();
@@ -21,7 +22,7 @@ export const AuthBackground = () => {
             width: circleTopSize,
             height: circleTopSize,
             borderRadius: circleTopSize / 2,
-            backgroundColor: '#F7A889',
+            backgroundColor: PALETTE.primary,
             opacity: theme.isDark ? 0.25 : 0.65,
           },
         ]}
@@ -36,7 +37,7 @@ export const AuthBackground = () => {
             width: circleBottomSize,
             height: circleBottomSize,
             borderRadius: circleBottomSize / 2,
-            backgroundColor: '#EE734B',
+            backgroundColor: PALETTE.accentLilac,
             opacity: theme.isDark ? 0.25 : 0.65,
           },
         ]}

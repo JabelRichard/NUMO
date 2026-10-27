@@ -39,6 +39,7 @@ import { getUserSettings } from '../../src/services/settingsService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '../../src/constants/palette';
+import { typography } from '../../src/constants/typography';
 
 type PriorWorkoutSummary = WorkoutSummarySnapshot;
 
@@ -750,7 +751,7 @@ export default function ResultsScreen() {
                       Your Answer: <Text style={{ textDecorationLine: 'line-through' }}>{item.userAnswer}</Text>
                     </Text>
                     <Text style={styles.correctAnswerText}>
-                      Correct: <Text style={{ fontWeight: '800' }}>{item.question?.answer}</Text>
+                      Correct: <Text style={{ fontWeight: '600' }}>{item.question?.answer}</Text>
                     </Text>
                   </View>
                 </View>
@@ -859,14 +860,13 @@ const styles = StyleSheet.create({
     transform: [{ scaleY: 0.4 }],
   },
   stepHeadline: {
-    fontSize: 26,
-    fontWeight: '800',
+    ...typography.screenTitle,
     textAlign: 'center',
     letterSpacing: -0.5,
     marginBottom: 4,
   },
   stepSubtitle: {
-    fontSize: 14,
+    ...typography.secondary,
     textAlign: 'center',
     marginBottom: 18,
   },
@@ -876,18 +876,15 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   massiveScoreText: {
-    fontSize: 52,
-    fontWeight: '900',
+    ...typography.problem,
     letterSpacing: -1,
   },
   massiveScoreDivider: {
-    fontSize: 32,
-    fontWeight: '700',
+    ...typography.display,
     marginLeft: 2,
   },
   metricSubtitle: {
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
     marginTop: 2,
     marginBottom: 16,
   },
@@ -899,14 +896,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   interpretationTitle: {
-    fontSize: 16,
-    fontWeight: '800',
+    ...typography.button,
     marginBottom: 4,
   },
   interpretationDesc: {
-    fontSize: 13,
+    ...typography.secondary,
     textAlign: 'center',
-    lineHeight: 18,
   },
   mistakeReviewPill: {
     flexDirection: 'row',
@@ -918,9 +913,8 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   mistakeReviewPillText: {
+    ...typography.caption,
     color: PALETTE.dangerText,
-    fontSize: 13,
-    fontWeight: '700',
   },
   flawlessPill: {
     flexDirection: 'row',
@@ -932,9 +926,8 @@ const styles = StyleSheet.create({
     marginTop: 14,
   },
   flawlessPillText: {
+    ...typography.caption,
     color: PALETTE.dark,
-    fontSize: 13,
-    fontWeight: '700',
   },
   syncNotice: {
     width: '100%',
@@ -948,13 +941,11 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   syncNoticeText: {
+    ...typography.caption,
     flex: 1,
-    fontSize: 12,
-    lineHeight: 16,
   },
   syncNoticeAction: {
-    fontSize: 13,
-    fontWeight: '800',
+    ...typography.caption,
   },
   comparisonCard: {
     width: '100%',
@@ -969,9 +960,8 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
   },
   tableColHeader: {
+    ...typography.caption,
     flex: 1,
-    fontSize: 12,
-    fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
@@ -986,14 +976,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
   },
   tableLabel: {
+    ...typography.button,
     flex: 1,
-    fontSize: 15,
-    fontWeight: '700',
   },
   tableValue: {
+    ...typography.button,
     flex: 1,
-    fontSize: 15,
-    fontWeight: '600',
   },
   deltaBadge: {
     flex: 1,
@@ -1004,8 +992,7 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
   deltaText: {
-    fontSize: 12,
-    fontWeight: '800',
+    ...typography.caption,
   },
   baselineCard: {
     width: '100%',
@@ -1023,14 +1010,12 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   baselineTitle: {
-    fontSize: 17,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     marginBottom: 6,
   },
   baselineDesc: {
-    fontSize: 13,
+    ...typography.secondary,
     textAlign: 'center',
-    lineHeight: 19,
   },
   recommendationCard: {
     width: '100%',
@@ -1046,20 +1031,17 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   recBadgeText: {
-    fontSize: 11,
-    fontWeight: '800',
+    ...typography.caption,
     letterSpacing: 0.8,
   },
   recTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    ...typography.sectionHeading,
     marginBottom: 6,
     textAlign: 'center',
   },
   recDesc: {
-    fontSize: 13,
+    ...typography.secondary,
     textAlign: 'center',
-    lineHeight: 19,
   },
   dockContainer: {
     width: '100%',
@@ -1082,8 +1064,7 @@ const styles = StyleSheet.create({
     elevation: 3,
   },
   primaryActionBtnText: {
-    fontSize: 16,
-    fontWeight: '800',
+    ...typography.button,
     color: PALETTE.dark,
     letterSpacing: 0.6,
   },
@@ -1098,8 +1079,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   ghostActionBtnText: {
-    fontSize: 14,
-    fontWeight: '700',
+    ...typography.button,
   },
   modalBackdrop: {
     flex: 1,
@@ -1132,8 +1112,7 @@ const styles = StyleSheet.create({
     marginBottom: 16,
   },
   modalTitle: {
-    fontSize: 18,
-    fontWeight: '800',
+    ...typography.sectionHeading,
   },
   modalScrollContent: {
     gap: 10,
@@ -1144,8 +1123,7 @@ const styles = StyleSheet.create({
     borderRadius: 16,
   },
   missedEquationText: {
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
     marginBottom: 6,
   },
   missedAnswerSplit: {
@@ -1153,13 +1131,11 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   yourAnswerText: {
-    fontSize: 13,
+    ...typography.secondary,
     color: PALETTE.dangerText,
-    fontWeight: '600',
   },
   correctAnswerText: {
-    fontSize: 13,
+    ...typography.secondary,
     color: '#27AE60',
-    fontWeight: '600',
   },
 });

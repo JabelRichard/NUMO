@@ -18,6 +18,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
 import { AuthBackground } from '../../src/components/AuthBackground';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '@/src/constants/palette';
+import { typography, inputTypography } from '@/src/constants/typography';
 
 export default function SignupScreen() {
   const router = useRouter();
@@ -156,17 +158,13 @@ export default function SignupScreen() {
               <View
                 style={[
                   styles.brandBadge,
-                  {
-                    backgroundColor: theme.isDark
-                      ? 'rgba(238, 88, 57, 0.2)'
-                      : 'rgba(236, 103, 60, 0.12)',
-                  },
+                  { backgroundColor: theme.primarySoft },
                 ]}
               >
                 <Text
                   style={[
                     styles.brandBadgeText,
-                    { color: theme.primary },
+                    { color: theme.primaryText },
                     isCompact && styles.brandBadgeTextCompact,
                   ]}
                 >
@@ -407,7 +405,7 @@ export default function SignupScreen() {
               activeOpacity={0.8}
             >
               {loading ? (
-                <ActivityIndicator color="#FFFFFF" />
+                <ActivityIndicator color={theme.onPrimary} />
               ) : (
                 <Text style={styles.submitButtonText}>Create Account</Text>
               )}
@@ -420,7 +418,7 @@ export default function SignupScreen() {
               Already have an account?{' '}
             </Text>
             <TouchableOpacity onPress={() => router.push('/(auth)/login')} activeOpacity={0.7}>
-              <Text style={[styles.linkText, { color: theme.primary }]}>Log in</Text>
+              <Text style={[styles.linkText, { color: theme.primaryText }]}>Log in</Text>
             </TouchableOpacity>
           </View>
         </ScrollView>
@@ -456,21 +454,21 @@ const styles = StyleSheet.create({
     marginBottom: 10,
   },
   brandBadge: {
-    backgroundColor: 'rgba(236, 103, 60, 0.12)',
+    backgroundColor: PALETTE.primarySoftLight,
     paddingHorizontal: 16,
     paddingVertical: 5,
     borderRadius: 14,
     alignItems: 'center',
   },
   brandBadgeText: {
-    color: '#EC673C',
-    fontSize: 24,
-    fontWeight: '800',
+    ...typography.screenTitle,
+    color: PALETTE.primaryDeep,
     letterSpacing: 1.5,
   },
   brandBadgeTextCompact: {
     fontSize: 20,
     letterSpacing: 1,
+    lineHeight: 24,
   },
   header: {
     marginBottom: 18,
@@ -480,11 +478,9 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   title: {
-    fontSize: 26,
-    fontWeight: '800',
+    ...typography.screenTitle,
     color: '#1C1C1E',
     letterSpacing: -0.5,
-    lineHeight: 32,
     textAlign: 'center',
   },
   titleCompact: {
@@ -492,10 +488,9 @@ const styles = StyleSheet.create({
     lineHeight: 28,
   },
   subtitle: {
-    fontSize: 13,
+    ...typography.secondary,
     color: '#636366',
     marginTop: 4,
-    lineHeight: 18,
     textAlign: 'center',
     paddingHorizontal: 12,
   },
@@ -518,11 +513,9 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   errorText: {
+    ...typography.secondary,
     color: '#D93838',
-    fontSize: 13,
-    fontWeight: '600',
     flex: 1,
-    lineHeight: 17,
   },
   form: {
     gap: 10,
@@ -534,8 +527,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   label: {
-    fontSize: 13,
-    fontWeight: '600',
+    ...typography.caption,
     color: '#1C1C1E',
     marginBottom: 4,
     marginLeft: 4,
@@ -560,12 +552,11 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   input: {
+    ...inputTypography('body'),
     flex: 1,
     height: 48,
     paddingLeft: 42,
     paddingRight: 16,
-    fontSize: 15,
-    fontWeight: '500',
     color: '#1C1C1E',
   },
   inputCompact: {
@@ -599,19 +590,18 @@ const styles = StyleSheet.create({
     borderRadius: 2,
   },
   strengthLabel: {
-    fontSize: 11,
-    fontWeight: '700',
+    ...typography.caption,
     width: 50,
     textAlign: 'right',
   },
   submitButton: {
-    backgroundColor: '#EC673C',
+    backgroundColor: PALETTE.primary,
     minHeight: 50,
     borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
     marginTop: 18,
-    shadowColor: '#EC673C',
+    shadowColor: PALETTE.primary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.25,
     shadowRadius: 8,
@@ -625,9 +615,8 @@ const styles = StyleSheet.create({
     opacity: 0.65,
   },
   submitButtonText: {
-    color: '#FFFFFF',
-    fontSize: 16,
-    fontWeight: '700',
+    ...typography.button,
+    color: PALETTE.onPrimary,
     letterSpacing: 0.2,
   },
   footerRow: {
@@ -641,13 +630,12 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   footerText: {
+    ...typography.secondary,
     color: '#636366',
-    fontSize: 13,
-    fontWeight: '500',
   },
   linkText: {
-    color: '#EC673C',
-    fontSize: 13,
-    fontWeight: '700',
+    ...typography.secondary,
+    color: PALETTE.primaryDeep,
+    fontWeight: '600',
   },
 });
