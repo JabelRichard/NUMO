@@ -19,12 +19,12 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../src/context/AuthContext';
 import { getUserProfile, getUserSettings } from '../../src/services/settingsService';
 import {
   getRecentWorkouts,
   getWeeklyStats,
+  flushWorkoutOutbox,
   WorkoutSessionRecord,
   getNextFocus,
   FocusOperation,
@@ -32,6 +32,8 @@ import {
 import { supabase } from '../../src/config/supabase';
 import { useTheme } from '@/src/context/ThemeContext';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
+import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { getInitials } from '../../src/utils/getInitials';
 
 type Difficulty = 'easy' | 'medium' | 'hard';
 type OperationType = FocusOperation;
@@ -135,7 +137,8 @@ export default function DashboardScreen() {
 
   const isInitialMount = useRef(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isOffline, setIsOffline] = useState<boolean>(false);
+  // Reload when the connection comes back (loadDashboardState is defined below; called later).
+  const { isOffline, setIsOffline, recheck } = useOnlineStatus(() => loadDashboardState());
   const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
   const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
   const [allWorkouts, setAllWorkouts] = useState<WorkoutSessionRecord[]>([]);
@@ -164,18 +167,6 @@ export default function DashboardScreen() {
   }, [skeletonPulse]);
 
   useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-      if (!offline && isOffline) {
-        loadDashboardState();
-      }
-    });
-
-    return () => unsubscribe();
-  }, [isOffline]);
-
-  useEffect(() => {
     pulseCenter.value = withRepeat(
       withSequence(
         withTiming(1.03, { duration: 2200, easing: Easing.inOut(Easing.ease) }),
@@ -187,9 +178,7 @@ export default function DashboardScreen() {
   }, [pulseCenter]);
 
   const loadDashboardState = useCallback(async () => {
-    const net = await NetInfo.fetch();
-    if (net.isConnected === false || net.isInternetReachable === false) {
-      setIsOffline(true);
+    if (!(await recheck())) {
       setIsLoading(false);
       return;
     }
@@ -199,6 +188,11 @@ export default function DashboardScreen() {
     }
 
     try {
+      // Push any workouts that failed to save offline before reading history.
+      if (session?.user?.id) {
+        await flushWorkoutOutbox(session.user.id);
+      }
+
       const [workoutsData, statsData, settingsData, profileData] = await Promise.all([
         session?.user?.id ? fetchUserWorkouts(session.user.id).catch(() => getRecentWorkouts()) : getRecentWorkouts(),
         getWeeklyStats(),
@@ -232,7 +226,7 @@ export default function DashboardScreen() {
         isInitialMount.current = false;
       }
     }
-  }, [session?.user?.id, contentOpacity, contentTranslateY]);
+  }, [session?.user?.id, contentOpacity, contentTranslateY, recheck, setIsOffline]);
 
   useFocusEffect(
     useCallback(() => {
@@ -274,13 +268,6 @@ export default function DashboardScreen() {
     profile.avatar_url ||
     session?.user?.user_metadata?.avatar_url ||
     null;
-
-  const getInitials = (name: string): string => {
-    const parts = name.trim().split(' ').filter(Boolean);
-    if (parts.length === 0) return 'M';
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-  };
 
   const isNewUser = !isLoading && allWorkouts.length === 0 && totalSolved === 0;
 
@@ -452,7 +439,7 @@ export default function DashboardScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* Header Bar */}
       <View

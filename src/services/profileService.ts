@@ -25,6 +25,8 @@ export async function getTrainingGoals(userId?: string): Promise<UserTrainingGoa
         dailyQuestions: Number(parsed.dailyQuestions) || DEFAULT_TRAINING_GOALS.dailyQuestions,
         sessionDurationMinutes: Number(parsed.sessionDurationMinutes) || DEFAULT_TRAINING_GOALS.sessionDurationMinutes,
         weeklyFrequencyDays: Number(parsed.weeklyFrequencyDays) || DEFAULT_TRAINING_GOALS.weeklyFrequencyDays,
+        frictionArea: parsed.frictionArea,
+        primaryGoal: parsed.primaryGoal,
       };
     }
   } catch (err) {
@@ -47,16 +49,21 @@ export async function saveTrainingGoals(
     dailyQuestions: goals.dailyQuestions ?? current.dailyQuestions,
     sessionDurationMinutes: goals.sessionDurationMinutes ?? current.sessionDurationMinutes,
     weeklyFrequencyDays: goals.weeklyFrequencyDays ?? current.weeklyFrequencyDays,
+    frictionArea: goals.frictionArea ?? current.frictionArea,
+    primaryGoal: goals.primaryGoal ?? current.primaryGoal,
   };
 
   try {
     await AsyncStorage.setItem(STORAGE_KEYS.TRAINING_GOALS, JSON.stringify(updated));
 
-    // Also sync the daily question goal to user settings table if authenticated
     if (userId && goals.dailyQuestions !== undefined) {
       await supabase
-        .from('user_settings')
-        .upsert({ user_id: userId, daily_question_goal: goals.dailyQuestions });
+        .from('profiles')
+        .update({
+          daily_question_goal: goals.dailyQuestions,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', userId);
     }
   } catch (err) {
     console.warn('Failed to save training goals:', err);

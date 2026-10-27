@@ -29,7 +29,14 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#BCE3AA"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
@@ -39,18 +46,6 @@
       "eas": {
         "projectId": "1cebd50b-e307-4ea2-9c08-9f104d7671e3"
       }
-    },
-  "expo": {
-    "plugins": [
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/notification-icon.png",
-          "color": "#BCE3AA"
-        }
-      ]
-    ]
-  }
-
+    }
   }
 }

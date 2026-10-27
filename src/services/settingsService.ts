@@ -1,6 +1,13 @@
 // src/services/settingsService.ts
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../config/supabase';
 import { UserSettings, DEFAULT_USER_SETTINGS } from '../types/settings';
+import { saveTrainingGoals } from './profileService';
+import {
+  ONBOARDING_COMPLETED_KEY,
+  ONBOARDING_DRAFT_KEY,
+  OnboardingDraft,
+} from '../utils/onboardingDraft';
 
 // Pure TS helper to convert base64 string to ArrayBuffer without external dependencies
 function decodeBase64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -31,7 +38,7 @@ function decodeBase64ToArrayBuffer(base64: string): ArrayBuffer {
 
 // --- User Settings ---
 
-export async function getUserSettings(userId: string): Promise<UserSettings> {
+export async function getUserSettings(userId: string): Promise<UserSettings | null> {
   const { data, error } = await supabase
     .from('profiles')
     .select('daily_question_goal, goals, has_completed_onboarding')
@@ -39,7 +46,7 @@ export async function getUserSettings(userId: string): Promise<UserSettings> {
     .single();
 
   if (error || !data) {
-    return DEFAULT_USER_SETTINGS;
+    return null;
   }
 
   return {
@@ -66,6 +73,42 @@ export async function saveUserSettings(
   }
 
   return { success: true };
+}
+
+/**
+ * Synchronizes any cached onboarding settings draft to public.profiles upon auth completion.
+ */
+export async function syncOnboardingDraftIfPresent(userId: string): Promise<void> {
+  try {
+    const draftRaw = await AsyncStorage.getItem(ONBOARDING_DRAFT_KEY);
+    if (!draftRaw) return;
+
+    const draft = JSON.parse(draftRaw) as OnboardingDraft;
+    const settings = draft?.settings;
+    const trainingGoals = draft?.trainingGoals;
+
+    if (settings) {
+      await saveUserSettings(userId, {
+        daily_question_goal: settings.daily_question_goal ?? 10,
+        goals: settings.goals ?? ['speed'],
+        has_completed_onboarding: true,
+      });
+    }
+
+    if (trainingGoals) {
+      await saveTrainingGoals(trainingGoals, userId);
+    } else if (settings?.daily_question_goal) {
+      await saveTrainingGoals(
+        { dailyQuestions: settings.daily_question_goal },
+        userId
+      );
+    }
+
+    await AsyncStorage.removeItem(ONBOARDING_DRAFT_KEY);
+    await AsyncStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
+  } catch (e) {
+    console.warn('Failed to sync onboarding draft to profile:', e);
+  }
 }
 
 // --- Account & Profile Management ---
@@ -207,12 +250,17 @@ export async function updateAccountPasswordWithOldPassword(
 }
 
 export async function deleteUserAccount(): Promise<{ success: boolean; error?: string }> {
-  const { error } = await supabase.rpc('delete_user_account');
+  try {
+    const { error } = await supabase.rpc('delete_user_account');
 
-  if (error) {
-    return { success: false, error: error.message };
+    if (error) {
+      console.error('Account deletion RPC error:', error);
+      return { success: false, error: error.message };
+    }
+
+    await supabase.auth.signOut();
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Failed to delete account' };
   }
-
-  await supabase.auth.signOut();
-  return { success: true };
 }

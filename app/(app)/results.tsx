@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
+import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
@@ -24,39 +24,23 @@ import Animated, {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-import { QuestionAttemptResult, OperationType } from '../../src/lib/math/types';
+import { QuestionAttemptResult } from '../../src/lib/math/types';
 import {
-  saveWorkoutSession,
-  setPendingDemoSession,
   getRecentWorkouts,
   fetchAllWorkouts,
+  flushWorkoutOutbox,
+  getQueuedWorkoutCount,
   getNextFocus,
   WorkoutSessionRecord,
+  WorkoutSummarySnapshot,
   FocusOperation,
 } from '../../src/services/workoutService';
 import { getUserSettings } from '../../src/services/settingsService';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { PALETTE } from '../../src/constants/palette';
 
-const PALETTE = {
-  primary: '#BCE3AA',
-  accentLilac: '#F2CAEC',
-  backgroundLight: '#F1ECE9',
-  dark: '#0A0F0B',
-  white: '#FFFFFF',
-  dangerText: '#EB5757',
-};
-
-const STORAGE_LAST_SUMMARY_KEY = 'numo_last_workout_summary_v1';
-
-interface PriorWorkoutSummary {
-  accuracy: number;
-  avgTimeSecs: number;
-  correctCount: number;
-  totalQuestions: number;
-  completedAt: string;
-}
+type PriorWorkoutSummary = WorkoutSummarySnapshot;
 
 function AnimatedRollingNumber({
   target,
@@ -160,32 +144,40 @@ export default function ResultsScreen() {
 
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
 
-  const { mode, difficulty, results, isDemo, sessionKey } = useLocalSearchParams<{
-    mode?: string;
-    difficulty?: string;
-    results?: string;
-    isDemo?: string;
-    sessionKey?: string;
-  }>();
+  const { mode, difficulty, results, sessionKey, savedSessionId, saveStatus, prior } =
+    useLocalSearchParams<{
+      mode?: string;
+      difficulty?: string;
+      results?: string;
+      sessionKey?: string;
+      savedSessionId?: string;
+      saveStatus?: string;
+      prior?: string;
+    }>();
 
-  const isDemoWorkout = isDemo === 'true' || (!session && isDemo !== 'false');
+  const userId = session?.user?.id;
 
   const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
   const [priorSummary, setPriorSummary] = useState<PriorWorkoutSummary | null>(null);
   const [showMistakesModal, setShowMistakesModal] = useState(false);
   const [historicalWorkouts, setHistoricalWorkouts] = useState<WorkoutSessionRecord[]>([]);
   const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
+  const [isSaveQueued, setIsSaveQueued] = useState(saveStatus === 'queued');
+  const [isRetryingSync, setIsRetryingSync] = useState(false);
 
   const stepOpacity = useSharedValue(1);
   const stepTranslateX = useSharedValue(0);
-  const hasSavedRef = useRef(false);
+  const hasLoadedRef = useRef(false);
+  const isAnimatingRef = useRef(false);
 
   useEffect(() => {
     setCurrentStep(1);
-    hasSavedRef.current = false;
+    hasLoadedRef.current = false;
+    isAnimatingRef.current = false;
+    setIsSaveQueued(saveStatus === 'queued');
     stepOpacity.value = 1;
     stepTranslateX.value = 0;
-  }, [sessionKey, results, stepOpacity, stepTranslateX]);
+  }, [sessionKey, results, saveStatus, stepOpacity, stepTranslateX]);
 
   const attempts: QuestionAttemptResult[] = useMemo(() => {
     if (!results) return [];
@@ -218,6 +210,12 @@ export default function ResultsScreen() {
       return {
         title: 'Fast & accurate',
         desc: 'Sharp instinct and quick retrieval under pressure.',
+      };
+    }
+    if (accuracy >= 80 && avgPaceNum <= 2.2) {
+      return {
+        title: 'Quick and mostly accurate',
+        desc: 'Great tempo. Tighten up a couple of answers to hit 90%+.',
       };
     }
     if (accuracy >= 80 && avgPaceNum > 2.2) {
@@ -273,64 +271,75 @@ export default function ResultsScreen() {
     };
   }, [mode, totalQuestions, correctCount, totalTimeSpentMs, historicalWorkouts, accuracy]);
 
-  useEffect(() => {
-    if (attempts.length === 0 || hasSavedRef.current) return;
-    hasSavedRef.current = true;
+  // Read-only: workout.tsx has already saved (or queued) this session. Anything
+  // fetched from the DB must exclude it so we never compare a session to itself.
+  const loadHistory = useCallback(async () => {
+    if (!userId) return;
+    const excludeCurrent = (rows: WorkoutSessionRecord[]) =>
+      savedSessionId ? rows.filter((w) => w.id !== savedSessionId) : rows;
 
-    async function persistAndLoadComparison() {
+    const [allWorkoutsData, settingsData] = await Promise.all([
+      fetchAllWorkouts(userId).catch(() => [] as WorkoutSessionRecord[]),
+      getUserSettings(userId).catch(() => null),
+    ]);
+    setHistoricalWorkouts(excludeCurrent(allWorkoutsData || []));
+    if (settingsData?.daily_question_goal) {
+      setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
+    }
+  }, [userId, savedSessionId]);
+
+  useEffect(() => {
+    if (attempts.length === 0 || hasLoadedRef.current) return;
+    hasLoadedRef.current = true;
+
+    async function loadComparison() {
       try {
-        const cachedPrior = await AsyncStorage.getItem(STORAGE_LAST_SUMMARY_KEY);
-        if (cachedPrior) {
-          setPriorSummary(JSON.parse(cachedPrior));
-        } else if (!isDemoWorkout) {
+        // Snapshot of the previous workout, captured by workout.tsx before it cached this one.
+        let resolvedPrior: PriorWorkoutSummary | null = null;
+        if (prior) {
+          try {
+            resolvedPrior = JSON.parse(prior);
+          } catch {}
+        }
+
+        if (!resolvedPrior && userId) {
           const dbRecents = await getRecentWorkouts();
-          if (dbRecents && dbRecents.length > 0) {
-            const last = dbRecents[0];
-            setPriorSummary({
+          const last = dbRecents.find((w) => w.id !== savedSessionId);
+          if (last) {
+            resolvedPrior = {
               accuracy: Math.round(last.accuracy),
               avgTimeSecs: parseFloat(((last.average_time_per_question || 2000) / 1000).toFixed(1)),
               correctCount: last.correct_answers,
               totalQuestions: last.total_questions,
               completedAt: last.completed_at,
-            });
+            };
           }
         }
 
-        if (session?.user?.id) {
-          const [allWorkoutsData, settingsData] = await Promise.all([
-            fetchAllWorkouts(session.user.id).catch(() => []),
-            getUserSettings(session.user.id).catch(() => null),
-          ]);
-          setHistoricalWorkouts(allWorkoutsData || []);
-          if (settingsData?.daily_question_goal) {
-            setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
-          }
-        }
+        setPriorSummary(resolvedPrior);
+        await loadHistory();
       } catch (e) {
         console.warn('Could not load prior summary or history:', e);
       }
-
-      const currentSummary: PriorWorkoutSummary = {
-        accuracy,
-        avgTimeSecs: avgPaceNum,
-        correctCount,
-        totalQuestions,
-        completedAt: new Date().toISOString(),
-      };
-      await AsyncStorage.setItem(STORAGE_LAST_SUMMARY_KEY, JSON.stringify(currentSummary));
-
-      const activeMode = (mode as OperationType) || 'mixed';
-      const activeDiff = difficulty || 'easy';
-
-      if (isDemoWorkout) {
-        await setPendingDemoSession(attempts, activeMode, activeDiff);
-      } else {
-        await saveWorkoutSession(attempts, activeMode, activeDiff, session?.user?.id);
-      }
     }
 
-    persistAndLoadComparison();
-  }, [attempts, mode, difficulty, isDemoWorkout, accuracy, avgPaceNum, correctCount, totalQuestions, session?.user?.id]);
+    loadComparison();
+  }, [attempts, prior, savedSessionId, userId, loadHistory]);
+
+  const handleRetrySync = async () => {
+    if (!userId || isRetryingSync) return;
+    setIsRetryingSync(true);
+    try {
+      await flushWorkoutOutbox(userId);
+      const remaining = await getQueuedWorkoutCount(userId);
+      if (remaining === 0) {
+        setIsSaveQueued(false);
+        await loadHistory().catch(() => {});
+      }
+    } finally {
+      setIsRetryingSync(false);
+    }
+  };
 
   const comparisonData = useMemo(() => {
     if (!priorSummary) return null;
@@ -355,22 +364,31 @@ export default function ResultsScreen() {
     };
   }, [priorSummary, accuracy, avgPaceNum, correctCount]);
 
+  const finishStepAnimation = () => {
+    isAnimatingRef.current = false;
+  };
+
+  const handleNextStep = () => {
+    // Functional update so a stale closure can never skip a step.
+    setCurrentStep((prev) => (prev < 3 ? ((prev + 1) as 2 | 3) : prev));
+    stepTranslateX.value = 24;
+    stepOpacity.value = withTiming(1, { duration: 220 }, () => {
+      runOnJS(finishStepAnimation)();
+    });
+    stepTranslateX.value = withSpring(0, { damping: 14 });
+  };
+
   const advanceStep = () => {
+    // Ignore taps while a transition is running (double-tap on "Continue").
+    if (isAnimatingRef.current || currentStep >= 3) return;
+    isAnimatingRef.current = true;
+
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
     }
     stepOpacity.value = withTiming(0, { duration: 150 }, () => {
       runOnJS(handleNextStep)();
     });
-  };
-
-  const handleNextStep = () => {
-    if (currentStep < 3) {
-      setCurrentStep((prev) => (prev + 1) as 2 | 3);
-      stepTranslateX.value = 24;
-      stepOpacity.value = withTiming(1, { duration: 220 });
-      stepTranslateX.value = withSpring(0, { damping: 14 });
-    }
   };
 
   const handleStartNextWorkout = () => {
@@ -424,7 +442,7 @@ export default function ResultsScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* TOP TIMELINE NAVIGATION */}
       <View style={styles.topTimelineWrapper}>
@@ -516,6 +534,20 @@ export default function ResultsScreen() {
               <View style={[styles.flawlessPill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : 'rgba(188, 227, 170, 0.35)' }]}>
                 <Ionicons name="shield-checkmark" size={15} color={PALETTE.dark} />
                 <Text style={styles.flawlessPillText}>Flawless Round · 100% Accuracy</Text>
+              </View>
+            )}
+
+            {isSaveQueued && (
+              <View style={[styles.syncNotice, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                <Ionicons name="cloud-offline-outline" size={16} color={subtextColor} />
+                <Text style={[styles.syncNoticeText, { color: subtextColor }]}>
+                  Saved on this device. It will sync when you're back online.
+                </Text>
+                <TouchableOpacity onPress={handleRetrySync} disabled={isRetryingSync} hitSlop={8}>
+                  <Text style={[styles.syncNoticeAction, { color: textColor }]}>
+                    {isRetryingSync ? 'Retrying…' : 'Retry'}
+                  </Text>
+                </TouchableOpacity>
               </View>
             )}
           </View>
@@ -903,6 +935,26 @@ const styles = StyleSheet.create({
     color: PALETTE.dark,
     fontSize: 13,
     fontWeight: '700',
+  },
+  syncNotice: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginTop: 12,
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    borderWidth: 1,
+  },
+  syncNoticeText: {
+    flex: 1,
+    fontSize: 12,
+    lineHeight: 16,
+  },
+  syncNoticeAction: {
+    fontSize: 13,
+    fontWeight: '800',
   },
   comparisonCard: {
     width: '100%',

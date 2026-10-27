@@ -12,27 +12,16 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
 import Svg, { Path, Circle } from 'react-native-svg';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { supabase } from '../../src/config/supabase';
 import { getNextFocus } from '../../src/services/workoutService';
-import { getUserProfile } from '../../src/services/settingsService';
+import { getTrainingGoals } from '../../src/services/profileService';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
+import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { PALETTE } from '../../src/constants/palette';
 
-const PALETTE = {
-  primary: '#BCE3AA',         // Soft pastel sage
-  accentLilac: '#F2CAEC',     // Soft orchid
-  backgroundLight: '#F1ECE9', // Warm neutral
-  dark: '#0A0F0B',            // Deep obsidian
-  cardLight: '#FFFFFF',
-  cardDark: '#141C15',
-  borderLight: 'rgba(10, 15, 11, 0.08)',
-  borderDark: 'rgba(255, 255, 255, 0.08)',
-  textSubtleLight: 'rgba(10, 15, 11, 0.55)',
-  textSubtleDark: 'rgba(241, 236, 233, 0.65)',
-};
 
 const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const MONTH_NAMES = [
@@ -115,7 +104,7 @@ export default function StatisticsScreen() {
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const isNarrow = width < 360;
 
-  const [isOffline, setIsOffline] = useState(false);
+  const { isOffline, setIsOffline, recheck } = useOnlineStatus();
   const [loading, setLoading] = useState(true);
   const [workouts, setWorkouts] = useState<any[]>([]);
   const [weeklyTarget, setWeeklyTarget] = useState<number>(5);
@@ -130,20 +119,8 @@ export default function StatisticsScreen() {
   const isCurrentViewingMonth =
     calYear === today.getFullYear() && calMonth === today.getMonth();
 
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
   const handleRetryConnection = async () => {
-    const state = await NetInfo.fetch();
-    const offline = state.isConnected === false || state.isInternetReachable === false;
-    setIsOffline(offline);
-    if (!offline) {
+    if (await recheck()) {
       loadData(true);
     }
   };
@@ -154,9 +131,7 @@ export default function StatisticsScreen() {
       return;
     }
 
-    const net = await NetInfo.fetch();
-    if (net.isConnected === false || net.isInternetReachable === false) {
-      setIsOffline(true);
+    if (!(await recheck())) {
       setLoading(false);
       return;
     }
@@ -164,23 +139,19 @@ export default function StatisticsScreen() {
     if (showLoading) setLoading(true);
 
     try {
-      const [workoutsResult, profileResult]: [any, any] = await Promise.all([
+      const [workoutsResult, goalsResult] = await Promise.all([
         fetchUserWorkouts(user.id),
-        getUserProfile(user.id).catch(() => null),
+        getTrainingGoals(user.id).catch(() => null),
       ]);
 
       setIsOffline(false);
 
-      if (Array.isArray(workoutsResult)) {
-        setWorkouts(workoutsResult);
-      } else if (workoutsResult && typeof workoutsResult === 'object') {
-        setWorkouts(workoutsResult.data || []);
-      } else {
-        setWorkouts([]);
-      }
+      setWorkouts(Array.isArray(workoutsResult) ? workoutsResult : []);
 
-      if (profileResult?.weekly_goal) {
-        setWeeklyTarget(Number(profileResult.weekly_goal) || 5);
+      // getUserProfile only returns full_name/avatar_url, so the weekly target
+      // comes from the same training goals the Profile screen edits.
+      if (goalsResult?.weeklyFrequencyDays) {
+        setWeeklyTarget(Number(goalsResult.weeklyFrequencyDays) || 5);
       }
     } catch (err: any) {
       const isNetworkError =
@@ -197,7 +168,7 @@ export default function StatisticsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [user?.id]);
+  }, [user?.id, recheck, setIsOffline]);
 
   useFocusEffect(
     useCallback(() => {
@@ -569,10 +540,7 @@ export default function StatisticsScreen() {
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar
-          barStyle={isDark ? 'light-content' : 'dark-content'}
-          backgroundColor={screenBg}
-        />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
         <OfflineNotice onRetry={handleRetryConnection} />
       </SafeAreaView>
     );
@@ -580,10 +548,7 @@ export default function StatisticsScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
-      <StatusBar
-        barStyle={isDark ? 'light-content' : 'dark-content'}
-        backgroundColor={screenBg}
-      />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* Header Bar */}
       <View style={styles.header}>

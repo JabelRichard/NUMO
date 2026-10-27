@@ -1,37 +1,44 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
   TouchableOpacity,
   ScrollView,
-  Animated,
   StatusBar,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Circle } from 'react-native-svg';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import Reanimated, {
+import NetInfo from '@react-native-community/netinfo';
+import Animated, {
   useSharedValue,
   useAnimatedStyle,
-  withSequence,
   withTiming,
-  withRepeat,
+  Easing,
 } from 'react-native-reanimated';
 
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
-import { supabase } from '@/src/config/supabase';
 import { saveUserSettings } from '@/src/services/settingsService';
-import { CustomNumericKeypad } from '@/src/components/CustomNumericKeypad';
-import { QuestionGenerator } from '@/src/lib/math/questionGenerator';
-import { recordAttempt } from '@/src/lib/math/questionValidator';
-import { MathQuestion, QuestionAttemptResult, FeedbackState } from '@/src/lib/math/types';
+import { saveTrainingGoals } from '@/src/services/profileService';
+import { OfflineNotice } from '@/src/components/OfflineNotice';
+import { FrictionArea } from '@/src/types/profile';
+import {
+  DURATION_MINUTE_OPTIONS,
+  FREQUENCY_DAY_OPTIONS,
+  ONBOARDING_COMPLETED_KEY,
+  ONBOARDING_DRAFT_KEY,
+  OnboardingPrimaryGoal,
+  QUESTION_GOAL_OPTIONS,
+  buildOnboardingDraft,
+  frequencyLabel,
+} from '@/src/utils/onboardingDraft';
+import { formatDurationGoal, formatQuestionGoal } from '@/src/utils/goalFormatters';
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 4;
 
 export default function OnboardingScreen() {
   const router = useRouter();
@@ -45,72 +52,58 @@ export default function OnboardingScreen() {
   const isTall = height > 780;
 
   const [currentStep, setCurrentStep] = useState(1);
+  const [isOffline, setIsOffline] = useState(false);
 
-  // User State
-  const [confidenceLevel, setConfidenceLevel] = useState('sometimes');
-  const [trainingDays, setTrainingDays] = useState('5 days per week');
-  const [sessionMinutes, setSessionMinutes] = useState('5 minutes');
-  const [questionGoal, setQuestionGoal] = useState(10); // 5, 10, 30, 50
+  // User Selections (initialized without pre-selections)
+  const [primaryGoal, setPrimaryGoal] = useState<OnboardingPrimaryGoal | null>(null);
+  const [frictionArea, setFrictionArea] = useState<FrictionArea | null>(null);
+  const [trainingDays, setTrainingDays] = useState<number | null>(null);
+  const [questionGoal, setQuestionGoal] = useState<number | null>(null);
+  const [sessionDuration, setSessionDuration] = useState<number | null>(null);
 
-  const [baselineResults, setBaselineResults] = useState<{
-    totalQuestions: number;
-    correctAnswers: number;
-    totalTimeMs: number;
-  }>({
-    totalQuestions: 3,
-    correctAnswers: 3,
-    totalTimeMs: 4200,
-  });
+  // NetInfo network connectivity listener
+  useEffect(() => {
+    const unsubscribe = NetInfo.addEventListener((state) => {
+      const offline = state.isConnected === false || state.isInternetReachable === false;
+      setIsOffline(offline);
+    });
 
-  // Diagnostic Quiz State (Step 4)
-  const generatorRef = useRef(new QuestionGenerator());
-  const [quizQuestions, setQuizQuestions] = useState<MathQuestion[]>([]);
-  const [quizIndex, setQuizIndex] = useState(0);
-  const [userAnswer, setUserAnswer] = useState('');
-  const [feedback, setFeedback] = useState<FeedbackState>('idle');
-  const [attempts, setAttempts] = useState<QuestionAttemptResult[]>([]);
-  const sessionStartTimeRef = useRef<number>(Date.now());
-  const questionStartTimeRef = useRef<number>(Date.now());
+    return () => unsubscribe();
+  }, []);
 
-  // Step Progress Bar Animation
-  const progressAnim = useRef(new Animated.Value(1 / TOTAL_STEPS)).current;
-
-  const updateProgress = (stepNumber: number) => {
-    Animated.timing(progressAnim, {
-      toValue: stepNumber / TOTAL_STEPS,
-      duration: 250,
-      useNativeDriver: false,
-    }).start();
+  const checkConnectivity = async (): Promise<boolean> => {
+    const state = await NetInfo.fetch();
+    const offline = state.isConnected === false || state.isInternetReachable === false;
+    setIsOffline(offline);
+    return !offline;
   };
 
-  // Diagnostic Keypad Animations
-  const shakeX = useSharedValue(0);
-  const scale = useSharedValue(1);
-  const cursorOpacity = useSharedValue(1);
+  // Progress bar animation
+  const progressVal = useSharedValue(1 / TOTAL_STEPS);
 
-  useEffect(() => {
-    cursorOpacity.value = withRepeat(withTiming(0, { duration: 500 }), -1, true);
-  }, [cursorOpacity]);
+  const updateProgress = (stepNumber: number) => {
+    progressVal.value = withTiming(stepNumber / TOTAL_STEPS, {
+      duration: 250,
+      easing: Easing.out(Easing.quad),
+    });
+  };
 
-  // Generate questions for step 4
-  useEffect(() => {
-    if (currentStep === 4) {
-      const generated = generatorRef.current.generateSession({
-        operation: 'mixed',
-        difficulty: 'easy',
-        questionCount: 3,
-      });
-      setQuizQuestions(generated);
-      setQuizIndex(0);
-      setUserAnswer('');
-      setFeedback('idle');
-      setAttempts([]);
-      sessionStartTimeRef.current = Date.now();
-      questionStartTimeRef.current = Date.now();
+  const progressAnimatedStyle = useAnimatedStyle(() => ({
+    width: `${progressVal.value * 100}%`,
+  }));
+
+  const canProceedCurrentStep = () => {
+    if (currentStep === 1) return Boolean(primaryGoal);
+    if (currentStep === 2) return Boolean(frictionArea);
+    if (currentStep === 3) {
+      return Boolean(questionGoal) && Boolean(trainingDays) && Boolean(sessionDuration);
     }
-  }, [currentStep]);
+    return true;
+  };
 
   const handleNext = () => {
+    if (!canProceedCurrentStep()) return;
+
     if (currentStep < TOTAL_STEPS) {
       const next = currentStep + 1;
       setCurrentStep(next);
@@ -130,60 +123,37 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleSkip = () => {
-    if (currentStep < TOTAL_STEPS) {
-      const next = currentStep + 1;
-      setCurrentStep(next);
-      updateProgress(next);
-    } else {
-      handleCompleteAndGoSignup();
-    }
+  // Only allowed on Step 3
+  const handleSkipStep3 = () => {
+    if (!trainingDays) setTrainingDays(5);
+    if (!questionGoal) setQuestionGoal(10);
+    if (!sessionDuration) setSessionDuration(2);
+
+    const next = currentStep + 1;
+    setCurrentStep(next);
+    updateProgress(next);
   };
 
-  // Saves onboarding completion locally and to database
   const handleCompleteAndGoSignup = async () => {
+    const isOnline = await checkConnectivity();
+    if (!isOnline) return;
+
     try {
-      const accuracy = Math.round(
-        (baselineResults.correctAnswers / baselineResults.totalQuestions) * 100
-      );
-      const avgTimePerQ = parseFloat(
-        (baselineResults.totalTimeMs / baselineResults.totalQuestions / 1000).toFixed(1)
-      );
+      const draft = buildOnboardingDraft({
+        primaryGoal,
+        frictionArea,
+        dailyQuestions: questionGoal,
+        weeklyFrequencyDays: trainingDays,
+        sessionDurationMinutes: sessionDuration,
+      });
 
-      // 1. Settings payload matching your UserSettings & profiles schema
-      const settingsPayload = {
-        daily_question_goal: questionGoal,
-        goals: ['speed' as const],
-        has_completed_onboarding: true,
-      };
+      await AsyncStorage.setItem(ONBOARDING_COMPLETED_KEY, 'true');
+      await AsyncStorage.setItem(ONBOARDING_DRAFT_KEY, JSON.stringify(draft));
+      await saveTrainingGoals(draft.trainingGoals);
 
-      // 2. Baseline workout session matching workout_sessions table
-      const baselineSession = {
-        operations: 'mixed',
-        difficuty: 'easy',
-        total_questions: baselineResults.totalQuestions,
-        correct_answers: baselineResults.correctAnswers,
-        incorrect_answers: baselineResults.totalQuestions - baselineResults.correctAnswers,
-        accuracy: accuracy,
-        avarage_time_per_question: avgTimePerQ,
-      };
-
-      // 3. Mark completed in AsyncStorage immediately to prevent offline bounce-backs
-      await AsyncStorage.setItem('@numo_onboarding_completed', 'true');
-      await AsyncStorage.setItem(
-        '@numo_onboarding_draft',
-        JSON.stringify({ settings: settingsPayload, session: baselineSession })
-      );
-
-      // 4. If user is already authenticated, save right now using existing service
       if (user?.id) {
-        await saveUserSettings(user.id, settingsPayload);
-
-        await supabase.from('workout_sessions').insert({
-          user_id: user.id,
-          ...baselineSession,
-        });
-
+        await saveUserSettings(user.id, draft.settings);
+        await saveTrainingGoals(draft.trainingGoals, user.id);
         router.replace('/(app)');
       } else {
         router.replace('/(auth)/signup');
@@ -194,192 +164,99 @@ export default function OnboardingScreen() {
     }
   };
 
-  const handleQuizKeyPress = (val: string) => {
-    if (userAnswer.length >= 6 || feedback !== 'idle') return;
-    setUserAnswer((prev) => prev + val);
-  };
+  // Theme Constants
+  const screenBg = isDark ? '#0A0F0B' : theme.background || '#F1ECE9';
+  const textColor = theme.text;
+  const textSubtle = theme.muted;
+  const cardBg = theme.card;
+  const accentGreen = '#BCE3AA';
+  const accentLilac = '#F2CAEC';
+  const borderColor = theme.border;
 
-  const handleQuizDelete = () => {
-    if (feedback !== 'idle') return;
-    setUserAnswer((prev) => prev.slice(0, -1));
-  };
+  // Offline blocker
+  if (isOffline) {
+    return <OfflineNotice onRetry={checkConnectivity} />;
+  }
 
-  const handleQuizSubmit = () => {
-    if (!userAnswer || feedback !== 'idle' || !quizQuestions[quizIndex]) return;
-
-    const currentQ = quizQuestions[quizIndex];
-    const timeSpentMs = Date.now() - questionStartTimeRef.current;
-    const attempt = recordAttempt(currentQ, userAnswer, timeSpentMs);
-
-    setFeedback(attempt.isCorrect ? 'correct' : 'incorrect');
-
-    if (attempt.isCorrect) {
-      scale.value = withSequence(withTiming(1.05, { duration: 100 }), withTiming(1, { duration: 100 }));
-    } else {
-      shakeX.value = withSequence(
-        withTiming(-10, { duration: 50 }),
-        withTiming(10, { duration: 50 }),
-        withTiming(-6, { duration: 50 }),
-        withTiming(6, { duration: 50 }),
-        withTiming(0, { duration: 50 })
-      );
-    }
-
-    const nextAttempts = [...attempts, attempt];
-    setAttempts(nextAttempts);
-
-    setTimeout(() => {
-      setFeedback('idle');
-      setUserAnswer('');
-
-      if (quizIndex + 1 < quizQuestions.length) {
-        setQuizIndex((prev) => prev + 1);
-        questionStartTimeRef.current = Date.now();
-      } else {
-        const totalDuration = Date.now() - sessionStartTimeRef.current;
-        const totalCorrect = nextAttempts.filter((a) => a.isCorrect).length;
-
-        setBaselineResults({
-          totalQuestions: quizQuestions.length,
-          correctAnswers: totalCorrect,
-          totalTimeMs: totalDuration,
-        });
-
-        handleNext();
-      }
-    }, 550);
-  };
-
-  const animatedDisplayStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: shakeX.value }, { scale: scale.value }],
-  }));
-
-  const animatedCursorStyle = useAnimatedStyle(() => ({
-    opacity: cursorOpacity.value,
-  }));
-
-  // ================= STEP SCREENS =================
-
-  // STEP 1: Why Mental Math Matters
-  const renderStep1 = () => (
-    <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
-      <View style={styles.headerBlock}>
-        <View style={[styles.badgePill, { backgroundColor: 'rgba(236, 103, 60, 0.12)', borderColor: 'rgba(236, 103, 60, 0.28)' }]}>
-          <Ionicons name="sparkles" size={14} color="#EC673C" style={{ marginRight: 6 }} />
-          <Text style={styles.badgeText}>CORE PURPOSE</Text>
-        </View>
-        <Text style={[styles.headline, { color: theme.text }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
-          Why Mental Math{'\n'}<Text style={styles.orangeText}>Actually Matters</Text>
-        </Text>
-        <Text style={[styles.subheadline, { color: theme.muted }]}>
-          Numbers run every part of our lives. Strengthening calculation speed gives you an unfair advantage daily.
-        </Text>
-      </View>
-
-      <View style={[styles.cardsList, isTall && { gap: 18 }]}>
-        {[
-          {
-            icon: 'cart-outline' as const,
-            color: '#EC673C',
-            bg: 'rgba(236, 103, 60, 0.14)',
-            title: 'Think faster in real life',
-            desc: 'Shopping, bills, budgeting, discounts, and split payments on the fly.',
-          },
-          {
-            icon: 'bulb-outline' as const,
-            color: '#AFA2FE',
-            bg: 'rgba(175, 162, 254, 0.16)',
-            title: 'Keep your mind active',
-            desc: 'Exercise working memory, focus, and overall cognitive agility.',
-          },
-          {
-            icon: 'shield-checkmark-outline' as const,
-            color: '#F6FE91',
-            bg: 'rgba(246, 254, 145, 0.18)',
-            title: 'Catch mistakes faster',
-            desc: "Instantly spot errors that don't add up on receipts, bills, or spreadsheets.",
-          },
-        ].map((item, idx) => (
-          <View
-            key={idx}
-            style={[
-              styles.infoCard,
-              { backgroundColor: theme.card, borderColor: theme.border },
-              isTall && { paddingVertical: 22, paddingHorizontal: 18 },
-            ]}
-          >
-            <View style={[styles.iconCircle, isTall && { width: 52, height: 52, borderRadius: 16 }, { backgroundColor: item.bg }]}>
-              <Ionicons name={item.icon} size={isTall ? 26 : 22} color={item.color} />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={[styles.cardTitle, isTall && { fontSize: 17, marginBottom: 6 }, { color: theme.text }]}>
-                {item.title}
-              </Text>
-              <Text style={[styles.cardDesc, isTall && { fontSize: 13, lineHeight: 19 }, { color: theme.muted }]}>
-                {item.desc}
-              </Text>
-            </View>
-          </View>
-        ))}
-      </View>
-    </ScrollView>
-  );
-
-  // STEP 2: Confidence Level
-  const renderStep2 = () => {
-    const options = [
-      { id: 'very', label: 'Very confident', iconColor: '#4CAF50', iconBg: 'rgba(76, 175, 80, 0.18)', icon: 'happy' as const },
-      { id: 'pretty', label: 'Pretty good', iconColor: '#FFC107', iconBg: 'rgba(255, 193, 7, 0.18)', icon: 'happy-outline' as const },
-      { id: 'sometimes', label: 'Sometimes I struggle', iconColor: '#EC673C', iconBg: 'rgba(236, 103, 60, 0.18)', icon: 'sad-outline' as const },
-      { id: 'avoid', label: 'I avoid doing math in my head', iconColor: '#E53935', iconBg: 'rgba(229, 57, 53, 0.18)', icon: 'sad' as const },
+  // ================= STEP 1: Core Motivation =================
+  const renderStep1 = () => {
+    const goals = [
+      {
+        id: 'everyday' as const,
+        icon: 'cart-outline' as const,
+        title: 'Everyday Quick Math',
+        desc: 'Calculate shopping, tips, discounts, and split bills on the spot.',
+      },
+      {
+        id: 'memory' as const,
+        icon: 'bulb-outline' as const,
+        title: 'Sharper Focus & Memory',
+        desc: 'Boost mental agility, recall speed, and overall cognitive sharpness.',
+      },
+      {
+        id: 'career' as const,
+        icon: 'briefcase-outline' as const,
+        title: 'Career & Exam Prep',
+        desc: 'High-speed mental math for interviews, exams, and business meetings.',
+      },
+      {
+        id: 'speed' as const,
+        icon: 'flash-outline' as const,
+        title: 'Pure Calculation Speed',
+        desc: 'Eliminate hesitation and cut down mental math lag to under 2 seconds.',
+      },
     ];
 
     return (
       <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.headerBlock}>
-          <Text style={[styles.headline, { color: theme.text }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
-            How confident are you{'\n'}with mental math?
+          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : accentLilac }]}>
+            <Ionicons name="sparkles" size={13} color={isDark ? accentGreen : '#0A0F0B'} style={{ marginRight: 6 }} />
+            <Text style={[styles.badgeText, { color: isDark ? accentGreen : '#0A0F0B' }]}>YOUR GOAL</Text>
+          </View>
+          <Text style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
+            What do you want to{'\n'}get better at?
           </Text>
-          <Text style={[styles.subheadline, { color: theme.muted }]}>
-            Be honest — there are no wrong answers.
+          <Text style={[styles.subheadline, { color: textSubtle }]}>
+            Pick your goal. We'll tailor your workouts around it.
           </Text>
         </View>
 
-        <View style={[styles.cardsList, isTall && { gap: 16 }]}>
-          {options.map((item) => {
-            const isSelected = confidenceLevel === item.id;
+        <View style={[styles.cardsList, isTall && { gap: 14 }]}>
+          {goals.map((item) => {
+            const isSelected = primaryGoal === item.id;
             return (
               <TouchableOpacity
                 key={item.id}
-                activeOpacity={0.8}
-                onPress={() => setConfidenceLevel(item.id)}
+                activeOpacity={0.85}
+                onPress={() => setPrimaryGoal(item.id)}
                 style={[
-                  styles.confidenceCard,
-                  isTall && { minHeight: 74, paddingHorizontal: 18 },
+                  styles.interactiveCard,
                   {
-                    backgroundColor: theme.card,
-                    borderColor: isSelected ? '#EC673C' : theme.border,
+                    backgroundColor: cardBg,
+                    borderColor: isSelected ? accentGreen : borderColor,
                     borderWidth: isSelected ? 2 : 1,
                   },
                 ]}
               >
-                <View style={[styles.moodCircle, isTall && { width: 48, height: 48, borderRadius: 24 }, { backgroundColor: item.iconBg }]}>
-                  <Ionicons name={item.icon} size={isTall ? 28 : 24} color={item.iconColor} />
-                </View>
-
-                <Text
+                <View
                   style={[
-                    styles.confidenceLabel,
-                    isTall && { fontSize: 16 },
-                    { color: theme.text },
-                    isSelected && { color: '#EC673C' },
+                    styles.iconBox,
+                    {
+                      backgroundColor: isSelected
+                        ? (isDark ? 'rgba(188, 227, 170, 0.25)' : accentGreen)
+                        : (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)'),
+                    },
                   ]}
                 >
-                  {item.label}
-                </Text>
-
-                <View style={[styles.radioOuter, isSelected && { borderColor: '#EC673C' }]}>
-                  {isSelected && <View style={styles.radioInner} />}
+                  <Ionicons name={item.icon} size={22} color={textColor} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.cardTitle, { color: textColor }]}>{item.title}</Text>
+                  <Text style={[styles.cardDesc, { color: textSubtle }]}>{item.desc}</Text>
+                </View>
+                <View style={[styles.radioOuter, { borderColor: isSelected ? accentGreen : 'rgba(255, 255, 255, 0.25)' }]}>
+                  {isSelected && <View style={[styles.radioInner, { backgroundColor: isDark ? accentGreen : '#0A0F0B' }]} />}
                 </View>
               </TouchableOpacity>
             );
@@ -389,58 +266,124 @@ export default function OnboardingScreen() {
     );
   };
 
-  // STEP 3: Training Goal (Frequency + Duration + Questions per workout)
-  const renderStep3 = () => {
-    const dayOptions = ['3 days per week', '5 days per week', 'Every day'];
-    const minuteOptions = ['2 minutes', '5 minutes', '10 minutes'];
-    const questionOptions = [5, 10, 30, 50];
+  // ================= STEP 2: Mental Barrier =================
+  const renderStep2 = () => {
+    const barriers = [
+      {
+        id: 'addition' as const,
+        icon: 'add' as const,
+        title: 'Mental Addition & Carries',
+        desc: 'Quick sums with carrying numbers takes extra mental effort.',
+      },
+      {
+        id: 'subtraction' as const,
+        icon: 'remove' as const,
+        title: 'Mental Subtraction & Borrowing',
+        desc: 'Borrowing numbers takes too long to do in your head.',
+      },
+      {
+        id: 'multiplication' as const,
+        icon: 'close' as const,
+        title: 'Multiplication Tables',
+        desc: 'Freezing on 7s, 8s, 12s, or double-digit calculations.',
+      },
+      {
+        id: 'division' as const,
+        icon: 'git-commit-outline' as const,
+        title: 'Quick Division & Factors',
+        desc: 'Spotting quotients and dividing numbers mentally slows you down.',
+      },
+      {
+        id: 'mixed' as const,
+        icon: 'shuffle' as const,
+        title: 'Switching Operations on the Fly',
+        desc: 'Losing momentum when switching between plus, minus, and times.',
+      },
+    ];
 
     return (
       <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.headerBlock}>
-          <Text style={[styles.headline, { color: theme.text }]}>Set your training goal</Text>
+          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.2)' : accentLilac }]}>
+            <Ionicons name="flash-outline" size={13} color={isDark ? accentLilac : '#0A0F0B'} style={{ marginRight: 6 }} />
+            <Text style={[styles.badgeText, { color: isDark ? accentLilac : '#0A0F0B' }]}>SMART DIAGNOSTIC</Text>
+          </View>
+          <Text style={[styles.headline, { color: textColor }, isNarrow && { fontSize: 26, lineHeight: 32 }]}>
+            What slows you{'\n'}down most?
+          </Text>
+          <Text style={[styles.subheadline, { color: textSubtle }]}>
+            Tell us where you struggle. We'll build around it.
+          </Text>
         </View>
 
-        {/* 1. Frequency */}
-        <View style={styles.goalSection}>
-          <Text style={[styles.goalSectionTitle, { color: theme.text }]}>
-            How often do you want to train?
-          </Text>
-          <View style={styles.pillsRow}>
-            {dayOptions.map((opt) => {
-              const active = trainingDays === opt;
-              return (
-                <TouchableOpacity
-                  key={opt}
-                  activeOpacity={0.85}
-                  onPress={() => setTrainingDays(opt)}
+        <View style={[styles.cardsList, isTall && { gap: 12 }]}>
+          {barriers.map((item) => {
+            const isSelected = frictionArea === item.id;
+            return (
+              <TouchableOpacity
+                key={item.id}
+                activeOpacity={0.85}
+                onPress={() => setFrictionArea(item.id)}
+                style={[
+                  styles.interactiveCard,
+                  {
+                    backgroundColor: cardBg,
+                    borderColor: isSelected ? accentLilac : borderColor,
+                    borderWidth: isSelected ? 2 : 1,
+                  },
+                ]}
+              >
+                <View
                   style={[
-                    styles.goalPill,
+                    styles.iconBox,
                     {
-                      backgroundColor: active ? '#EC673C' : theme.card,
-                      borderColor: active ? '#EC673C' : theme.border,
+                      backgroundColor: isSelected
+                        ? (isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac)
+                        : (isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.05)'),
                     },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.goalPillText,
-                      { color: active ? '#FFFFFF' : theme.text },
-                    ]}
-                  >
-                    {opt.replace(' per week', '\nper week')}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
+                  <Ionicons name={item.icon} size={22} color={textColor} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.cardTitle, { color: textColor }]}>{item.title}</Text>
+                  <Text style={[styles.cardDesc, { color: textSubtle }]}>{item.desc}</Text>
+                </View>
+                <View style={[styles.radioOuter, { borderColor: isSelected ? accentLilac : 'rgba(255, 255, 255, 0.25)' }]}>
+                  {isSelected && <View style={[styles.radioInner, { backgroundColor: isDark ? accentLilac : '#0A0F0B' }]} />}
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      </ScrollView>
+    );
+  };
+
+  // ================= STEP 3: Habit Routine =================
+  const renderStep3 = () => {
+    // Matched with ProfileScreen options [5, 10, 20, 30, 50]
+    const questionOptions = [5, 10, 20, 30, 50];
+
+    const currentQuestions = questionGoal || 10;
+    const currentDays = trainingDays || 5;
+    const monthlyMultiplier = currentDays >= 7 ? 30 : currentDays === 5 ? 22 : 14;
+    const monthlyEquations = currentQuestions * monthlyMultiplier;
+
+    return (
+      <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
+        <View style={styles.headerBlock}>
+          <Text style={[styles.headline, { color: textColor }]}>
+            How much do you{'\n'}want to train?
+          </Text>
+          <Text style={[styles.subheadline, { color: textSubtle }]}>
+            Short, focused practice works best. Build a sustainable daily rhythm.
+          </Text>
         </View>
 
-        {/* 2. Questions per Workout (5, 10, 30, 50) */}
+        {/* 1. Questions per workout */}
         <View style={styles.goalSection}>
-          <Text style={[styles.goalSectionTitle, { color: theme.text }]}>
-            How many questions per workout?
-          </Text>
+          <Text style={[styles.goalSectionTitle, { color: textColor }]}>Questions per workout</Text>
           <View style={styles.pillsRow}>
             {questionOptions.map((count) => {
               const active = questionGoal === count;
@@ -452,26 +395,16 @@ export default function OnboardingScreen() {
                   style={[
                     styles.goalPillCompact,
                     {
-                      backgroundColor: active ? '#EC673C' : theme.card,
-                      borderColor: active ? '#EC673C' : theme.border,
+                      backgroundColor: active ? accentGreen : cardBg,
+                      borderColor: active ? accentGreen : borderColor,
                     },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.questionCountText,
-                      { color: active ? '#FFFFFF' : theme.text },
-                    ]}
-                  >
+                  <Text style={[styles.questionCountText, { color: active ? '#0A0F0B' : textColor }]}>
                     {count}
                   </Text>
-                  <Text
-                    style={[
-                      styles.questionSubText,
-                      { color: active ? '#FFFFFF' : theme.muted },
-                    ]}
-                  >
-                    qs
+                  <Text style={[styles.questionSubText, { color: active ? '#0A0F0B' : textSubtle }]}>
+                    questions
                   </Text>
                 </TouchableOpacity>
               );
@@ -479,34 +412,28 @@ export default function OnboardingScreen() {
           </View>
         </View>
 
-        {/* 3. Duration */}
+        {/* 2. Training frequency */}
         <View style={styles.goalSection}>
-          <Text style={[styles.goalSectionTitle, { color: theme.text }]}>
-            How long can you train per session?
-          </Text>
+          <Text style={[styles.goalSectionTitle, { color: textColor }]}>Training frequency</Text>
           <View style={styles.pillsRow}>
-            {minuteOptions.map((opt) => {
-              const active = sessionMinutes === opt;
+            {FREQUENCY_DAY_OPTIONS.map((opt) => {
+              const active = trainingDays === opt.days;
               return (
                 <TouchableOpacity
-                  key={opt}
+                  key={opt.days}
                   activeOpacity={0.85}
-                  onPress={() => setSessionMinutes(opt)}
+                  onPress={() => setTrainingDays(opt.days)}
                   style={[
                     styles.goalPill,
                     {
-                      backgroundColor: active ? '#EC673C' : theme.card,
-                      borderColor: active ? '#EC673C' : theme.border,
+                      backgroundColor: active ? (isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen) : cardBg,
+                      borderColor: active ? accentGreen : borderColor,
+                      borderWidth: active ? 1.5 : 1,
                     },
                   ]}
                 >
-                  <Text
-                    style={[
-                      styles.goalPillText,
-                      { color: active ? '#FFFFFF' : theme.text },
-                    ]}
-                  >
-                    {opt}
+                  <Text style={[styles.goalPillText, { color: textColor }]}>
+                    {opt.label}
                   </Text>
                 </TouchableOpacity>
               );
@@ -514,201 +441,123 @@ export default function OnboardingScreen() {
           </View>
         </View>
 
-        {/* Plan Summary Card */}
-        <View
-          style={[
-            styles.planSummaryCard,
-            {
-              backgroundColor: isDark ? 'rgba(236, 103, 60, 0.08)' : '#FFF6F2',
-              borderColor: isDark ? 'rgba(236, 103, 60, 0.2)' : '#FFE3D6',
-            },
-          ]}
-        >
-          <Text style={styles.planSummaryHeader}>Your plan</Text>
-
-          <View style={styles.planSummaryItem}>
-            <Ionicons name="calendar-outline" size={18} color="#EC673C" style={{ marginRight: 10 }} />
-            <Text style={[styles.planSummaryText, { color: theme.text }]}>
-              {trainingDays}
+        {/* 3. 2-Minute Commitment Card */}
+        {questionGoal && trainingDays ? (
+          <View
+            style={[
+              styles.projectionCard,
+              {
+                backgroundColor: isDark ? 'rgba(188, 227, 170, 0.12)' : '#E9F5E3',
+                borderColor: isDark ? 'rgba(188, 227, 170, 0.28)' : '#D0E7C7',
+              },
+            ]}
+          >
+            <View style={styles.projectionHeader}>
+              <Ionicons name="time-outline" size={20} color={isDark ? accentGreen : '#1D4511'} style={{ marginRight: 8 }} />
+              <Text style={[styles.projectionTitle, { color: isDark ? accentGreen : '#1D4511' }]}>
+                Your workout takes about 2 minutes.
+              </Text>
+            </View>
+            <Text style={[styles.projectionBody, { color: textSubtle }]}>
+              That's up to <Text style={{ fontWeight: '800', color: textColor }}>{monthlyEquations} questions</Text> a month at your current goal.
             </Text>
           </View>
-
-          <View style={styles.planSummaryItem}>
-            <Ionicons name="flash-outline" size={18} color="#EC673C" style={{ marginRight: 10 }} />
-            <Text style={[styles.planSummaryText, { color: theme.text }]}>
-              {questionGoal} questions per workout
-            </Text>
-          </View>
-
-          <View style={styles.planSummaryItem}>
-            <Ionicons name="time-outline" size={18} color="#EC673C" style={{ marginRight: 10 }} />
-            <Text style={[styles.planSummaryText, { color: theme.text }]}>
-              {sessionMinutes} per session
-            </Text>
-          </View>
-        </View>
+        ) : null}
       </ScrollView>
     );
   };
 
-  // STEP 4: Diagnostic Baseline Quiz
+  // ================= STEP 4: Custom Plan Reveal & Sign-up Sale =================
   const renderStep4 = () => {
-    const currentQ = quizQuestions[quizIndex];
-    if (!currentQ) return null;
-
-    const progressPct = ((quizIndex + 1) / quizQuestions.length) * 100;
-    const inputColor = feedback === 'correct' ? '#4CAF50' : feedback === 'incorrect' ? '#D93838' : theme.text;
-
-    return (
-      <View style={styles.quizWrapper}>
-        <View style={styles.headerBlock}>
-          <View style={[styles.badgePill, { backgroundColor: 'rgba(236, 103, 60, 0.12)', borderColor: 'rgba(236, 103, 60, 0.28)' }]}>
-            <Ionicons name="speedometer-outline" size={13} color="#EC673C" style={{ marginRight: 5 }} />
-            <Text style={styles.badgeText}>QUICK DIAGNOSTIC</Text>
-          </View>
-          <Text style={[styles.headline, { color: theme.text }, isNarrow && { fontSize: 22, lineHeight: 28 }]}>
-            Let's see where you're starting.
-          </Text>
-          <Text style={[styles.subheadline, { color: theme.muted }]}>No calculator. Just use your head.</Text>
-        </View>
-
-        <View style={styles.quizProgressBar}>
-          <View style={styles.quizProgressHeader}>
-            <Text style={[styles.quizProgressText, { color: theme.muted }]}>
-              Question {quizIndex + 1} of {quizQuestions.length}
-            </Text>
-            <Text style={[styles.quizProgressText, { color: theme.text, fontWeight: '800' }]}>
-              {Math.round(progressPct)}%
-            </Text>
-          </View>
-          <View style={[styles.quizProgressTrack, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)' }]}>
-            <View style={[styles.quizProgressFill, { width: `${progressPct}%` }]} />
-          </View>
-        </View>
-
-        <View style={styles.equationCenterBox}>
-          <Reanimated.View style={[animatedDisplayStyle, { alignItems: 'center' }]}>
-            <Text style={[styles.equationText, { color: theme.text }]}>{currentQ.equation}</Text>
-            <View style={styles.answerInputRow}>
-              <Text style={[styles.answerText, { color: inputColor }]}>{userAnswer}</Text>
-              <Reanimated.View style={[styles.blinkingCursor, { backgroundColor: theme.text }, animatedCursorStyle]} />
-            </View>
-          </Reanimated.View>
-        </View>
-
-        <View style={styles.keypadWrapper}>
-          <CustomNumericKeypad
-            onKeyPress={handleQuizKeyPress}
-            onDelete={handleQuizDelete}
-            onSubmit={handleQuizSubmit}
-            disabled={feedback !== 'idle'}
-          />
-        </View>
-      </View>
-    );
-  };
-
-  // STEP 5: Results & CTA
-  const renderStep5 = () => {
-    const totalQ = baselineResults.totalQuestions || 3;
-    const correctQ = baselineResults.correctAnswers || 0;
-    const accuracy = Math.round((correctQ / totalQ) * 100);
-    const avgSpeed = (baselineResults.totalTimeMs / totalQ / 1000).toFixed(1);
-
-    const size = isTall ? 204 : 176;
-    const strokeWidth = 15;
-    const radius = (size - strokeWidth) / 2;
-    const circumference = 2 * Math.PI * radius;
-    const strokeDashoffset = circumference - (circumference * accuracy) / 100;
-
     return (
       <ScrollView contentContainerStyle={styles.scrollBlock} showsVerticalScrollIndicator={false} bounces={false}>
         <View style={styles.headerBlock}>
-          <Text style={[styles.headline, isTall && { fontSize: 32, lineHeight: 38 }, { color: theme.text }]}>
-            That's your{'\n'}starting point.
+          <View style={[styles.badgePill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : accentGreen }]}>
+            <Ionicons name="checkmark-circle" size={14} color="#0A0F0B" style={{ marginRight: 6 }} />
+            <Text style={[styles.badgeText, { color: '#0A0F0B' }]}>PLAN GENERATED</Text>
+          </View>
+          <Text style={[styles.headline, isTall && { fontSize: 32, lineHeight: 38 }, { color: textColor }]}>
+            Your personalized plan{'\n'}is ready.
+          </Text>
+          <Text style={[styles.subheadline, { color: textSubtle }]}>
+            Built around your goal, your weak spot, and the routine you chose.
           </Text>
         </View>
 
-        {/* Circular Ring Gauge */}
-        <View style={[styles.gaugeContainer, isTall && { marginVertical: 18 }]}>
-          <Svg width={size} height={size}>
-            <Circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              stroke={isDark ? 'rgba(255, 255, 255, 0.1)' : '#F0F0F2'}
-              strokeWidth={strokeWidth}
-              fill="transparent"
-            />
-            <Circle
-              cx={size / 2}
-              cy={size / 2}
-              r={radius}
-              stroke="#EC673C"
-              strokeWidth={strokeWidth}
-              strokeDasharray={circumference}
-              strokeDashoffset={strokeDashoffset}
-              strokeLinecap="round"
-              fill="transparent"
-              rotation="-90"
-              origin={`${size / 2}, ${size / 2}`}
-            />
-          </Svg>
+        {/* Plan Summary Card */}
+        <View style={[styles.summaryCard, { backgroundColor: cardBg, borderColor: borderColor }]}>
+          <View style={styles.summaryItem}>
+            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen }]}>
+              <Ionicons name="compass-outline" size={20} color={textColor} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Focus Track</Text>
+              <Text style={[styles.summaryValue, { color: textColor }]}>
+                {primaryGoal === 'speed'
+                  ? 'Pure Calculation Speed'
+                  : primaryGoal === 'memory'
+                  ? 'Memory & Cognitive Focus'
+                  : primaryGoal === 'career'
+                  ? 'Career & Professional Math'
+                  : 'Everyday Quick Math'}
+              </Text>
+            </View>
+          </View>
 
-          <View style={styles.gaugeCenterText}>
-            <Text style={[styles.gaugePercent, isTall && { fontSize: 40 }, { color: theme.text }]}>{accuracy}%</Text>
-            <Text style={[styles.gaugeLabel, isTall && { fontSize: 14 }, { color: theme.muted }]}>Accuracy</Text>
+          <View style={styles.summaryItem}>
+            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac }]}>
+              <Ionicons name="options-outline" size={20} color={textColor} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Target Weak Spot</Text>
+              <Text style={[styles.summaryValue, { color: textColor }]}>
+                {frictionArea === 'addition'
+                  ? 'Addition & Carrying'
+                  : frictionArea === 'multiplication'
+                  ? 'Multiplication Tables'
+                  : frictionArea === 'subtraction'
+                  ? 'Mental Differences & Borrowing'
+                  : frictionArea === 'division'
+                  ? 'Factor Quotients'
+                  : 'Mixed Operation Switching'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.summaryItem}>
+            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.2)' : accentGreen }]}>
+              <Ionicons name="calendar-outline" size={20} color={textColor} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.summaryLabel, { color: textSubtle }]}>Daily Habit</Text>
+              <Text style={[styles.summaryValue, { color: textColor }]}>
+                {questionGoal || 10} questions / workout • {frequencyLabel(trainingDays)}
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.summaryItem}>
+            <View style={[styles.summaryIcon, { backgroundColor: isDark ? 'rgba(242, 202, 236, 0.25)' : accentLilac }]}>
+              <Ionicons name="shuffle" size={20} color={textColor} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.summaryLabel, { color: textSubtle }]}>First Workout</Text>
+              <Text style={[styles.summaryValue, { color: textColor }]}>
+                Mixed Baseline Challenge (Easy)
+              </Text>
+            </View>
           </View>
         </View>
 
-        {/* Stat Cards */}
-        <View style={[styles.resultsCardsRow, isTall && { gap: 16, marginVertical: 16 }]}>
-          <View
-            style={[
-              styles.resultMiniCard,
-              isTall && { paddingVertical: 18 },
-              { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#F5F7FA' },
-            ]}
-          >
-            <Text style={[styles.resultMiniVal, isTall && { fontSize: 26 }, { color: theme.text }]}>{avgSpeed}s</Text>
-            <Text style={[styles.resultMiniLbl, isTall && { fontSize: 13 }, { color: theme.muted }]}>Avg. time</Text>
-          </View>
-
-          <View
-            style={[
-              styles.resultMiniCard,
-              isTall && { paddingVertical: 18 },
-              { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.05)' : '#F5F7FA' },
-            ]}
-          >
-            <Text style={[styles.resultMiniVal, isTall && { fontSize: 26 }, { color: theme.text }]}>{correctQ}/{totalQ}</Text>
-            <Text style={[styles.resultMiniLbl, isTall && { fontSize: 13 }, { color: theme.muted }]}>Correct</Text>
-          </View>
-        </View>
-
-        {/* Save Result Callout Card */}
-        <View
-          style={[
-            styles.saveResultCard,
-            isTall && { padding: 20, marginVertical: 14 },
-            {
-              backgroundColor: isDark ? 'rgba(236, 103, 60, 0.08)' : '#FFF7F4',
-              borderColor: isDark ? 'rgba(236, 103, 60, 0.24)' : '#FFE6DC',
-            },
-          ]}
-        >
-          <View style={styles.saveResultHeader}>
-            <Ionicons name="sparkles" size={18} color="#EC673C" style={{ marginRight: 8 }} />
-            <Text style={[styles.saveResultTitle, isTall && { fontSize: 16 }]}>Save your first result</Text>
-          </View>
-          <Text style={[styles.saveResultSubtitle, isTall && { fontSize: 13, lineHeight: 19 }, { color: theme.muted }]}>
-            Create an account to save your baseline stats, lock in your starting tier, and track your progress.
+        {/* Sell the Signup */}
+        <View style={styles.signupPitchBox}>
+          <Text style={[styles.pitchHeading, { color: textColor }]}>
+            Save your plan and start training.
+          </Text>
+          <Text style={[styles.pitchSubheading, { color: textSubtle }]}>
+            Create your free account to save your plan and track your progress.
           </Text>
         </View>
-
-        <Text style={[styles.resultEncourageText, isTall && { fontSize: 14, lineHeight: 20 }, { color: theme.muted }]}>
-          Now imagine what your numbers could look like after a few weeks of consistent training.
-        </Text>
       </ScrollView>
     );
   };
@@ -723,44 +572,40 @@ export default function OnboardingScreen() {
         return renderStep3();
       case 4:
         return renderStep4();
-      case 5:
-        return renderStep5();
       default:
         return null;
     }
   };
 
-  const progressWidth = progressAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0%', '100%'],
-  });
+  const canProceed = canProceedCurrentStep();
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <StatusBar barStyle={theme.isDark ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
+    <View style={[styles.container, { backgroundColor: screenBg }]}>
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       <SafeAreaView style={styles.safeArea}>
-        {/* HEADER: Back Button, Progress Bar, Step Indicator, and Skip */}
+        {/* HEADER */}
         <View style={[styles.topHeader, { paddingTop: Math.max(insets.top > 0 ? 0 : 8, 4) }]}>
-          <TouchableOpacity style={[styles.backButton, { backgroundColor: theme.card }]} onPress={handleBack} activeOpacity={0.7}>
-            <Ionicons name="chevron-back" size={20} color={theme.text} />
+          <TouchableOpacity style={[styles.backButton, { backgroundColor: cardBg }]} onPress={handleBack} activeOpacity={0.7}>
+            <Ionicons name="chevron-back" size={20} color={textColor} />
           </TouchableOpacity>
 
           <View style={styles.progressTrackWrapper}>
             <View style={[styles.progressTrackBackground, { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(0, 0, 0, 0.08)' }]}>
-              <Animated.View style={[styles.progressFill, { width: progressWidth }]} />
+              <Animated.View style={[styles.progressFill, { backgroundColor: accentGreen }, progressAnimatedStyle]} />
             </View>
           </View>
 
           <View style={styles.stepIndicatorPill}>
-            <Text style={[styles.stepCountText, { color: theme.muted }]}>
+            <Text style={[styles.stepCountText, { color: textSubtle }]}>
               {currentStep}/{TOTAL_STEPS}
             </Text>
           </View>
 
-          {currentStep !== 4 ? (
-            <TouchableOpacity onPress={handleSkip} activeOpacity={0.7} style={styles.skipButton}>
-              <Text style={styles.skipButtonText}>Skip</Text>
+          {/* Skip button only allowed on Step 3 */}
+          {currentStep === 3 ? (
+            <TouchableOpacity onPress={handleSkipStep3} activeOpacity={0.7} style={styles.skipButton}>
+              <Text style={[styles.skipButtonText, { color: textSubtle }]}>Skip</Text>
             </TouchableOpacity>
           ) : (
             <View style={{ width: 34 }} />
@@ -768,23 +613,37 @@ export default function OnboardingScreen() {
         </View>
 
         {/* STEP CONTENT BODY */}
-        <View style={[styles.contentBody, currentStep === 4 && styles.contentBodyQuiz]}>
-          {renderActiveStep()}
-        </View>
+        <View style={styles.contentBody}>{renderActiveStep()}</View>
 
-        {/* BOTTOM ACTION */}
-        {currentStep !== 4 && (
-          <View style={[styles.footerContainer, { paddingBottom: Math.max(insets.bottom + 12, 22) }]}>
-            <TouchableOpacity style={styles.nextButton} activeOpacity={0.88} onPress={handleNext}>
-              <Text style={styles.nextButtonText}>
-                {currentStep === TOTAL_STEPS ? 'Create Account' : 'Next >'}
-              </Text>
-              {currentStep === TOTAL_STEPS && (
-                <Ionicons name="arrow-forward" size={18} color="#FFFFFF" style={{ marginLeft: 6 }} />
-              )}
-            </TouchableOpacity>
-          </View>
-        )}
+        {/* BOTTOM ACTION BUTTON */}
+        <View style={[styles.footerContainer, { paddingBottom: Math.max(insets.bottom + 12, 22) }]}>
+          <TouchableOpacity
+            style={[
+              styles.nextButton,
+              {
+                backgroundColor: canProceed ? accentGreen : (isDark ? 'rgba(188, 227, 170, 0.25)' : 'rgba(10, 15, 11, 0.15)'),
+              },
+            ]}
+            disabled={!canProceed}
+            activeOpacity={0.88}
+            onPress={handleNext}
+          >
+            <Text
+              style={[
+                styles.nextButtonText,
+                { color: canProceed ? '#0A0F0B' : (isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(10, 15, 11, 0.4)') },
+              ]}
+            >
+              {currentStep === TOTAL_STEPS ? 'Create my free account' : 'Next'}
+            </Text>
+            <Ionicons
+              name="arrow-forward"
+              size={18}
+              color={canProceed ? '#0A0F0B' : (isDark ? 'rgba(255, 255, 255, 0.35)' : 'rgba(10, 15, 11, 0.4)')}
+              style={{ marginLeft: 6 }}
+            />
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
     </View>
   );
@@ -826,7 +685,6 @@ const styles = StyleSheet.create({
   },
   progressFill: {
     height: '100%',
-    backgroundColor: '#EC673C',
     borderRadius: 3,
   },
   stepIndicatorPill: {
@@ -842,8 +700,7 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
   skipButtonText: {
-    color: '#8E9993',
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
   },
 
@@ -852,9 +709,6 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: 20,
     justifyContent: 'space-between',
-  },
-  contentBodyQuiz: {
-    paddingHorizontal: 12,
   },
   scrollBlock: {
     flexGrow: 1,
@@ -865,32 +719,27 @@ const styles = StyleSheet.create({
   /* TYPOGRAPHY */
   headerBlock: {
     alignItems: 'center',
-    marginBottom: 12,
+    marginBottom: 16,
   },
   badgePill: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 14,
     paddingVertical: 6,
-    borderRadius: 18,
-    borderWidth: 1,
-    marginBottom: 8,
+    borderRadius: 14,
+    marginBottom: 12,
   },
   badgeText: {
-    color: '#EC673C',
     fontSize: 11,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
   headline: {
     fontSize: 28,
-    fontWeight: '900',
+    fontWeight: '800',
     textAlign: 'center',
     lineHeight: 34,
     letterSpacing: -0.5,
-  },
-  orangeText: {
-    color: '#EC673C',
   },
   subheadline: {
     fontSize: 14,
@@ -901,81 +750,57 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
   },
 
-  /* STEP 1 BENEFIT CARDS */
+  /* INTERACTIVE TILES & CARDS */
   cardsList: {
-    gap: 14,
+    gap: 12,
   },
-  infoCard: {
+  interactiveCard: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
-    padding: 18,
-    borderRadius: 22,
-    borderWidth: 1,
+    alignItems: 'center',
+    padding: 16,
+    borderRadius: 20,
   },
-  iconCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 15,
+  iconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 14,
   },
   cardTitle: {
-    fontSize: 16,
-    fontWeight: '800',
-    marginBottom: 4,
+    fontSize: 15,
+    fontWeight: '700',
+    marginBottom: 3,
   },
   cardDesc: {
     fontSize: 12,
     fontWeight: '500',
-    lineHeight: 18,
-  },
-
-  /* STEP 2 CONFIDENCE CARDS */
-  confidenceCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 18,
-    paddingHorizontal: 16,
-    borderRadius: 22,
-  },
-  moodCircle: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 14,
-  },
-  confidenceLabel: {
-    flex: 1,
-    fontSize: 16,
-    fontWeight: '700',
+    lineHeight: 17,
   },
   radioOuter: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
     borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
     alignItems: 'center',
     justifyContent: 'center',
+    marginLeft: 10,
   },
   radioInner: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: '#EC673C',
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
 
   /* STEP 3 GOAL PILLS */
   goalSection: {
-    marginBottom: 14,
+    marginBottom: 18,
   },
   goalSectionTitle: {
     fontSize: 15,
-    fontWeight: '800',
-    marginBottom: 8,
+    fontWeight: '700',
+    marginBottom: 10,
   },
   pillsRow: {
     flexDirection: 'row',
@@ -983,19 +808,18 @@ const styles = StyleSheet.create({
   },
   goalPill: {
     flex: 1,
-    minHeight: 56,
+    minHeight: 54,
     paddingVertical: 10,
     paddingHorizontal: 4,
     borderRadius: 16,
-    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
   },
   goalPillCompact: {
     flex: 1,
-    minHeight: 52,
+    minHeight: 54,
     paddingVertical: 8,
-    paddingHorizontal: 2,
+    paddingHorizontal: 4,
     borderRadius: 14,
     borderWidth: 1,
     alignItems: 'center',
@@ -1003,7 +827,7 @@ const styles = StyleSheet.create({
   },
   questionCountText: {
     fontSize: 18,
-    fontWeight: '900',
+    fontWeight: '800',
   },
   questionSubText: {
     fontSize: 11,
@@ -1011,166 +835,78 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   goalPillText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: '700',
     textAlign: 'center',
-    lineHeight: 18,
   },
-  planSummaryCard: {
+  projectionCard: {
     padding: 16,
     borderRadius: 18,
     borderWidth: 1,
     marginTop: 6,
-    marginBottom: 6,
   },
-  planSummaryHeader: {
-    color: '#EC673C',
-    fontSize: 13,
-    fontWeight: '800',
-    marginBottom: 8,
-  },
-  planSummaryItem: {
+  projectionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 6,
+    marginBottom: 4,
   },
-  planSummaryText: {
+  projectionTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  projectionBody: {
     fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+
+  /* STEP 4 SUMMARY */
+  summaryCard: {
+    padding: 16,
+    borderRadius: 22,
+    borderWidth: 1,
+    gap: 14,
+  },
+  summaryItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  summaryIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  summaryLabel: {
+    fontSize: 11,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  summaryValue: {
+    fontSize: 15,
     fontWeight: '700',
   },
-
-  /* STEP 4 QUIZ */
-  quizWrapper: {
-    flex: 1,
-    width: '100%',
-    justifyContent: 'space-between',
-    paddingVertical: 4,
-  },
-  quizProgressBar: {
-    paddingHorizontal: 8,
-    marginVertical: 4,
-  },
-  quizProgressHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 4,
-  },
-  quizProgressText: {
-    fontSize: 11,
-  },
-  quizProgressTrack: {
-    height: 4,
-    borderRadius: 2,
-    overflow: 'hidden',
-  },
-  quizProgressFill: {
-    height: '100%',
-    backgroundColor: '#EC673C',
-  },
-  equationCenterBox: {
-    flex: 1,
-    justifyContent: 'center',
+  signupPitchBox: {
+    marginTop: 16,
     alignItems: 'center',
-    minHeight: 110,
+    paddingHorizontal: 10,
   },
-  equationText: {
-    fontSize: 48,
-    fontWeight: '900',
-    letterSpacing: 2,
-    marginBottom: 6,
-  },
-  answerInputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 46,
-  },
-  answerText: {
-    fontSize: 44,
-    fontWeight: '900',
-    letterSpacing: 2,
-  },
-  blinkingCursor: {
-    width: 3.5,
-    height: 38,
-    marginLeft: 4,
-    borderRadius: 2,
-  },
-  keypadWrapper: {
-    width: '100%',
-    maxWidth: 420,
-    alignSelf: 'center',
-    paddingTop: 4,
-  },
-
-  /* STEP 5 RESULTS */
-  gaugeContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginVertical: 14,
-  },
-  gaugeCenterText: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  gaugePercent: {
-    fontSize: 38,
-    fontWeight: '900',
-  },
-  gaugeLabel: {
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  resultsCardsRow: {
-    flexDirection: 'row',
-    gap: 14,
-    marginVertical: 12,
-  },
-  resultMiniCard: {
-    flex: 1,
-    alignItems: 'center',
-    paddingVertical: 16,
-    borderRadius: 18,
-  },
-  resultMiniVal: {
-    fontSize: 24,
-    fontWeight: '900',
-    marginBottom: 4,
-  },
-  resultMiniLbl: {
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  saveResultCard: {
-    padding: 18,
-    borderRadius: 20,
-    borderWidth: 1,
-    marginVertical: 10,
-  },
-  saveResultHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginBottom: 6,
-  },
-  saveResultTitle: {
-    color: '#EC673C',
+  pitchHeading: {
     fontSize: 15,
     fontWeight: '800',
+    marginBottom: 4,
+    textAlign: 'center',
   },
-  saveResultSubtitle: {
-    fontSize: 12,
-    fontWeight: '500',
-    lineHeight: 18,
-  },
-  resultEncourageText: {
+  pitchSubheading: {
     fontSize: 13,
     fontWeight: '500',
     textAlign: 'center',
-    lineHeight: 19,
-    paddingHorizontal: 12,
-    marginVertical: 4,
+    lineHeight: 18,
   },
 
   /* FOOTER */
@@ -1179,21 +915,20 @@ const styles = StyleSheet.create({
     paddingTop: 8,
   },
   nextButton: {
-    backgroundColor: '#EC673C',
-    minHeight: 56,
-    borderRadius: 28,
+    height: 60,
+    borderRadius: 30,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#EC673C',
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
+    shadowOpacity: 0.12,
     shadowRadius: 10,
-    elevation: 4,
+    elevation: 3,
   },
   nextButtonText: {
-    color: '#FFFFFF',
     fontSize: 16,
-    fontWeight: '800',
+    fontWeight: '700',
+    letterSpacing: 0.5,
   },
 });

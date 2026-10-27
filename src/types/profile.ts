@@ -1,4 +1,12 @@
 import { OperationType } from '../lib/math/types';
+import { UserGoal } from './settings';
+
+export type FrictionArea =
+  | 'addition'
+  | 'subtraction'
+  | 'multiplication'
+  | 'division'
+  | 'mixed';
 
 /**
  * Normalized training commitment values (stored as numbers, not strings)
@@ -7,11 +15,13 @@ export interface UserTrainingGoals {
   dailyQuestions: number;       // e.g., 5, 10, 20, 30, 50
   sessionDurationMinutes: number; // e.g., 2, 5, 10
   weeklyFrequencyDays: number;   // e.g., 3, 5, 7
+  frictionArea?: FrictionArea;
+  primaryGoal?: UserGoal;
 }
 
 export const DEFAULT_TRAINING_GOALS: UserTrainingGoals = {
   dailyQuestions: 10,
-  sessionDurationMinutes: 5,
+  sessionDurationMinutes: 2,
   weeklyFrequencyDays: 5,
 };
 

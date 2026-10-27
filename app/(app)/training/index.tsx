@@ -211,10 +211,7 @@ export default function TrainingSelectionScreen() {
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar
-          barStyle={isDark ? 'light-content' : 'dark-content'}
-          backgroundColor={screenBg}
-        />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
         <OfflineNotice onRetry={handleRetryConnection} />
       </SafeAreaView>
     );
@@ -222,10 +219,7 @@ export default function TrainingSelectionScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
-      <StatusBar
-        barStyle={isDark ? 'light-content' : 'dark-content'}
-        backgroundColor={screenBg}
-      />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* Header Bar */}
       <View style={styles.header}>

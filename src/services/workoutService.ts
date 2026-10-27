@@ -2,7 +2,8 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../config/supabase";
 import { QuestionAttemptResult, OperationType } from "../lib/math/types";
 
-const PENDING_DEMO_KEY = "@numo_pending_demo_workout";
+const OUTBOX_KEY_PREFIX = "@numo_workout_outbox_v1:";
+const LAST_SUMMARY_KEY_PREFIX = "numo_last_workout_summary_v1:";
 
 export interface WorkoutSessionPayload {
   operation: OperationType;
@@ -27,61 +28,32 @@ export interface WeeklyStats {
   avgTimePerQuestionMs: number;
 }
 
-export interface PendingDemoSession {
+/** Compact snapshot of a finished workout, cached per user for the "vs last workout" comparison. */
+export interface WorkoutSummarySnapshot {
+  accuracy: number;
+  avgTimeSecs: number;
+  correctCount: number;
+  totalQuestions: number;
+  completedAt: string;
+}
+
+/** A finished workout whose save failed, waiting in the per-user offline outbox. */
+interface QueuedWorkout {
+  queueId: string;
   attempts: QuestionAttemptResult[];
   mode: OperationType;
   difficulty: string;
   completedAt: string;
 }
 
-let inMemoryPendingDemo: PendingDemoSession | null = null;
-let isSyncingDemo = false;
-
-export async function setPendingDemoSession(
-  attempts: QuestionAttemptResult[],
-  mode: OperationType = "mixed" as OperationType,
-  difficulty: string = "easy"
-): Promise<void> {
-  const pendingData: PendingDemoSession = {
-    attempts,
-    mode,
-    difficulty,
-    completedAt: new Date().toISOString(),
-  };
-
-  inMemoryPendingDemo = pendingData;
-  try {
-    await AsyncStorage.setItem(PENDING_DEMO_KEY, JSON.stringify(pendingData));
-  } catch (e) {
-    console.warn("Failed to store pending demo session in AsyncStorage:", e);
-  }
-}
-
-export async function getPendingDemoSession(): Promise<PendingDemoSession | null> {
-  if (inMemoryPendingDemo) return inMemoryPendingDemo;
-  try {
-    const raw = await AsyncStorage.getItem(PENDING_DEMO_KEY);
-    return raw ? (JSON.parse(raw) as PendingDemoSession) : null;
-  } catch (e) {
-    console.warn("Failed to retrieve pending demo session:", e);
-    return null;
-  }
-}
-
-export async function clearPendingDemoSession(): Promise<void> {
-  inMemoryPendingDemo = null;
-  try {
-    await AsyncStorage.removeItem(PENDING_DEMO_KEY);
-  } catch (e) {
-    console.warn("Failed to clear pending demo session:", e);
-  }
-}
+const flushingUsers = new Set<string>();
 
 export async function saveWorkoutSession(
   attempts: QuestionAttemptResult[],
   mode: OperationType,
   difficulty: string = "easy",
-  explicitUserId?: string
+  explicitUserId?: string,
+  completedAt?: string
 ): Promise<{ data: WorkoutSessionRecord | null; error: Error | null }> {
   try {
     let targetUserId = explicitUserId;
@@ -121,6 +93,8 @@ export async function saveWorkoutSession(
       accuracy,
       total_time,
       average_time_per_question,
+      // Preserve the real finish time for workouts synced later from the outbox.
+      ...(completedAt ? { completed_at: completedAt } : {}),
     };
 
     const { data, error } = await supabase
@@ -138,44 +112,122 @@ export async function saveWorkoutSession(
   }
 }
 
-export async function syncPendingDemoWorkout(userId: string): Promise<boolean> {
-  if (isSyncingDemo || !userId) return false;
+// -------------------------------------------------------------
+// Offline outbox: workouts whose save failed are retried later
+// -------------------------------------------------------------
+
+async function readOutbox(userId: string): Promise<QueuedWorkout[]> {
+  try {
+    const raw = await AsyncStorage.getItem(OUTBOX_KEY_PREFIX + userId);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    console.warn("Failed to read workout outbox:", e);
+    return [];
+  }
+}
+
+export async function queueWorkoutForSync(
+  userId: string,
+  attempts: QuestionAttemptResult[],
+  mode: OperationType,
+  difficulty: string,
+  completedAt: string
+): Promise<void> {
+  const outbox = await readOutbox(userId);
+  outbox.push({
+    queueId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    attempts,
+    mode,
+    difficulty,
+    completedAt,
+  });
+  await AsyncStorage.setItem(OUTBOX_KEY_PREFIX + userId, JSON.stringify(outbox));
+}
+
+export async function getQueuedWorkoutCount(userId: string): Promise<number> {
+  return (await readOutbox(userId)).length;
+}
+
+/** Tries to save every queued workout. Returns how many were synced. */
+export async function flushWorkoutOutbox(userId: string): Promise<number> {
+  if (!userId || flushingUsers.has(userId)) return 0;
+  flushingUsers.add(userId);
 
   try {
-    isSyncingDemo = true;
-    const pendingSession = await getPendingDemoSession();
+    const queued = await readOutbox(userId);
+    if (queued.length === 0) return 0;
 
-    if (!pendingSession || !pendingSession.attempts || pendingSession.attempts.length === 0) {
-      isSyncingDemo = false;
-      return false;
-    }
-
-    await clearPendingDemoSession();
-
-    const { data, error } = await saveWorkoutSession(
-      pendingSession.attempts,
-      pendingSession.mode,
-      pendingSession.difficulty,
-      userId
-    );
-
-    if (error || !data) {
-      console.warn("Failed to sync pending demo workout to Supabase:", error?.message || error);
-      await setPendingDemoSession(
-        pendingSession.attempts,
-        pendingSession.mode,
-        pendingSession.difficulty
+    const syncedIds = new Set<string>();
+    for (const item of queued) {
+      const { data, error } = await saveWorkoutSession(
+        item.attempts,
+        item.mode,
+        item.difficulty,
+        userId,
+        item.completedAt
       );
-      isSyncingDemo = false;
-      return false;
+      if (error || !data) break; // Still offline; keep the rest queued in order.
+      syncedIds.add(item.queueId);
     }
 
-    isSyncingDemo = false;
-    return true;
+    if (syncedIds.size > 0) {
+      // Re-read so workouts queued while we were flushing aren't dropped.
+      const latest = await readOutbox(userId);
+      const remaining = latest.filter((item) => !syncedIds.has(item.queueId));
+      await AsyncStorage.setItem(OUTBOX_KEY_PREFIX + userId, JSON.stringify(remaining));
+    }
+
+    return syncedIds.size;
   } catch (err) {
-    console.warn("Error during demo workout sync:", err);
-    isSyncingDemo = false;
-    return false;
+    console.warn("Error flushing workout outbox:", err);
+    return 0;
+  } finally {
+    flushingUsers.delete(userId);
+  }
+}
+
+// -------------------------------------------------------------
+// Last-workout summary cache (scoped per user)
+// -------------------------------------------------------------
+
+export function summarizeAttempts(
+  attempts: QuestionAttemptResult[],
+  completedAt: string
+): WorkoutSummarySnapshot {
+  const totalQuestions = attempts.length;
+  const correctCount = attempts.filter((a) => a.isCorrect).length;
+  const totalTimeMs = attempts.reduce((sum, a) => sum + (a.timeTakenMs || 0), 0);
+
+  return {
+    accuracy: totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0,
+    avgTimeSecs:
+      totalQuestions > 0 && totalTimeMs > 0
+        ? parseFloat((totalTimeMs / totalQuestions / 1000).toFixed(1))
+        : 1.8,
+    correctCount,
+    totalQuestions,
+    completedAt,
+  };
+}
+
+export async function getLastWorkoutSummary(userId: string): Promise<WorkoutSummarySnapshot | null> {
+  try {
+    const raw = await AsyncStorage.getItem(LAST_SUMMARY_KEY_PREFIX + userId);
+    return raw ? (JSON.parse(raw) as WorkoutSummarySnapshot) : null;
+  } catch {
+    return null;
+  }
+}
+
+export async function setLastWorkoutSummary(
+  userId: string,
+  summary: WorkoutSummarySnapshot
+): Promise<void> {
+  try {
+    await AsyncStorage.setItem(LAST_SUMMARY_KEY_PREFIX + userId, JSON.stringify(summary));
+  } catch (e) {
+    console.warn("Failed to cache last workout summary:", e);
   }
 }
 

@@ -44,7 +44,7 @@ export default function AppLayout() {
             <Ionicons
               name={focused ? 'home' : 'home-outline'}
               size={24}
-              color={color}
+              color={color as string}
             />
           ),
         }}
@@ -59,7 +59,7 @@ export default function AppLayout() {
             <Ionicons
               name={focused ? 'grid' : 'grid-outline'}
               size={23}
-              color={color}
+              color={color as string}
             />
           ),
         }}
@@ -74,7 +74,7 @@ export default function AppLayout() {
             <Ionicons
               name={focused ? 'stats-chart' : 'stats-chart-outline'}
               size={23}
-              color={color}
+              color={color as string}
             />
           ),
         }}
@@ -89,7 +89,7 @@ export default function AppLayout() {
             <Ionicons
               name={focused ? 'person' : 'person-outline'}
               size={23}
-              color={color}
+              color={color as string}
             />
           ),
         }}
@@ -99,15 +99,9 @@ export default function AppLayout() {
       <Tabs.Screen
         name="settings"
         options={{
-          href: null,
-          tabBarStyle: { display: 'none' },
-        }}
-      />
-
-      <Tabs.Screen
-        name="compete"
-        options={{
-          href: null,
+          // href: null now redirects away from the screen (expo-router SDK 58), so only hide the button.
+          tabBarItemStyle: { display: 'none' },
+          tabBarButton: () => null,
           tabBarStyle: { display: 'none' },
         }}
       />
@@ -115,7 +109,9 @@ export default function AppLayout() {
       <Tabs.Screen
         name="workout"
         options={{
-          href: null,
+          // href: null now redirects away from the screen (expo-router SDK 58), so only hide the button.
+          tabBarItemStyle: { display: 'none' },
+          tabBarButton: () => null,
           tabBarStyle: { display: 'none' },
         }}
       />
@@ -123,7 +119,9 @@ export default function AppLayout() {
       <Tabs.Screen
         name="results"
         options={{
-          href: null,
+          // href: null now redirects away from the screen (expo-router SDK 58), so only hide the button.
+          tabBarItemStyle: { display: 'none' },
+          tabBarButton: () => null,
           tabBarStyle: { display: 'none' },
         }}
       />

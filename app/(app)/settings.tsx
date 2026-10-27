@@ -56,7 +56,6 @@ export default function SettingsScreen() {
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const userId = session?.user?.id;
 
-  // Colors & Palettes
   const screenBg = isDark ? '#0A0F0B' : '#FFFFFF';
   const cardBg = isDark ? '#141C15' : '#FAFAFA';
   const primaryText = isDark ? '#F1ECE9' : '#0A0F0B';
@@ -67,7 +66,6 @@ export default function SettingsScreen() {
   const pinkAccent = '#F2CAEC';
   const redDanger = '#EB5757';
 
-  // High-Contrast Switch Colors
   const switchTrackColor = {
     false: isDark ? 'rgba(255, 255, 255, 0.2)' : '#CBD5E1',
     true: '#34C759',
@@ -76,21 +74,18 @@ export default function SettingsScreen() {
     Platform.OS === 'android' ? (isDark ? '#F1ECE9' : '#FFFFFF') : '#FFFFFF';
   const switchIosBg = isDark ? 'rgba(255, 255, 255, 0.2)' : '#CBD5E1';
 
-  // Local State
   const [loading, setLoading] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   const [remindersEnabled, setRemindersEnabled] = useState(true);
   const [reminderTime, setReminderTime] = useState('08:00 AM');
 
-  // Password Modal State
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
 
-  // Modals & Actions
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
 
@@ -164,7 +159,6 @@ export default function SettingsScreen() {
     }
   };
 
-  // Direct In-App Password Verification & Update
   const handleSaveNewPassword = async () => {
     if (!currentPassword) {
       Alert.alert('Required', 'Please enter your current password.');
@@ -236,26 +230,39 @@ export default function SettingsScreen() {
   const handleDeleteAccount = () => {
     Alert.alert(
       'Delete Account',
-      'This will permanently delete your account, session logs, and accuracy stats. This account could not be undone.',
+      'This will permanently delete your account, session logs, and accuracy stats. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Permanently Delete',
           style: 'destructive',
           onPress: async () => {
+            if (!userId) {
+              Alert.alert('Error', 'No authenticated user session found.');
+              return;
+            }
+
             setIsDeleting(true);
             try {
-              if (userId) {
-                const { error: rpcError } = await supabase.rpc('delete_user');
-                if (rpcError) {
-                  await supabase.from('workout_sessions').delete().eq('user_id', userId);
-                  await supabase.from('profiles').delete().eq('id', userId);
-                }
+              const { error } = await supabase.rpc('delete_user');
+
+              if (error) {
+                throw error;
               }
-              await signOut();
+
+              try {
+                await signOut();
+              } catch {
+                // Auth user is already gone; local sign-out may fail.
+              }
+
               router.replace('/(auth)/welcome' as any);
             } catch (err: any) {
-              Alert.alert('Error', err?.message || 'Could not complete account deletion.');
+              Alert.alert(
+                'Could not delete account',
+                err?.message ||
+                  'Your account was not deleted. You can still sign in. Try again or contact support.'
+              );
             } finally {
               setIsDeleting(false);
             }
@@ -267,9 +274,8 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Header Bar */}
       <View style={[styles.headerRow, { paddingTop: Math.max(insets.top > 0 ? 4 : 12, 8) }]}>
         <TouchableOpacity
           style={[styles.backBtn, { borderColor: borderSubtle }]}
@@ -292,7 +298,6 @@ export default function SettingsScreen() {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.contentWrapper}>
-            {/* 1. Interface & Theme */}
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               INTERFACE & APPEARANCE
             </Text>
@@ -319,7 +324,6 @@ export default function SettingsScreen() {
               </View>
             </View>
 
-            {/* 2. Audio & Haptics */}
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               AUDIO & FEEDBACK
             </Text>
@@ -373,7 +377,6 @@ export default function SettingsScreen() {
               </View>
             </View>
 
-            {/* 3. Daily Reminders */}
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               REMINDERS & TRAINING
             </Text>
@@ -426,7 +429,6 @@ export default function SettingsScreen() {
               )}
             </View>
 
-            {/* 4. Support & Legal */}
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               SUPPORT & LEGAL
             </Text>
@@ -498,7 +500,6 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* 5. Account Security & Danger Zone */}
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               ACCOUNT & SECURITY
             </Text>
@@ -563,7 +564,6 @@ export default function SettingsScreen() {
               </TouchableOpacity>
             </View>
 
-            {/* 6. System Footnote */}
             <View style={styles.footnoteWrapper}>
               <View style={styles.syncRow}>
                 <View style={[styles.syncDot, { backgroundColor: '#22C55E' }]} />
@@ -580,7 +580,6 @@ export default function SettingsScreen() {
         </ScrollView>
       )}
 
-      {/* In-App Change Password Modal */}
       <Modal visible={passwordModalVisible} transparent animationType="slide">
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
@@ -658,7 +657,6 @@ export default function SettingsScreen() {
         </View>
       </Modal>
 
-      {/* Reminder Time Picker Modal */}
       <Modal visible={timePickerVisible} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>

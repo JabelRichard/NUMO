@@ -23,7 +23,7 @@ export function AppSplashScreen() {
 
   return (
     <View style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#E8F872" />
+      <StatusBar barStyle="dark-content" />
       <Animated.View
         style={[
           styles.logoContainer,

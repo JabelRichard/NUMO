@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useEffect, useState } from 'react';
 import { supabase } from '../config/supabase';
 import { AuthContextType, AuthState } from '../types/auth';
-import { syncPendingDemoWorkout } from '../services/workoutService';
+import { flushWorkoutOutbox } from '../services/workoutService';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -30,9 +30,9 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           isLoading: false,
         });
 
-        // Sync pending demo if already logged in or session restored
+        // Retry any workouts that failed to save while offline
         if (session?.user?.id) {
-          await syncPendingDemoWorkout(session.user.id);
+          void flushWorkoutOutbox(session.user.id);
         }
       } catch (err) {
         console.error('Unexpected auth initialization error:', err);
@@ -48,16 +48,20 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
     // 2. Real-time Subscription to Supabase Auth State Changes
     const { data: authListener } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
+      (event, session) => {
         setState({
           session,
           user: session?.user ?? null,
           isLoading: false,
         });
 
-        // Sync pending demo workout as soon as user signs up or logs in
-        if (session?.user?.id && (event === 'SIGNED_IN' || event === 'USER_UPDATED')) {
-          await syncPendingDemoWorkout(session.user.id);
+        // Retry queued workouts on sign-in. Deferred because awaiting Supabase
+        // calls inside onAuthStateChange can deadlock the auth client.
+        const userId = session?.user?.id;
+        if (userId && event === 'SIGNED_IN') {
+          setTimeout(() => {
+            void flushWorkoutOutbox(userId);
+          }, 0);
         }
       }
     );

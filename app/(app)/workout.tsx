@@ -19,9 +19,16 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../src/context/AuthContext';
 import { getUserSettings } from '../../src/services/settingsService';
+import {
+  saveWorkoutSession,
+  queueWorkoutForSync,
+  getLastWorkoutSummary,
+  setLastWorkoutSummary,
+  summarizeAttempts,
+  WorkoutSummarySnapshot,
+} from '../../src/services/workoutService';
 import { CustomNumericKeypad } from '../../src/components/CustomNumericKeypad';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { QuestionGenerator } from '../../src/lib/math/questionGenerator';
@@ -33,16 +40,8 @@ import {
   OperationType,
 } from '../../src/lib/math/types';
 import { useTheme } from '@/src/context/ThemeContext';
-
-const PALETTE = {
-  primary: '#BCE3AA',
-  accentLilac: '#F2CAEC',
-  backgroundLight: '#F1ECE9',
-  dark: '#0A0F0B',
-  white: '#FFFFFF',
-  dangerText: '#EB5757',
-  successText: '#2E7D32',
-};
+import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { PALETTE } from '../../src/constants/palette';
 
 export default function MathWorkoutScreen() {
   const router = useRouter();
@@ -51,10 +50,9 @@ export default function MathWorkoutScreen() {
   const { theme } = useTheme();
   const { session } = useAuth();
 
-  const { mode, difficulty, isDemo, count, sessionKey, reset } = useLocalSearchParams<{
+  const { mode, difficulty, count, sessionKey, reset } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
-    isDemo?: string;
     count?: string;
     sessionKey?: string;
     reset?: string;
@@ -63,27 +61,32 @@ export default function MathWorkoutScreen() {
   const isCompact = height < 720;
   const isNarrow = width < 360;
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
-  const isDemoMode = isDemo === 'true' || mode === 'demo';
 
   const generatorRef = useRef(new QuestionGenerator());
   const isNavigatingRef = useRef(false);
+  const feedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+  // Mirrors attempts.length so async callbacks can tell whether the user has started answering.
+  const answeredCountRef = useRef(0);
+  const [isFinishing, setIsFinishing] = useState(false);
 
-  // Offline connection handling
-  const [isOffline, setIsOffline] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-    });
-    return () => unsubscribe();
+  const clearFeedbackTimeout = useCallback(() => {
+    if (feedbackTimeoutRef.current) {
+      clearTimeout(feedbackTimeoutRef.current);
+      feedbackTimeoutRef.current = null;
+    }
   }, []);
 
-  const handleRetryConnection = async () => {
-    const state = await NetInfo.fetch();
-    const offline = state.isConnected === false || state.isInternetReachable === false;
-    setIsOffline(offline);
-  };
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      clearFeedbackTimeout();
+    };
+  }, [clearFeedbackTimeout]);
+
+  // Offline connection handling
+  const { isOffline, recheck: handleRetryConnection } = useOnlineStatus();
 
   const getNormalizedOperation = (rawMode?: string): OperationType => {
     if (!rawMode) return 'mixed';
@@ -125,7 +128,9 @@ export default function MathWorkoutScreen() {
 
   // Session Reset Routine
   const resetWorkoutSession = useCallback(() => {
+    clearFeedbackTimeout();
     isNavigatingRef.current = false;
+    answeredCountRef.current = 0;
     const parsedCount = count ? parseInt(count, 10) : 10;
     const freshSession = createWorkoutSession(mode, difficulty, parsedCount);
 
@@ -134,28 +139,31 @@ export default function MathWorkoutScreen() {
     setUserAnswer('');
     setFeedback('idle');
     setAttempts([]);
+    setIsFinishing(false);
     questionStartTimeRef.current = Date.now();
-  }, [mode, difficulty, count, createWorkoutSession]);
+  }, [mode, difficulty, count, createWorkoutSession, clearFeedbackTimeout]);
 
   useEffect(() => {
     resetWorkoutSession();
   }, [sessionKey, reset, resetWorkoutSession]);
 
-  // Sync daily goal if authenticated
+  // Sync daily goal if authenticated. Only applied before the first answer so the
+  // question array never changes underneath currentIndex/attempts.
   useEffect(() => {
     let isMounted = true;
 
     async function syncGoal() {
-      if (isDemoMode || count || !session?.user?.id) return;
+      if (count || !session?.user?.id) return;
       try {
         const userSettings = await getUserSettings(session.user.id);
         const goal = userSettings?.daily_question_goal;
-        if (goal && isMounted) {
-          setQuestions((prev) => {
-            if (prev.length === goal) return prev;
-            return createWorkoutSession(mode, difficulty, goal);
-          });
-        }
+        if (!goal || !isMounted || answeredCountRef.current > 0) return;
+
+        setQuestions((prev) => {
+          if (prev.length === goal) return prev;
+          return createWorkoutSession(mode, difficulty, goal);
+        });
+        questionStartTimeRef.current = Date.now();
       } catch {}
     }
 
@@ -164,7 +172,7 @@ export default function MathWorkoutScreen() {
     return () => {
       isMounted = false;
     };
-  }, [session?.user?.id, count, mode, difficulty, isDemoMode, createWorkoutSession]);
+  }, [session?.user?.id, count, mode, difficulty, createWorkoutSession]);
 
   // Animations
   const shakeX = useSharedValue(0);
@@ -192,27 +200,98 @@ export default function MathWorkoutScreen() {
   const accentGreen = PALETTE.primary;
   const trackBg = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
 
+  const quitWorkout = () => {
+    clearFeedbackTimeout();
+    isNavigatingRef.current = true;
+    router.back();
+  };
+
   const handleQuitWorkout = () => {
+    if (isFinishing) return;
     if (Platform.OS === 'web') {
       const confirmQuit = window.confirm(
         'Quit Workout?\nYour progress for this workout will not be saved.'
       );
-      if (confirmQuit) router.back();
+      if (confirmQuit) quitWorkout();
     } else {
       Alert.alert(
         'Quit Workout?',
         'Your progress for this workout will not be saved.',
         [
           { text: 'Keep Practicing', style: 'cancel' },
-          { text: 'Quit', style: 'destructive', onPress: () => router.back() },
+          { text: 'Quit', style: 'destructive', onPress: quitWorkout },
         ],
         { cancelable: true }
       );
     }
   };
 
+  // Single place a workout is persisted. If the save fails it is queued in the
+  // offline outbox and results.tsx tells the user it will sync later.
+  const finishWorkout = async (finalAttempts: QuestionAttemptResult[]) => {
+    setIsFinishing(true);
+
+    const canonicalMode = getNormalizedOperation(mode);
+    const activeDifficulty = difficulty || 'easy';
+    const completedAt = new Date().toISOString();
+    const userId = session?.user?.id;
+
+    let savedSessionId = '';
+    let saveStatus: 'saved' | 'queued' = 'queued';
+    let priorSummary: WorkoutSummarySnapshot | null = null;
+
+    if (userId) {
+      priorSummary = await getLastWorkoutSummary(userId);
+
+      const { data, error } = await saveWorkoutSession(
+        finalAttempts,
+        canonicalMode,
+        activeDifficulty,
+        userId,
+        completedAt
+      );
+
+      if (data && !error) {
+        savedSessionId = data.id;
+        saveStatus = 'saved';
+      } else {
+        try {
+          await queueWorkoutForSync(userId, finalAttempts, canonicalMode, activeDifficulty, completedAt);
+        } catch (e) {
+          console.warn('Failed to queue workout for later sync:', e);
+        }
+      }
+
+      await setLastWorkoutSummary(userId, summarizeAttempts(finalAttempts, completedAt));
+    }
+
+    if (!isMountedRef.current) return;
+
+    const navigationParams = {
+      mode: canonicalMode,
+      difficulty: activeDifficulty,
+      results: JSON.stringify(finalAttempts),
+      savedSessionId,
+      saveStatus,
+      prior: priorSummary ? JSON.stringify(priorSummary) : '',
+      sessionKey: Date.now().toString(),
+    };
+
+    try {
+      router.replace({
+        pathname: '/(app)/results' as any,
+        params: navigationParams,
+      });
+    } catch {
+      router.replace({
+        pathname: '/results' as any,
+        params: navigationParams,
+      });
+    }
+  };
+
   const getOperationDisplayTitle = (): string => {
-    if (isDemoMode) return 'DEMO WORKOUT';
+    if (isFinishing) return 'SAVING WORKOUT…';
     const canonical = getNormalizedOperation(mode);
     switch (canonical) {
       case 'addition':
@@ -272,6 +351,7 @@ export default function MathWorkoutScreen() {
     triggerFeedbackAnimation(attemptResult.isCorrect);
 
     const updatedAttempts = [...attempts, attemptResult];
+    answeredCountRef.current = updatedAttempts.length;
     setAttempts(updatedAttempts);
 
     const isLastQuestion = currentIndex + 1 >= totalQuestions;
@@ -280,7 +360,11 @@ export default function MathWorkoutScreen() {
       isNavigatingRef.current = true;
     }
 
-    setTimeout(() => {
+    clearFeedbackTimeout();
+    feedbackTimeoutRef.current = setTimeout(() => {
+      feedbackTimeoutRef.current = null;
+      if (!isMountedRef.current) return;
+
       setFeedback('idle');
       setUserAnswer('');
 
@@ -288,28 +372,7 @@ export default function MathWorkoutScreen() {
         setCurrentIndex((prev) => prev + 1);
         questionStartTimeRef.current = Date.now();
       } else {
-        const canonicalMode = getNormalizedOperation(mode);
-        const serializedAttempts = JSON.stringify(updatedAttempts);
-
-        const navigationParams = {
-          mode: canonicalMode,
-          difficulty: difficulty || 'easy',
-          isDemo: isDemoMode ? 'true' : 'false',
-          results: serializedAttempts,
-          sessionKey: Date.now().toString(),
-        };
-
-        try {
-          router.replace({
-            pathname: '/(app)/results' as any,
-            params: navigationParams,
-          });
-        } catch {
-          router.replace({
-            pathname: '/results' as any,
-            params: navigationParams,
-          });
-        }
+        finishWorkout(updatedAttempts);
       }
     }, 450);
   };
@@ -335,7 +398,7 @@ export default function MathWorkoutScreen() {
   if (isOffline) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
         <OfflineNotice onRetry={handleRetryConnection} />
       </SafeAreaView>
     );
@@ -344,21 +407,22 @@ export default function MathWorkoutScreen() {
   if (!currentQuestion) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
       </SafeAreaView>
     );
   }
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} backgroundColor={screenBg} />
+      <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* Top Header Group */}
       <View style={styles.topSection}>
         <View style={[styles.header, isNarrow && styles.headerNarrow]}>
           <TouchableOpacity
-            style={[styles.closeButton, { backgroundColor: cardBg }]}
+            style={[styles.closeButton, { backgroundColor: cardBg }, isFinishing && { opacity: 0.4 }]}
             onPress={handleQuitWorkout}
+            disabled={isFinishing}
             activeOpacity={0.7}
           >
             <Ionicons name="close" size={18} color={primaryText} />
@@ -435,7 +499,7 @@ export default function MathWorkoutScreen() {
           onKeyPress={handleKeyPress}
           onDelete={handleDelete}
           onSubmit={handleSubmit}
-          disabled={feedback !== 'idle'}
+          disabled={feedback !== 'idle' || isFinishing}
         />
       </View>
     </SafeAreaView>

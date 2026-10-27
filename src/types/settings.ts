@@ -1,5 +1,13 @@
 // src/types/settings.ts
-export type UserGoal = 'speed' | 'accuracy' | 'mental_math' | 'consistency' | 'balanced';
+export type UserGoal =
+  | 'everyday'
+  | 'memory'
+  | 'career'
+  | 'speed'
+  | 'accuracy'
+  | 'mental_math'
+  | 'consistency'
+  | 'balanced';
 
 export interface UserSettings {
   daily_question_goal: number;
@@ -9,7 +17,7 @@ export interface UserSettings {
 }
 
 export const DEFAULT_USER_SETTINGS: UserSettings = {
-  daily_question_goal: 20,
-  goals: ['balanced'],
+  daily_question_goal: 10,
+  goals: ['speed'],
   has_completed_onboarding: false,
 };

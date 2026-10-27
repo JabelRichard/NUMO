@@ -1,12 +1,10 @@
 import { useTheme } from "@/src/context/ThemeContext";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import NetInfo from "@react-native-community/netinfo";
 import * as Haptics from "expo-haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +32,9 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import { OfflineNotice } from "../../src/components/OfflineNotice";
+import { PALETTE } from "../../src/constants/palette";
+import { useOnlineStatus } from "../../src/hooks/useOnlineStatus";
+import { getInitials } from "../../src/utils/getInitials";
 import { useAuth } from "../../src/context/AuthContext";
 import {
   calculateActivitySummary,
@@ -67,20 +68,6 @@ import {
 
 const { height: SCREEN_HEIGHT } = Dimensions.get("window");
 
-const PALETTE = {
-  primary: "#BCE3AA", // Soft pastel sage
-  accentLilac: "#F2CAEC", // Soft orchid
-  backgroundLight: "#F1ECE9", // Warm neutral
-  dark: "#0A0F0B", // Deep obsidian
-  cardLight: "#FFFFFF",
-  cardDark: "#141C15",
-  borderLight: "rgba(10, 15, 11, 0.08)",
-  borderDark: "rgba(255, 255, 255, 0.08)",
-  textSubtleLight: "rgba(10, 15, 11, 0.55)",
-  textSubtleDark: "rgba(241, 236, 233, 0.65)",
-  danger: "#EB5757",
-};
-
 const QUESTION_OPTIONS = [5, 10, 20, 30, 50];
 const DURATION_OPTIONS = [2, 5, 10];
 const FREQUENCY_OPTIONS = [3, 5, 7];
@@ -111,7 +98,7 @@ export default function ProfileScreen() {
   const accentLilac = PALETTE.accentLilac;
 
   const [loading, setLoading] = useState<boolean>(true);
-  const [isOffline, setIsOffline] = useState<boolean>(false);
+  const { isOffline, setIsOffline, recheck } = useOnlineStatus();
 
   // Profile data
   const [fullName, setFullName] = useState<string>("");
@@ -135,6 +122,12 @@ export default function ProfileScreen() {
   >(null);
 
   const sheetAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+  const editNameVisibleRef = useRef(false);
+  editNameVisibleRef.current = editNameVisible;
+
+  // Primitive deps so a token refresh (new session object) doesn't re-run loadData.
+  const metaFullName: string | undefined = session?.user?.user_metadata?.full_name;
+  const metaAvatarUrl: string | undefined = session?.user?.user_metadata?.avatar_url;
 
   const triggerHaptic = () => {
     try {
@@ -175,9 +168,7 @@ export default function ProfileScreen() {
       return;
     }
 
-    const net = await NetInfo.fetch();
-    if (net.isConnected === false || net.isInternetReachable === false) {
-      setIsOffline(true);
+    if (!(await recheck())) {
       setLoading(false);
       return;
     }
@@ -191,15 +182,12 @@ export default function ProfileScreen() {
           fetchAllWorkouts(userId).catch(() => []),
         ]);
 
-      const name =
-        profileData?.full_name || session?.user?.user_metadata?.full_name || "";
-      const avatar =
-        profileData?.avatar_url ||
-        session?.user?.user_metadata?.avatar_url ||
-        null;
+      const name = profileData?.full_name || metaFullName || "";
+      const avatar = profileData?.avatar_url || metaAvatarUrl || null;
 
       setFullName(name);
-      setNameInput(name);
+      // Don't stomp on what the user is typing in the edit-name sheet.
+      if (!editNameVisibleRef.current) setNameInput(name);
       setAvatarUrl(avatar);
 
       const mergedGoals: UserTrainingGoals = {
@@ -217,12 +205,9 @@ export default function ProfileScreen() {
     } finally {
       setLoading(false);
     }
-  }, [userId, session]);
+  }, [userId, metaFullName, metaAvatarUrl, recheck, setIsOffline]);
 
-  useEffect(() => {
-    loadData();
-  }, [loadData]);
-
+  // useFocusEffect also fires on first mount, so no separate useEffect is needed.
   useFocusEffect(
     useCallback(() => {
       loadData();
@@ -303,7 +288,6 @@ export default function ProfileScreen() {
         setIsUploadingAvatar(true);
         const ext = asset.uri ? asset.uri.split(".").pop() || "jpg" : "jpg";
         const res = await uploadProfileAvatar(userId, asset.base64, ext);
-        setIsUploadingAvatar(false);
 
         if (res.success && res.avatarUrl) {
           setAvatarUrl(res.avatarUrl);
@@ -312,8 +296,9 @@ export default function ProfileScreen() {
         }
       }
     } catch {
-      setIsUploadingAvatar(false);
       Alert.alert("Error", "Could not complete image selection.");
+    } finally {
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -359,13 +344,17 @@ export default function ProfileScreen() {
   const handleRemoveAvatar = async () => {
     if (!userId || !avatarUrl) return;
     setIsUploadingAvatar(true);
-    const res = await removeProfileAvatar(userId);
-    setIsUploadingAvatar(false);
-
-    if (res.success) {
-      setAvatarUrl(null);
-    } else {
-      Alert.alert("Error", res.error || "Failed to remove photo.");
+    try {
+      const res = await removeProfileAvatar(userId);
+      if (res.success) {
+        setAvatarUrl(null);
+      } else {
+        Alert.alert("Error", res.error || "Failed to remove photo.");
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message || "Failed to remove photo.");
+    } finally {
+      setIsUploadingAvatar(false);
     }
   };
 
@@ -414,14 +403,18 @@ export default function ProfileScreen() {
   const handleSaveName = async () => {
     if (!userId || !nameInput.trim()) return;
     setIsSavingName(true);
-    const res = await updateProfileName(userId, nameInput.trim());
-    setIsSavingName(false);
-
-    if (res.success) {
-      setFullName(nameInput.trim());
-      setEditNameVisible(false);
-    } else {
-      Alert.alert("Error", res.error || "Could not update name.");
+    try {
+      const res = await updateProfileName(userId, nameInput.trim());
+      if (res.success) {
+        setFullName(nameInput.trim());
+        setEditNameVisible(false);
+      } else {
+        Alert.alert("Error", res.error || "Could not update name.");
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message || "Could not update name.");
+    } finally {
+      setIsSavingName(false);
     }
   };
 
@@ -434,19 +427,15 @@ export default function ProfileScreen() {
     setGoals(updated);
     closeSheet(() => setGoalSheetType(null));
 
-    await saveTrainingGoals({ [key]: val }, userId);
-    if (key === "dailyQuestions" && userId) {
-      await saveUserSettings(userId, { daily_question_goal: val }).catch(
-        () => {},
-      );
+    try {
+      await saveTrainingGoals({ [key]: val }, userId);
+      if (key === "dailyQuestions" && userId) {
+        const res = await saveUserSettings(userId, { daily_question_goal: val });
+        if (!res.success) throw new Error(res.error);
+      }
+    } catch (err: any) {
+      Alert.alert("Error", err?.message || "Could not save your goal.");
     }
-  };
-
-  const getInitials = (name: string): string => {
-    const parts = name.trim().split(" ").filter(Boolean);
-    if (parts.length === 0) return "N";
-    if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
   if (isOffline) {
@@ -455,10 +444,7 @@ export default function ProfileScreen() {
         style={[styles.safeArea, { backgroundColor: screenBg }]}
         edges={["top", "bottom"]}
       >
-        <StatusBar
-          barStyle={isDark ? "light-content" : "dark-content"}
-          backgroundColor={screenBg}
-        />
+        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         <OfflineNotice onRetry={loadData} isRetrying={loading} />
       </SafeAreaView>
     );
@@ -469,10 +455,7 @@ export default function ProfileScreen() {
       style={[styles.safeArea, { backgroundColor: screenBg }]}
       edges={["top"]}
     >
-      <StatusBar
-        barStyle={isDark ? "light-content" : "dark-content"}
-        backgroundColor={screenBg}
-      />
+      <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
 
       {/* Header Bar */}
       <View
