@@ -19,7 +19,7 @@ export const StatCard: React.FC<StatCardProps> = ({ icon, label, value }) => {
         <Text style={styles.icon}>{icon}</Text>
         <Text style={[styles.value, { color: theme.text }]}>{value}</Text>
       </View>
-      <Text style={[styles.label, { color: theme.muted }]}>{label}</Text>
+      <Text style={[styles.label, { color: theme.subtext }]}>{label}</Text>
     </GlassCard>
   );
 };
@@ -44,7 +44,6 @@ const styles = StyleSheet.create({
   },
   label: {
     ...typography.caption,
-    color: '#666666',
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },

@@ -98,7 +98,7 @@ useEffect(() => {
           { backgroundColor: theme.card, color: theme.text, borderColor: theme.border },
         ]}
         placeholder="123456"
-        placeholderTextColor={theme.muted}
+        placeholderTextColor={theme.subtext}
         keyboardType="number-pad"
         maxLength={6}
         value={token}

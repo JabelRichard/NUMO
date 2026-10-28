@@ -67,10 +67,12 @@ import {
 } from "../../src/services/workoutService";
 import {
   ComfortLevel,
+  comfortToDifficulty,
   DEFAULT_TRAINING_GOALS,
   FrictionArea,
   UserTrainingGoals,
 } from "../../src/types/profile";
+import { LEVEL_NAMES } from "../../src/lib/coach";
 import {
   formatDurationGoal,
   formatFrequencyGoal,
@@ -96,11 +98,19 @@ const NOT_SET = "Not set";
 
 // Lifetime-question thresholds for each rank, lowest first.
 const RANKS: { min: number; title: string; icon: IoniconName }[] = [
-  { min: 0, title: "Apprentice", icon: "school-outline" },
-  { min: 150, title: "Practitioner", icon: "bar-chart-outline" },
-  { min: 500, title: "Mental Calculist", icon: "sparkles" },
-  { min: 1000, title: "Grandmaster", icon: "flash" },
+  { min: 0, title: "Beginner", icon: "school-outline" },
+  { min: 150, title: "Quick Thinker", icon: "bar-chart-outline" },
+  { min: 500, title: "Number Ninja", icon: "sparkles" },
+  { min: 1000, title: "Math Master", icon: "flash" },
 ];
+
+const SAVE_ERROR_MESSAGE = "Couldn't save your changes. Please try again.";
+
+// Users get one friendly message; the technical error goes to the log.
+function showSaveError(what: string, error: unknown) {
+  console.warn(`Profile save failed (${what}):`, error);
+  Alert.alert(SAVE_ERROR_MESSAGE);
+}
 
 type SheetType = "duration" | "frequency" | "focus" | "workingOn" | "level";
 
@@ -140,9 +150,7 @@ export default function ProfileScreen() {
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
   const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
-  const secondaryText = isDark
-    ? PALETTE.textSubtleDark
-    : PALETTE.textSecondaryLight;
+  const secondaryText = theme.subtext;
   const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
   const fillBg = isDark ? PALETTE.fillDark : PALETTE.fillLight;
   // One sage accent, same as Home, Workout, Settings and Onboarding.
@@ -341,7 +349,7 @@ export default function ProfileScreen() {
       if (!result.canceled && result.assets && result.assets.length > 0) {
         const asset = result.assets[0];
         if (!asset.base64) {
-          Alert.alert("Upload Error", "Could not process the selected image.");
+          showSaveError("photo", "Picked image has no base64 data");
           return;
         }
 
@@ -352,11 +360,11 @@ export default function ProfileScreen() {
         if (res.success && res.avatarUrl) {
           setAvatarUrl(res.avatarUrl);
         } else {
-          Alert.alert("Upload Error", res.error || "Failed to upload photo.");
+          showSaveError("photo", res.error);
         }
       }
-    } catch {
-      Alert.alert("Error", "Could not complete image selection.");
+    } catch (err) {
+      showSaveError("photo", err);
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -409,10 +417,10 @@ export default function ProfileScreen() {
       if (res.success) {
         setAvatarUrl(null);
       } else {
-        Alert.alert("Error", res.error || "Failed to remove photo.");
+        showSaveError("remove photo", res.error);
       }
-    } catch (err: any) {
-      Alert.alert("Error", err?.message || "Failed to remove photo.");
+    } catch (err) {
+      showSaveError("remove photo", err);
     } finally {
       setIsUploadingAvatar(false);
     }
@@ -480,10 +488,10 @@ export default function ProfileScreen() {
         setFullName(trimmedName);
         setEditNameVisible(false);
       } else {
-        Alert.alert("Error", res.error || "Could not update name.");
+        showSaveError("name", res.error);
       }
-    } catch (err: any) {
-      Alert.alert("Error", err?.message || "Could not update name.");
+    } catch (err) {
+      showSaveError("name", err);
     } finally {
       setIsSavingName(false);
     }
@@ -496,8 +504,7 @@ export default function ProfileScreen() {
 
     try {
       await saveTrainingGoals(changes, userId);
-    } catch (err: any) {
-      console.warn("Goal save failed:", err);
+    } catch (err) {
       // Only roll back the fields this change touched.
       const rollback = Object.fromEntries(
         Object.keys(changes).map((key) => [
@@ -506,12 +513,7 @@ export default function ProfileScreen() {
         ]),
       ) as Partial<UserTrainingGoals>;
       setGoals((g) => ({ ...g, ...rollback }));
-      Alert.alert(
-        "Couldn't save your change",
-        isOffline
-          ? "You're offline. Connect to the internet and try again."
-          : err?.message || "Please try again.",
-      );
+      showSaveError(Object.keys(changes).join(", "), err);
     }
   };
 
@@ -553,8 +555,24 @@ export default function ProfileScreen() {
   const handleSelectFocus = (id: OnboardingPrimaryGoal) =>
     selectAndClose({ primaryGoal: id }, id === goals.primaryGoal);
 
-  const handleSelectLevel = (id: ComfortLevel) =>
-    selectAndClose({ comfortLevel: id }, id === goals.comfortLevel);
+  // A new Level restarts every operation's coach level, so ask first.
+  const handleSelectLevel = (id: ComfortLevel) => {
+    if (id === goals.comfortLevel) {
+      selectAndClose({ comfortLevel: id }, true);
+      return;
+    }
+    const message = `This will set all your operations to ${LEVEL_NAMES[comfortToDifficulty(id)]}. Continue?`;
+    const confirm = () => selectAndClose({ comfortLevel: id }, false);
+
+    if (Platform.OS === "web") {
+      if (window.confirm(message)) confirm();
+      return;
+    }
+    Alert.alert("Change your level?", message, [
+      { text: "Cancel", style: "cancel" },
+      { text: "Continue", onPress: confirm },
+    ]);
+  };
 
   const toggleDraftArea = (id: FrictionArea) => {
     triggerHaptic();

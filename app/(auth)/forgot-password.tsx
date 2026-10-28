@@ -62,11 +62,11 @@ export default function ForgotPasswordScreen() {
       {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
 
       <View style={[styles.inputWrapper, { backgroundColor: theme.card, borderColor: theme.border }]}>
-        <Ionicons name="mail-outline" size={18} color={theme.muted} style={styles.fieldIcon} />
+        <Ionicons name="mail-outline" size={18} color={theme.subtext} style={styles.fieldIcon} />
         <TextInput
           style={[styles.input, { color: theme.text }]}
           placeholder="Enter your email"
-          placeholderTextColor={theme.muted}
+          placeholderTextColor={theme.subtext}
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}

@@ -26,7 +26,7 @@ export function OfflineNotice({ onRetry, isRetrying = false }: OfflineNoticeProp
 
   const screenBg = isDark ? '#0A0F0B' : '#F1ECE9';
   const textColor = theme.text;
-  const textSubtle = theme.muted;
+  const textSubtle = theme.subtext;
   const accentGreen = '#BCE3AA';
   const bottomBarPadding = Math.max(insets.bottom, 16) + 85;
 

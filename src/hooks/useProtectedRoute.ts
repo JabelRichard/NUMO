@@ -3,7 +3,6 @@ import { useRouter, useSegments } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
 import { getUserSettings, saveUserSettings } from '../services/settingsService';
-import { supabase } from '../config/supabase';
 
 export function useProtectedRoute(isSplashDone: boolean = true) {
   const { session, isLoading } = useAuth();
@@ -17,18 +16,12 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
 
     const inAuthGroup = segments[0] === '(auth)';
     const isOnboarding = (segments as string[]).includes('onboarding');
-    const currentPath = segments.join('/');
-
-    const isDemoAccessibleRoute =
-      currentPath.includes('training') ||
-      currentPath.includes('workout') ||
-      currentPath.includes('results');
 
     async function evaluateRouting() {
       try {
         if (!session) {
           // Guest user trying to access main app
-          if (!inAuthGroup && !isDemoAccessibleRoute) {
+          if (!inAuthGroup) {
             isNavigatingRef.current = true;
             router.replace('/(auth)/welcome');
           }
@@ -39,7 +32,7 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
           const draftStr = await AsyncStorage.getItem('@numo_onboarding_draft');
           if (draftStr) {
             try {
-              const { settings, session: baselineSession } = JSON.parse(draftStr);
+              const { settings } = JSON.parse(draftStr);
 
               // Update profiles table using your existing service
               await saveUserSettings(userId, {
@@ -51,20 +44,6 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
                 friction_areas: settings?.friction_areas,
                 friction_area: settings?.friction_area,
               });
-
-              // Insert baseline workout stats into workout_sessions
-              if (baselineSession) {
-                await supabase.from('workout_sessions').insert({
-                  user_id: userId,
-                  operations: baselineSession.operations,
-                  difficuty: baselineSession.difficuty,
-                  total_questions: baselineSession.total_questions,
-                  correct_answers: baselineSession.correct_answers,
-                  incorrect_answers: baselineSession.incorrect_answers,
-                  accuracy: baselineSession.accuracy,
-                  avarage_time_per_question: baselineSession.avarage_time_per_question,
-                });
-              }
 
               await AsyncStorage.removeItem('@numo_onboarding_draft');
               await AsyncStorage.setItem('@numo_onboarding_completed', 'true');

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -22,14 +22,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
 import { getUserSettings } from '../../src/services/settingsService';
-import {
-  saveWorkoutSession,
-  queueWorkoutForSync,
-  getLastWorkoutSummary,
-  setLastWorkoutSummary,
-  summarizeAttempts,
-  WorkoutSummarySnapshot,
-} from '../../src/services/workoutService';
+import { saveWorkoutSession, queueWorkoutForSync } from '../../src/services/workoutService';
 import { CustomNumericKeypad } from '../../src/components/CustomNumericKeypad';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { QuestionGenerator } from '../../src/lib/math/questionGenerator';
@@ -38,8 +31,8 @@ import {
   MathQuestion,
   QuestionAttemptResult,
   FeedbackState,
-  OperationType,
 } from '../../src/lib/math/types';
+import { fromWorkoutParams, mainDifficulty, workoutTitle } from '../../src/lib/coach';
 import { useTheme } from '@/src/context/ThemeContext';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { PALETTE } from '../../src/constants/palette';
@@ -51,13 +44,23 @@ export default function MathWorkoutScreen() {
   const { theme } = useTheme();
   const { session } = useAuth();
 
-  const { mode, difficulty, count, sessionKey, reset } = useLocalSearchParams<{
+  const { mode, difficulty, count, ops, levels, source, kind, sessionKey, reset } = useLocalSearchParams<{
     mode?: string;
     difficulty?: string;
     count?: string;
+    ops?: string;
+    levels?: string;
+    source?: string;
+    kind?: string;
     sessionKey?: string;
     reset?: string;
   }>();
+
+  // What the coach (or the user) asked for: operations, a level per operation, count and source.
+  const request = useMemo(
+    () => fromWorkoutParams({ mode, difficulty, count, ops, levels, source, kind }),
+    [mode, difficulty, count, ops, levels, source, kind]
+  );
 
   const isCompact = height < 720;
   const isNarrow = width < 360;
@@ -89,37 +92,18 @@ export default function MathWorkoutScreen() {
   // Offline connection handling
   const { isOffline, recheck: handleRetryConnection } = useOnlineStatus();
 
-  const getNormalizedOperation = (rawMode?: string): OperationType => {
-    if (!rawMode) return 'mixed';
-    const lower = rawMode.toLowerCase().trim();
-    if (lower === 'adaptive_mix' || lower === 'mixed') return 'mixed';
-    if (['addition', 'subtraction', 'multiplication', 'division'].includes(lower)) {
-      return lower as OperationType;
-    }
-    return 'mixed';
-  };
-
-  const createWorkoutSession = useCallback((
-    targetMode?: string,
-    targetDiff?: string,
-    targetCount?: number
-  ): MathQuestion[] => {
-    const activeMode = getNormalizedOperation(targetMode);
-    const activeDifficulty =
-      targetDiff === 'medium' || targetDiff === 'hard' ? targetDiff : 'easy';
-    const sessionCount = targetCount || 10;
-
+  const createWorkoutSession = useCallback((targetCount?: number): MathQuestion[] => {
     return generatorRef.current.generateSession({
-      operation: activeMode,
-      difficulty: activeDifficulty,
-      questionCount: sessionCount,
+      operation: request.operation,
+      operations: request.operations,
+      difficulty: mainDifficulty(request),
+      difficultyByOperation: request.difficultyByOperation,
+      questionCount: targetCount || request.questionCount || 10,
     });
-  }, []);
+  }, [request]);
 
   // Workout state
-  const [questions, setQuestions] = useState<MathQuestion[]>(() =>
-    createWorkoutSession(mode, difficulty, count ? parseInt(count, 10) : undefined)
-  );
+  const [questions, setQuestions] = useState<MathQuestion[]>(() => createWorkoutSession());
   const [currentIndex, setCurrentIndex] = useState(0);
   const [userAnswer, setUserAnswer] = useState('');
   const [feedback, setFeedback] = useState<FeedbackState>('idle');
@@ -132,8 +116,7 @@ export default function MathWorkoutScreen() {
     clearFeedbackTimeout();
     isNavigatingRef.current = false;
     answeredCountRef.current = 0;
-    const parsedCount = count ? parseInt(count, 10) : 10;
-    const freshSession = createWorkoutSession(mode, difficulty, parsedCount);
+    const freshSession = createWorkoutSession();
 
     setQuestions(freshSession);
     setCurrentIndex(0);
@@ -142,7 +125,7 @@ export default function MathWorkoutScreen() {
     setAttempts([]);
     setIsFinishing(false);
     questionStartTimeRef.current = Date.now();
-  }, [mode, difficulty, count, createWorkoutSession, clearFeedbackTimeout]);
+  }, [createWorkoutSession, clearFeedbackTimeout]);
 
   useEffect(() => {
     resetWorkoutSession();
@@ -162,7 +145,7 @@ export default function MathWorkoutScreen() {
 
         setQuestions((prev) => {
           if (prev.length === goal) return prev;
-          return createWorkoutSession(mode, difficulty, goal);
+          return createWorkoutSession(goal);
         });
         questionStartTimeRef.current = Date.now();
       } catch {}
@@ -173,7 +156,7 @@ export default function MathWorkoutScreen() {
     return () => {
       isMounted = false;
     };
-  }, [session?.user?.id, count, mode, difficulty, createWorkoutSession]);
+  }, [session?.user?.id, count, createWorkoutSession]);
 
   // Animations
   const shakeX = useSharedValue(0);
@@ -196,7 +179,7 @@ export default function MathWorkoutScreen() {
 
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
-  const secondaryText = isDark ? 'rgba(241, 236, 233, 0.65)' : 'rgba(10, 15, 11, 0.55)';
+  const secondaryText = theme.subtext;
   const cardBg = isDark ? '#141C15' : PALETTE.white;
   const accentGreen = PALETTE.primary;
   const trackBg = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
@@ -232,24 +215,22 @@ export default function MathWorkoutScreen() {
   const finishWorkout = async (finalAttempts: QuestionAttemptResult[]) => {
     setIsFinishing(true);
 
-    const canonicalMode = getNormalizedOperation(mode);
-    const activeDifficulty = difficulty || 'easy';
+    const canonicalMode = request.operation;
+    const activeDifficulty = mainDifficulty(request);
     const completedAt = new Date().toISOString();
     const userId = session?.user?.id;
 
     let savedSessionId = '';
     let saveStatus: 'saved' | 'queued' = 'queued';
-    let priorSummary: WorkoutSummarySnapshot | null = null;
 
     if (userId) {
-      priorSummary = await getLastWorkoutSummary(userId);
-
       const { data, error } = await saveWorkoutSession(
         finalAttempts,
         canonicalMode,
         activeDifficulty,
         userId,
-        completedAt
+        completedAt,
+        request.source
       );
 
       if (data && !error) {
@@ -257,13 +238,11 @@ export default function MathWorkoutScreen() {
         saveStatus = 'saved';
       } else {
         try {
-          await queueWorkoutForSync(userId, finalAttempts, canonicalMode, activeDifficulty, completedAt);
+          await queueWorkoutForSync(userId, finalAttempts, canonicalMode, activeDifficulty, completedAt, request.source);
         } catch (e) {
           console.warn('Failed to queue workout for later sync:', e);
         }
       }
-
-      await setLastWorkoutSummary(userId, summarizeAttempts(finalAttempts, completedAt));
     }
 
     if (!isMountedRef.current) return;
@@ -271,10 +250,11 @@ export default function MathWorkoutScreen() {
     const navigationParams = {
       mode: canonicalMode,
       difficulty: activeDifficulty,
+      source: request.source,
+      completedAt,
       results: JSON.stringify(finalAttempts),
       savedSessionId,
       saveStatus,
-      prior: priorSummary ? JSON.stringify(priorSummary) : '',
       sessionKey: Date.now().toString(),
     };
 
@@ -291,22 +271,10 @@ export default function MathWorkoutScreen() {
     }
   };
 
+  // "Warm-up · 10 questions", "× Multiplying · Medium", "Mix it up".
   const getOperationDisplayTitle = (): string => {
-    if (isFinishing) return 'SAVING WORKOUT…';
-    const canonical = getNormalizedOperation(mode);
-    switch (canonical) {
-      case 'addition':
-        return 'ADDITION';
-      case 'subtraction':
-        return 'SUBTRACTION';
-      case 'multiplication':
-        return 'MULTIPLICATION';
-      case 'division':
-        return 'DIVISION';
-      case 'mixed':
-      default:
-        return 'MIXED CHALLENGE';
-    }
+    if (isFinishing) return 'Saving workout…';
+    return workoutTitle(request, questions.length);
   };
 
   const triggerFeedbackAnimation = (isCorrect: boolean) => {
@@ -586,7 +554,7 @@ const styles = StyleSheet.create({
   operationTitle: {
     ...typography.caption,
     textAlign: 'center',
-    letterSpacing: 1.5,
+    letterSpacing: 0.3,
     marginTop: 10,
   },
   operationTitleCompact: {

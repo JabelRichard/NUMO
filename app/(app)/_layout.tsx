@@ -14,7 +14,7 @@ export default function AppLayout() {
 
   const barBackground = isDark ? '#0A0F0B' : '#FFFFFF';
   const activeColor = isDark ? '#FFFFFF' : '#000000';
-  const inactiveColor = isDark ? 'rgba(255, 255, 255, 0.45)' : '#8E8E93';
+  const inactiveColor = theme.subtext;
   const borderTopColor = isDark ? 'rgba(255, 255, 255, 0.1)' : 'rgba(0, 0, 0, 0.08)';
 
   return (
@@ -51,11 +51,11 @@ export default function AppLayout() {
         }}
       />
 
-      {/* 2. Workout / Training */}
+      {/* 2. Practice (Training) */}
       <Tabs.Screen
         name="training/index"
         options={{
-          title: 'Workout',
+          title: 'Practice',
           tabBarIcon: ({ color, focused }) => (
             <Ionicons
               name={focused ? 'grid' : 'grid-outline'}

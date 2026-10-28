@@ -175,7 +175,7 @@ export default function LoginScreen() {
                   <Ionicons
                     name="mail-outline"
                     size={20}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
@@ -185,7 +185,7 @@ export default function LoginScreen() {
                       isCompact && styles.inputCompact,
                     ]}
                     placeholder="Enter your email"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     value={email}
                     onChangeText={(val) => {
                       setEmail(val);
@@ -210,7 +210,7 @@ export default function LoginScreen() {
                   <Ionicons
                     name="lock-closed-outline"
                     size={20}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
@@ -221,7 +221,7 @@ export default function LoginScreen() {
                       isCompact && styles.inputCompact,
                     ]}
                     placeholder="Enter your password"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     secureTextEntry={!showPassword}
                     value={password}
                     onChangeText={(val) => {
@@ -237,7 +237,7 @@ export default function LoginScreen() {
                     <Ionicons
                       name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                       size={20}
-                      color={theme.muted}
+                      color={theme.subtext}
                     />
                   </TouchableOpacity>
                 </View>
@@ -355,7 +355,6 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     ...typography.secondary,
-    color: '#636366',
     marginTop: 4,
     textAlign: 'center',
     paddingHorizontal: 12,
@@ -484,7 +483,6 @@ const styles = StyleSheet.create({
   },
   footerText: {
     ...typography.secondary,
-    color: '#636366',
   },
   linkText: {
     ...typography.secondary,

@@ -1,5 +1,3 @@
-export type WorkoutMode = 'normal' | 'demo';
-
 export type FeedbackState = 'idle' | 'correct' | 'incorrect';
 
 export interface MathQuestion {
@@ -26,5 +24,4 @@ export interface WorkoutResultData {
   avgTimePerQuestionMs: number;
   results: QuestionResult[];
   completedAt: string;
-  isDemo?: boolean;
 }

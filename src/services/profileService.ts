@@ -12,8 +12,10 @@ import {
 } from '../types/profile';
 import { normalizePrimaryGoal } from '../utils/onboardingDraft';
 
+export const TRAINING_GOALS_KEY = '@numo_user_training_goals';
+
 const STORAGE_KEYS = {
-  TRAINING_GOALS: '@numo_user_training_goals',
+  TRAINING_GOALS: TRAINING_GOALS_KEY,
 };
 
 const PROFILE_GOAL_COLUMNS =
@@ -101,7 +103,11 @@ function toProfileColumns(goals: Partial<UserTrainingGoals>): Record<string, unk
   if (goals.weeklyFrequencyDays !== undefined) columns.weekly_frequency_days = goals.weeklyFrequencyDays;
   if (goals.frictionAreas !== undefined) columns.friction_areas = goals.frictionAreas;
   if (goals.frictionArea !== undefined) columns.friction_area = goals.frictionArea;
-  if (goals.comfortLevel !== undefined) columns.comfort_level = goals.comfortLevel;
+  if (goals.comfortLevel !== undefined) {
+    columns.comfort_level = goals.comfortLevel;
+    // The coach restarts every operation from the new Level, ignoring older workouts.
+    columns.level_set_at = new Date().toISOString();
+  }
   if (goals.primaryGoal !== undefined) columns.goals = [goals.primaryGoal];
   return columns;
 }

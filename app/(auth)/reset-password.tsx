@@ -104,7 +104,7 @@ export default function ResetPasswordScreen() {
       <TextInput
         style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border, letterSpacing: 6 }]}
         placeholder="123456"
-        placeholderTextColor={theme.muted}
+        placeholderTextColor={theme.subtext}
         keyboardType="number-pad"
         maxLength={6}
         value={token}
@@ -118,7 +118,7 @@ export default function ResetPasswordScreen() {
       <TextInput
         style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
         placeholder="New password"
-        placeholderTextColor={theme.muted}
+        placeholderTextColor={theme.subtext}
         secureTextEntry
         value={newPassword}
         onChangeText={(val) => {
@@ -130,7 +130,7 @@ export default function ResetPasswordScreen() {
       <TextInput
         style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
         placeholder="Confirm new password"
-        placeholderTextColor={theme.muted}
+        placeholderTextColor={theme.subtext}
         secureTextEntry
         value={confirmPassword}
         onChangeText={(val) => {

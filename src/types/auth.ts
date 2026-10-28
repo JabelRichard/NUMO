@@ -14,5 +14,6 @@ export interface AuthContextType extends AuthState {
   resetPasswordForEmail: (email: string) => Promise<{ data?: any; error: any }>;
   verifyPasswordResetOtp: (email: string, token: string) => Promise<{ data?: any; error: any }>;
   updateUserPassword: (newPassword: string) => Promise<{ data?: any; error: any }>;
-  signOut: () => Promise<void>;
+  /** Also clears this person's data from the phone; unsynced workouts are kept unless discardUnsynced. */
+  signOut: (options?: { discardUnsynced?: boolean }) => Promise<void>;
 }

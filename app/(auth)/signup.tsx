@@ -12,7 +12,7 @@ import {
   StatusBar,
   useWindowDimensions,
 } from 'react-native';
-import { useRouter, useLocalSearchParams } from 'expo-router';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '../../src/context/AuthContext';
@@ -27,11 +27,9 @@ export default function SignupScreen() {
   const { height, width } = useWindowDimensions();
   const { signUp } = useAuth();
   const { theme } = useTheme();
-  const { source, fromDemo } = useLocalSearchParams<{ source?: string; fromDemo?: string }>();
 
   const isCompact = height < 720;
   const isNarrow = width < 360;
-  const isFromDemo = source === 'demo' || fromDemo === 'true';
 
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -176,14 +174,12 @@ export default function SignupScreen() {
             {/* Header */}
             <View style={[styles.header, isCompact && styles.headerCompact]}>
               <Text style={[styles.title, { color: theme.text }, isCompact && styles.titleCompact]}>
-                {isFromDemo ? 'Save your progress' : 'Create your account'}
+                Create your account
               </Text>
               <Text
                 style={[styles.subtitle, { color: theme.subtext }, isCompact && styles.subtitleCompact]}
               >
-                {isFromDemo
-                  ? 'Create a free account to keep your results, track your progress, and build your streak.'
-                  : 'Save your progress and keep improving every day.'}
+                Save your progress and keep improving every day.
               </Text>
             </View>
 
@@ -222,13 +218,13 @@ export default function SignupScreen() {
                   <Ionicons
                     name="person-outline"
                     size={18}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
                     style={[styles.input, { color: theme.text }, isCompact && styles.inputCompact]}
                     placeholder="Enter your full name"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     value={fullName}
                     onChangeText={(val) => {
                       setFullName(val);
@@ -251,13 +247,13 @@ export default function SignupScreen() {
                   <Ionicons
                     name="mail-outline"
                     size={18}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
                     style={[styles.input, { color: theme.text }, isCompact && styles.inputCompact]}
                     placeholder="Enter your email"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     value={email}
                     onChangeText={(val) => {
                       setEmail(val);
@@ -282,7 +278,7 @@ export default function SignupScreen() {
                   <Ionicons
                     name="lock-closed-outline"
                     size={18}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
@@ -293,7 +289,7 @@ export default function SignupScreen() {
                       isCompact && styles.inputCompact,
                     ]}
                     placeholder="Create a password"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     secureTextEntry={!showPassword}
                     value={password}
                     onChangeText={(val) => {
@@ -309,7 +305,7 @@ export default function SignupScreen() {
                     <Ionicons
                       name={showPassword ? 'eye-off-outline' : 'eye-outline'}
                       size={18}
-                      color={theme.muted}
+                      color={theme.subtext}
                     />
                   </TouchableOpacity>
                 </View>
@@ -358,7 +354,7 @@ export default function SignupScreen() {
                   <Ionicons
                     name="lock-closed-outline"
                     size={18}
-                    color={theme.muted}
+                    color={theme.subtext}
                     style={styles.fieldIcon}
                   />
                   <TextInput
@@ -369,7 +365,7 @@ export default function SignupScreen() {
                       isCompact && styles.inputCompact,
                     ]}
                     placeholder="Confirm your password"
-                    placeholderTextColor={theme.muted}
+                    placeholderTextColor={theme.subtext}
                     secureTextEntry={!showConfirmPassword}
                     value={confirmPassword}
                     onChangeText={(val) => {
@@ -385,7 +381,7 @@ export default function SignupScreen() {
                     <Ionicons
                       name={showConfirmPassword ? 'eye-off-outline' : 'eye-outline'}
                       size={18}
-                      color={theme.muted}
+                      color={theme.subtext}
                     />
                   </TouchableOpacity>
                 </View>
@@ -489,7 +485,6 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     ...typography.secondary,
-    color: '#636366',
     marginTop: 4,
     textAlign: 'center',
     paddingHorizontal: 12,
@@ -631,7 +626,6 @@ const styles = StyleSheet.create({
   },
   footerText: {
     ...typography.secondary,
-    color: '#636366',
   },
   linkText: {
     ...typography.secondary,

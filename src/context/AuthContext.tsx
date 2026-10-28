@@ -1,7 +1,8 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { supabase } from '../config/supabase';
 import { AuthContextType, AuthState } from '../types/auth';
 import { flushWorkoutOutbox } from '../services/workoutService';
+import { clearLocalUserData } from '../services/localDataService';
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
@@ -11,6 +12,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     session: null,
     isLoading: true,
   });
+  // Who was signed in, so their data can be cleared when the session ends.
+  const lastUserIdRef = useRef<string | null>(null);
 
   useEffect(() => {
     // 1. Initial Session Check (on App Launch / Restart)
@@ -29,6 +32,7 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
           user: session?.user ?? null,
           isLoading: false,
         });
+        lastUserIdRef.current = session?.user?.id ?? null;
 
         // Retry any workouts that failed to save while offline
         if (session?.user?.id) {
@@ -63,6 +67,16 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             void flushWorkoutOutbox(userId);
           }, 0);
         }
+
+        // However the session ended (sign-out, expired session), clear that
+        // person's data from the phone. Unsynced workouts are kept.
+        const previousUserId = lastUserIdRef.current;
+        if (event === 'SIGNED_OUT' && previousUserId) {
+          setTimeout(() => {
+            void clearLocalUserData(previousUserId);
+          }, 0);
+        }
+        lastUserIdRef.current = userId ?? null;
       }
     );
 
@@ -139,9 +153,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
     return { data, error };
   };
 
-  // Logout Function
-  const signOut = async () => {
-    await supabase.auth.signOut();
+  // Logout Function. Clears this person's data from the phone; unsynced workouts
+  // are kept unless discardUnsynced is set (e.g. the account was deleted).
+  const signOut = async (options?: { discardUnsynced?: boolean }) => {
+    const userId = state.session?.user?.id ?? lastUserIdRef.current;
+    try {
+      await supabase.auth.signOut();
+    } finally {
+      if (userId) await clearLocalUserData(userId, options);
+    }
   };
 
   return (

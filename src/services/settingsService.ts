@@ -43,7 +43,7 @@ export async function getUserSettings(userId: string): Promise<UserSettings | nu
   const { data, error } = await supabase
     .from('profiles')
     .select(
-      'daily_question_goal, session_duration_minutes, weekly_frequency_days, goals, has_completed_onboarding, comfort_level, friction_areas, friction_area'
+      'daily_question_goal, session_duration_minutes, weekly_frequency_days, goals, has_completed_onboarding, comfort_level, friction_areas, friction_area, level_set_at'
     )
     .eq('id', userId)
     .single();
@@ -66,6 +66,7 @@ export async function getUserSettings(userId: string): Promise<UserSettings | nu
       ? [data.friction_area]
       : null,
     friction_area: data.friction_area ?? null,
+    level_set_at: data.level_set_at ?? null,
   };
 }
 

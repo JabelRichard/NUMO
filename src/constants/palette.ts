@@ -13,9 +13,10 @@ export const PALETTE = {
   cardDark: '#141C15',
   borderLight: 'rgba(10, 15, 11, 0.08)',
   borderDark: 'rgba(255, 255, 255, 0.08)',
-  textSubtleLight: 'rgba(10, 15, 11, 0.55)',
-  textSubtleDark: 'rgba(241, 236, 233, 0.65)',
-  textSecondaryLight: 'rgba(10, 15, 11, 0.66)', // Secondary text that must pass 4.5:1 on light cards and backgrounds
+  // The one secondary-text gray for the whole app (labels, hints, placeholders, inactive tabs).
+  // Both pass 4.5:1 on every card and background they sit on.
+  textSecondaryLight: 'rgba(10, 15, 11, 0.66)',
+  textSecondaryDark: 'rgba(241, 236, 233, 0.65)',
   fillLight: 'rgba(10, 15, 11, 0.05)', // Progress tracks, option rows, inputs (light)
   fillDark: 'rgba(255, 255, 255, 0.07)', // Progress tracks, option rows, inputs (dark)
   scrim: 'rgba(0, 0, 0, 0.6)', // Behind bottom sheets, modals and loading overlays

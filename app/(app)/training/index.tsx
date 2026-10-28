@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,128 +7,110 @@ import {
   TouchableOpacity,
   StatusBar,
   Modal,
+  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useLocalSearchParams, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import NetInfo from '@react-native-community/netinfo';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
-import { typography } from '@/src/constants/typography';
-import { getUserSettings } from '../../../src/services/settingsService';
-import { getTrainingGoals } from '../../../src/services/profileService';
-import { comfortToDifficulty } from '../../../src/types/profile';
+import { PALETTE } from '@/src/constants/palette';
+import { WEAK_SPOTS } from '@/src/constants/planOptions';
+import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
+import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
+import { OfflineNote } from '@/src/components/OfflineNote';
+import { LoadedCoachData, loadCoachDataWithFallback } from '../../../src/services/coachService';
 import {
-  fetchAllWorkouts,
-  getNextFocus,
-  FocusOperation,
-  WorkoutSessionRecord,
-} from '../../../src/services/workoutService';
-import { FUTURE_PROGRAMS } from '../../../src/data/trainingPrograms';
-import { ProgramCard } from '../../../src/components/ProgramCard';
-import { OfflineNotice } from '../../../src/components/OfflineNotice';
+  CoachOperation,
+  CoachPlan,
+  getCoachPlan,
+  isTodaysPick,
+  LEVEL_NAMES,
+  levelExample,
+  mainDifficulty,
+  operationName,
+  operationSymbol,
+  toWorkoutParams,
+  WorkoutRequest,
+  workoutForOperation,
+} from '../../../src/lib/coach';
+import { CORE_OPERATIONS } from '../../../src/lib/math/questionGenerator';
+import { DifficultyLevel } from '../../../src/lib/math/types';
 
-type Difficulty = 'easy' | 'medium' | 'hard';
+const LEVELS: DifficultyLevel[] = ['easy', 'medium', 'hard'];
 
-interface OperationData {
-  id: FocusOperation | 'adaptive_mix';
+/** Same names and descriptions as onboarding and Profile. */
+const OPERATIONS = WEAK_SPOTS;
+
+/** A level, or "Your levels": each operation at the coach's own level. */
+type Choice = DifficultyLevel | 'yours';
+
+interface SheetOption {
+  value: Choice;
   title: string;
-  subtitle: string;
-  icon?: keyof typeof Ionicons.glyphMap;
-  glyph?: string;
+  /** "like 4×7", or the list of levels for "Your levels". */
+  detail: string;
+  /** Shows the "Your level" tag. */
+  isYours: boolean;
 }
 
-const OPERATIONS: OperationData[] = [
-  {
-    id: 'addition',
-    title: 'Addition',
-    subtitle: 'Sums & carries',
-    icon: 'add',
-  },
-  {
-    id: 'subtraction',
-    title: 'Subtraction',
-    subtitle: 'Differences & deduction',
-    icon: 'remove',
-  },
-  {
-    id: 'multiplication',
-    title: 'Multiplication',
-    subtitle: 'Times tables & scaling',
-    icon: 'close',
-  },
-  {
-    id: 'division',
-    title: 'Division',
-    subtitle: 'Quotients & factors',
-    glyph: '÷',
-  },
-  {
-    id: 'adaptive_mix',
-    title: 'Mixed Challenge',
-    subtitle: 'All operations combined',
-    icon: 'shuffle',
-  },
-];
+/** "+ Medium · − Easy · × Hard · ÷ Medium". */
+const levelsSummary = (coach: CoachPlan) =>
+  CORE_OPERATIONS.map((op) => `${operationSymbol(op)} ${LEVEL_NAMES[coach.levels[op]]}`).join(' · ');
 
-const DIFFICULTIES: { level: Difficulty; label: string }[] = [
-  { level: 'easy', label: 'Easy' },
-  { level: 'medium', label: 'Medium' },
-  { level: 'hard', label: 'Hard' },
-];
+/**
+ * Before the first workout only the warm-up at the starting level is offered.
+ * A mix also offers "Your levels" above Easy / Medium / Hard.
+ */
+function sheetOptions(coach: CoachPlan, op: CoachOperation): SheetOption[] {
+  const startLevel =
+    op === 'mixed'
+      ? mainDifficulty({ operations: CORE_OPERATIONS, difficultyByOperation: coach.levels })
+      : coach.levels[op];
+  if (coach.isFirstWorkout) {
+    return [
+      { value: 'yours', title: LEVEL_NAMES[startLevel], detail: `like ${levelExample(op, startLevel)}`, isYours: true },
+    ];
+  }
+  const levels: SheetOption[] = LEVELS.map((level) => ({
+    value: level,
+    title: LEVEL_NAMES[level],
+    detail: `like ${levelExample(op, level)}`,
+    isYours: op !== 'mixed' && level === coach.levels[op],
+  }));
+  if (op !== 'mixed') return levels;
+  return [{ value: 'yours', title: 'Your levels (recommended)', detail: levelsSummary(coach), isYours: false }, ...levels];
+}
 
-export default function TrainingSelectionScreen() {
+const defaultChoice = (coach: CoachPlan, op: CoachOperation): Choice =>
+  coach.isFirstWorkout || op === 'mixed' ? 'yours' : coach.levels[op];
+
+export default function PracticeScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { user } = useAuth();
   const { theme } = useTheme();
+  const { isOffline, recheck } = useOnlineStatus(() => loadScreenData());
 
-  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
-  const params = useLocalSearchParams<{ mode?: string; difficulty?: Difficulty }>();
+  const isDark = theme.isDark;
   const isNarrow = width < 360;
 
-  const [isOffline, setIsOffline] = useState(false);
-  const [workouts, setWorkouts] = useState<WorkoutSessionRecord[]>([]);
-  const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
-  // First-workout difficulty from the onboarding comfort level.
-  const [startingDifficulty, setStartingDifficulty] = useState<Difficulty>('easy');
+  const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
+  const [sheetOp, setSheetOp] = useState<CoachOperation | null>(null);
+  const [choice, setChoice] = useState<Choice>('yours');
+  // Only the newest load may update the screen.
+  const loadIdRef = useRef(0);
 
-  // Selected state for modal
-  const [selectedOperation, setSelectedOperation] = useState<OperationData | null>(null);
-  const [selectedDifficulty, setSelectedDifficulty] = useState<Difficulty>(params.difficulty || 'easy');
-  const [showOthers, setShowOthers] = useState(false);
-
-  useEffect(() => {
-    const unsubscribe = NetInfo.addEventListener((state) => {
-      const offline = state.isConnected === false || state.isInternetReachable === false;
-      setIsOffline(offline);
-    });
-
-    return () => unsubscribe();
-  }, []);
-
+  // Same data as Home: live, else the cached copy, else the plan saved on this phone.
   const loadScreenData = useCallback(async () => {
-    if (!user?.id) return;
-    try {
-      const [workoutsData, settingsData, trainingGoals] = await Promise.all([
-        fetchAllWorkouts(user.id).catch(() => []),
-        getUserSettings(user.id).catch(() => null),
-        getTrainingGoals().catch(() => null),
-      ]);
-
-      setWorkouts(workoutsData || []);
-      setStartingDifficulty(
-        comfortToDifficulty(settingsData?.comfort_level ?? trainingGoals?.comfortLevel)
-      );
-      if (settingsData?.daily_question_goal) {
-        setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
-      }
-    } catch (e) {
-      console.warn('Error loading training screen data:', e);
-    }
-  }, [user?.id]);
+    const userId = user?.id;
+    if (!userId) return;
+    const loadId = ++loadIdRef.current;
+    const next = await loadCoachDataWithFallback(userId, await recheck());
+    if (loadId === loadIdRef.current) setLoaded(next);
+  }, [user?.id, recheck]);
 
   useFocusEffect(
     useCallback(() => {
@@ -136,114 +118,170 @@ export default function TrainingSelectionScreen() {
     }, [loadScreenData])
   );
 
-  useEffect(() => {
-    if (params.mode === 'demo') {
-      router.replace({
-        pathname: '/workout' as any,
-        params: {
-          mode: 'adaptive_mix',
-          difficulty: 'easy',
-          isDemo: 'true',
-        },
-      });
-    }
-  }, [params.mode]);
+  // Same coach as Home, Results and Statistics. Without history it shows the plan's
+  // levels, has no pick, and every round is a manual practice round.
+  const coach = useMemo(
+    () =>
+      loaded
+        ? getCoachPlan(loaded.data.plan, loaded.data.workouts, new Date(), {
+            historyUnknown: loaded.from === 'phone',
+          })
+        : null,
+    [loaded]
+  );
 
-  const handleRetryConnection = async () => {
-    const state = await NetInfo.fetch();
-    const offline = state.isConnected === false || state.isInternetReachable === false;
-    setIsOffline(offline);
-    if (!offline) {
-      loadScreenData();
-    }
-  };
+  const sheetRequest = useMemo<WorkoutRequest | null>(
+    () =>
+      coach && loaded && sheetOp
+        ? workoutForOperation(coach, loaded.data.plan, sheetOp, choice === 'yours' ? undefined : choice)
+        : null,
+    [coach, loaded, sheetOp, choice]
+  );
+  // Any level other than the coach's is saved as manual and never moves the levels.
+  const isPracticeRound = sheetRequest?.source === 'manual';
 
-  // Recommended focus aligned with Home & Stats
-  const nextFocusRecommendation = useMemo(() => {
-    return getNextFocus(workouts);
-  }, [workouts]);
+  const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
+  const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
+  const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
+  const secondaryText = theme.subtext;
+  const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
+  const fillBg = isDark ? PALETTE.fillDark : PALETTE.fillLight;
+  // One sage accent, same as Home, Profile and Results.
+  const accent = theme.primary;
+  const accentStrong = theme.primaryText;
+  const accentSoft = theme.primarySoft;
 
-  // Dynamic baseline adaptive difficulty
-  const adaptiveDifficulty = useMemo((): Difficulty => {
-    if (workouts.length === 0) return startingDifficulty;
-    const sample = workouts.slice(0, 5);
-    const avgAccuracy = sample.reduce((acc, curr) => acc + (Number(curr.accuracy) || 0), 0) / sample.length;
-    const avgTimePerQuestionMs =
-      sample.reduce((acc, curr) => acc + (Number(curr.average_time_per_question) || 0), 0) / sample.length;
-
-    if (avgAccuracy >= 85 && avgTimePerQuestionMs <= 3500) return 'hard';
-    if (avgAccuracy >= 70) return 'medium';
-    return 'easy';
-  }, [workouts, startingDifficulty]);
-
-  const screenBg = isDark ? '#0A0F0B' : '#F1ECE9';
-  const cardBg = isDark ? '#141C15' : '#FFFFFF';
-  const cardElevated = isDark ? '#1B241C' : '#F8F6F4';
-  const primaryText = isDark ? '#F1ECE9' : '#0A0F0B';
-  const secondaryText = isDark ? 'rgba(241, 236, 233, 0.65)' : 'rgba(10, 15, 11, 0.55)';
-  const borderSubtle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
-  const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
-  const accentGreen = '#BCE3AA';
-  const accentLilac = '#F2CAEC';
-
-  const handleOpenDifficulty = (op: OperationData) => {
-    setSelectedOperation(op);
-    setSelectedDifficulty(params.difficulty || adaptiveDifficulty);
-  };
-
-  const handleDismissModal = () => {
-    setSelectedOperation(null);
-  };
-
-  const handleContinueToWorkout = () => {
-    if (!selectedOperation) return;
-    const rawMode = selectedOperation.id;
-    const mode = rawMode === 'mixed' ? 'adaptive_mix' : rawMode;
-    const diff = selectedDifficulty;
-    const isNewUser = workouts.length === 0;
-
-    handleDismissModal();
-
+  const startWorkout = (request: WorkoutRequest) => {
     router.push({
       pathname: '/workout' as any,
       params: {
-        mode,
-        difficulty: diff,
-        count: isNewUser ? '10' : userQuestionGoal.toString(),
-        source: 'training_menu',
+        ...toWorkoutParams(request),
         reset: 'true',
         sessionKey: Date.now().toString(),
       },
     });
   };
 
-  if (isOffline) {
+  const openSheet = (op: CoachOperation) => {
+    if (!coach) return;
+    setChoice(defaultChoice(coach, op));
+    setSheetOp(op);
+  };
+
+  const closeSheet = () => setSheetOp(null);
+
+  const handleStartFromSheet = () => {
+    if (!sheetRequest) return;
+    closeSheet();
+    startWorkout(sheetRequest);
+  };
+
+  const renderBadge = (op: CoachOperation) => (
+    <View
+      style={[styles.badge, { backgroundColor: accentSoft }]}
+      accessibilityElementsHidden
+      importantForAccessibility="no-hide-descendants"
+    >
+      {op === 'mixed' ? (
+        <Ionicons name="shuffle" size={22} color={accentStrong} />
+      ) : (
+        <Text style={[styles.badgeSymbol, { color: accentStrong }]} maxFontSizeMultiplier={1.3}>
+          {operationSymbol(op)}
+        </Text>
+      )}
+    </View>
+  );
+
+  // Today's pick is Home's pick: the same title, line, button and workout.
+  // Without any saved history (offline, nothing cached) the pick isn't known, so it's hidden.
+  const showPick = coach && !coach.historyUnknown;
+  const pickTitle = coach
+    ? coach.message.kind === 'goal_done' || coach.message.kind === 'mix'
+      ? coach.message.heading
+      : coach.focusLabel
+    : '';
+
+  const renderPickCard = () => {
+    if (!coach || !showPick) return null;
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-        <OfflineNotice onRetry={handleRetryConnection} />
-      </SafeAreaView>
+      <View style={[styles.pickCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+        <Text style={[styles.pickEyebrow, { color: accentStrong }]}>Today's pick</Text>
+        <Text style={[styles.pickTitle, { color: primaryText }]} accessibilityRole="header">
+          {pickTitle}
+        </Text>
+        <Text style={[styles.pickLine, { color: secondaryText }]}>{coach.message.subheading}</Text>
+        <TouchableOpacity
+          style={[styles.primaryButton, { backgroundColor: accent }]}
+          activeOpacity={0.85}
+          onPress={() => startWorkout(coach.workout)}
+          accessibilityRole="button"
+          accessibilityLabel={`${coach.message.button}, ${pickTitle}`}
+        >
+          <Text style={[styles.primaryButtonText, { color: theme.onPrimary }]}>{coach.message.button}</Text>
+          <Ionicons name="arrow-forward" size={18} color={theme.onPrimary} />
+        </TouchableOpacity>
+      </View>
     );
-  }
+  };
+
+  const renderRow = (op: (typeof OPERATIONS)[number], index: number) => {
+    if (!coach) return null;
+    const id = op.id;
+    const isPick = showPick && isTodaysPick(coach, id);
+    const level = id === 'mixed' ? null : LEVEL_NAMES[coach.levels[id]];
+    const isMastered = id !== 'mixed' && coach.mastered.includes(id);
+    const label = [
+      op.title,
+      level ? `your level ${level}` : 'uses your level for each operation',
+      isMastered ? 'mastered' : null,
+      isPick ? "today's pick" : null,
+    ]
+      .filter(Boolean)
+      .join(', ');
+
+    return (
+      <React.Fragment key={id}>
+        {index > 0 && <View style={[styles.cardDivider, { backgroundColor: borderSubtle }]} />}
+        <TouchableOpacity
+          style={styles.row}
+          activeOpacity={0.7}
+          onPress={() => openSheet(id)}
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityHint="Choose a level and start"
+        >
+          {renderBadge(id)}
+
+          <View style={styles.rowText}>
+            <View style={styles.rowTitleLine}>
+              <Text style={[styles.rowTitle, { color: primaryText }]}>{op.title}</Text>
+              {isPick && (
+                <View style={[styles.tag, { backgroundColor: accentSoft }]}>
+                  <Text style={[styles.tagText, { color: accentStrong }]}>Today's pick</Text>
+                </View>
+              )}
+            </View>
+            <Text style={[styles.rowDesc, { color: secondaryText }]}>{op.desc}</Text>
+          </View>
+
+          {level && (
+            <View style={styles.rowRight}>
+              <Text style={[styles.rowLevel, { color: primaryText }]}>{level}</Text>
+              {isMastered && <Text style={[styles.rowMastered, { color: accentStrong }]}>✓ Mastered</Text>}
+            </View>
+          )}
+          <Ionicons name="chevron-forward" size={18} color={secondaryText} />
+        </TouchableOpacity>
+      </React.Fragment>
+    );
+  };
+
+  const options = coach && sheetOp ? sheetOptions(coach, sheetOp) : [];
+  const sheetOperation = OPERATIONS.find((o) => o.id === sheetOp);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-
-      {/* Header Bar */}
-      <View style={styles.header}>
-        <View style={styles.headerInner}>
-          <TouchableOpacity
-            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={20} color={primaryText} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: primaryText }]}>Workout</Text>
-          <View style={styles.headerPlaceholder} />
-        </View>
-      </View>
 
       <ScrollView
         contentContainerStyle={[
@@ -256,203 +294,155 @@ export default function TrainingSelectionScreen() {
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.responsiveWrapper}>
-          {/* Header Title Section */}
           <View style={styles.titleSection}>
-            <View
-              style={[
-                styles.tagBadge,
-                { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : accentLilac },
-              ]}
+            <Text
+              style={[styles.screenTitle, { color: primaryText }]}
+              accessibilityRole="header"
+              maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}
             >
-              <Text style={[styles.tagBadgeText, { color: isDark ? accentGreen : '#0A0F0B' }]}>
-                PRACTICE
+              Practice
+            </Text>
+            <Text style={[styles.subtitle, { color: secondaryText }]}>Pick what you want to practice.</Text>
+          </View>
+
+          {!coach ? (
+            <ActivityIndicator style={styles.loading} size="large" color={accentStrong} />
+          ) : (
+            <>
+              {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
+
+              {renderPickCard()}
+
+              <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
+                All operations
               </Text>
-            </View>
-            <Text style={[styles.mainHeading, { color: primaryText }]}>
-              Choose your workout
-            </Text>
-            <Text style={[styles.subHeading, { color: secondaryText }]}>
-              Master one skill or challenge all four.
-            </Text>
-          </View>
-
-          {/* Grouped Operations Card */}
-          <View style={[styles.groupedCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-            {OPERATIONS.map((op, index) => {
-              const iconBg = index % 2 === 0 ? accentGreen : accentLilac;
-              const isRecommended =
-                nextFocusRecommendation.targetOp === op.id ||
-                (nextFocusRecommendation.targetOp === 'mixed' && op.id === 'adaptive_mix');
-
-              return (
-                <React.Fragment key={op.id}>
-                  <TouchableOpacity
-                    style={styles.programCardRow}
-                    activeOpacity={0.7}
-                    onPress={() => handleOpenDifficulty(op)}
-                  >
-                    <View style={[styles.iconCircle, { backgroundColor: iconBg }]}>
-                      {op.glyph ? (
-                        <Text style={styles.glyphText}>{op.glyph}</Text>
-                      ) : (
-                        <Ionicons name={op.icon!} size={20} color="#0A0F0B" />
-                      )}
-                    </View>
-
-                    <View style={styles.textStack}>
-                      <View style={styles.titleRow}>
-                        <Text style={[styles.programTitle, { color: primaryText }]}>{op.title}</Text>
-                        {isRecommended && (
-                          <View style={[styles.recPill, { backgroundColor: accentGreen }]}>
-                            <Text style={styles.recPillText}>RECOMMENDED</Text>
-                          </View>
-                        )}
-                      </View>
-                      <Text style={[styles.programSubtitle, { color: secondaryText }]}>
-                        {op.subtitle}
-                      </Text>
-                    </View>
-
-                    <Ionicons name="chevron-forward" size={18} color={secondaryText} />
-                  </TouchableOpacity>
-
-                  {index < OPERATIONS.length - 1 && (
-                    <View style={[styles.cardDivider, { backgroundColor: dividerColor }]} />
-                  )}
-                </React.Fragment>
-              );
-            })}
-          </View>
-
-          {/* More Modes Section */}
-          <View style={[styles.othersHeaderCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-            <TouchableOpacity
-              style={styles.othersTouchable}
-              activeOpacity={0.7}
-              onPress={() => setShowOthers(!showOthers)}
-            >
-              <View style={styles.othersTextGroup}>
-                <Text style={[styles.othersTitle, { color: primaryText }]}>More modes</Text>
-                <Text style={[styles.othersSubtitle, { color: secondaryText }]}>
-                  Speed runs & AI coach
-                </Text>
+              <View style={[styles.groupedCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                {OPERATIONS.map(renderRow)}
               </View>
-              <Ionicons
-                name={showOthers ? 'chevron-up' : 'chevron-down'}
-                size={18}
-                color={secondaryText}
-              />
-            </TouchableOpacity>
-
-            {showOthers && (
-              <View style={styles.futureList}>
-                <View style={[styles.divider, { backgroundColor: dividerColor }]} />
-                {FUTURE_PROGRAMS.map((program, index) => (
-                  <ProgramCard
-                    key={program.id}
-                    program={program}
-                    showDivider={index < FUTURE_PROGRAMS.length - 1}
-                  />
-                ))}
-              </View>
-            )}
-          </View>
+            </>
+          )}
         </View>
       </ScrollView>
 
-      {/* Slide-Up Bottom Sheet Modal */}
       <Modal
-        visible={selectedOperation !== null}
+        visible={sheetOp !== null}
         transparent
         animationType="slide"
-        onRequestClose={handleDismissModal}
+        onRequestClose={closeSheet}
+        statusBarTranslucent
       >
         <View style={styles.sheetBackdrop}>
           <TouchableOpacity
             style={styles.sheetBackdropDismiss}
             activeOpacity={1}
-            onPress={handleDismissModal}
+            onPress={closeSheet}
+            accessible={false}
+            importantForAccessibility="no"
           />
 
           <View
             style={[
               styles.sheetContainer,
               {
-                backgroundColor: isDark ? '#141C15' : '#FFFFFF',
+                backgroundColor: cardBg,
                 borderTopColor: borderSubtle,
-                paddingBottom: Math.max(insets.bottom, 20) + 16,
+                paddingBottom: Math.max(insets.bottom, 20) + 12,
+                maxHeight: '92%',
               },
             ]}
+            accessibilityViewIsModal
           >
-            {/* Grab Handle */}
-            <View
-              style={[
-                styles.sheetHandle,
-                { backgroundColor: isDark ? 'rgba(255, 255, 255, 0.2)' : 'rgba(0, 0, 0, 0.12)' },
-              ]}
-            />
-
-            {/* Modal Title */}
             <View style={styles.sheetHeader}>
-              <Text style={[styles.sheetTitle, { color: primaryText }]}>
-                {selectedOperation?.title}
+              {sheetOp && renderBadge(sheetOp)}
+              <Text style={[styles.sheetTitle, { color: primaryText }]} accessibilityRole="header">
+                {sheetOp ? operationName(sheetOp) : ''}
               </Text>
+              <TouchableOpacity
+                onPress={closeSheet}
+                style={[styles.closeButton, { backgroundColor: fillBg }]}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close" size={20} color={primaryText} />
+              </TouchableOpacity>
             </View>
 
-            {/* Difficulty Options */}
-            <View style={styles.difficultyList}>
-              {DIFFICULTIES.map(({ level, label }) => {
-                const isSelected = selectedDifficulty === level;
-                return (
-                  <TouchableOpacity
-                    key={level}
-                    style={[
-                      styles.diffCard,
-                      {
-                        backgroundColor: isSelected
-                          ? isDark
-                            ? 'rgba(188, 227, 170, 0.15)'
-                            : 'rgba(188, 227, 170, 0.35)'
-                          : cardElevated,
-                        borderColor: isSelected ? accentGreen : borderSubtle,
-                      },
-                    ]}
-                    activeOpacity={0.8}
-                    onPress={() => setSelectedDifficulty(level)}
-                  >
-                    <Text
-                      style={[
-                        styles.diffCardTitle,
-                        { color: primaryText, fontWeight: isSelected ? '600' : '500' },
-                      ]}
-                    >
-                      {label}
-                    </Text>
+            <ScrollView style={styles.sheetScroll} contentContainerStyle={styles.sheetScrollContent}>
+              {sheetOperation && (
+                <Text style={[styles.sheetDesc, { color: secondaryText }]}>{sheetOperation.desc}</Text>
+              )}
 
-                    <View
+              <View accessibilityRole="radiogroup" style={styles.optionList}>
+                {options.map((option) => {
+                  const isSelected = choice === option.value;
+                  return (
+                    <TouchableOpacity
+                      key={option.value}
                       style={[
-                        styles.checkCircle,
+                        styles.option,
                         {
-                          borderColor: isSelected ? accentGreen : borderSubtle,
-                          backgroundColor: isSelected ? accentGreen : 'transparent',
+                          backgroundColor: isSelected ? accentSoft : fillBg,
+                          borderColor: isSelected ? accentStrong : 'transparent',
                         },
                       ]}
+                      activeOpacity={0.7}
+                      onPress={() => setChoice(option.value)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: isSelected, checked: isSelected }}
+                      accessibilityLabel={[option.title, option.detail, option.isYours ? 'your level' : null]
+                        .filter(Boolean)
+                        .join(', ')}
                     >
-                      {isSelected && <Ionicons name="checkmark" size={14} color="#0A0F0B" />}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+                      <View style={styles.optionText}>
+                        <Text style={[styles.optionTitle, { color: primaryText }]}>
+                          {option.title}
+                          {option.value !== 'yours' || coach?.isFirstWorkout ? (
+                            <Text style={[styles.optionDetailInline, { color: secondaryText }]}>
+                              {' · '}
+                              {option.detail}
+                            </Text>
+                          ) : null}
+                        </Text>
+                        {option.value === 'yours' && !coach?.isFirstWorkout && (
+                          <Text style={[styles.optionDetail, { color: secondaryText }]}>{option.detail}</Text>
+                        )}
+                        {option.isYours && (
+                          <View style={[styles.tag, styles.optionTag, { backgroundColor: accentSoft, borderColor: accentStrong }]}>
+                            <Text style={[styles.tagText, { color: accentStrong }]}>Your level</Text>
+                          </View>
+                        )}
+                      </View>
+                      <Ionicons
+                        name={isSelected ? 'radio-button-on' : 'radio-button-off'}
+                        size={22}
+                        color={isSelected ? accentStrong : secondaryText}
+                      />
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
 
-            {/* Action Button */}
+              {(coach?.isFirstWorkout || isPracticeRound) && (
+                <View style={[styles.note, { backgroundColor: fillBg }]} accessibilityLiveRegion="polite">
+                  <Ionicons name="information-circle-outline" size={18} color={secondaryText} />
+                  <Text style={[styles.noteText, { color: secondaryText }]}>
+                    {coach?.isFirstWorkout
+                      ? 'Warm-up first. After your warm-up, you can pick any level.'
+                      : "Practice round. This won't change your level."}
+                  </Text>
+                </View>
+              )}
+            </ScrollView>
+
             <TouchableOpacity
-              style={[styles.continueButton, { backgroundColor: accentGreen }]}
+              style={[styles.primaryButton, { backgroundColor: accent }]}
               activeOpacity={0.85}
-              onPress={handleContinueToWorkout}
+              onPress={handleStartFromSheet}
+              accessibilityRole="button"
+              accessibilityLabel={isPracticeRound ? 'Start practice round' : 'Start'}
             >
-              <Text style={styles.continueButtonText}>START</Text>
-              <Ionicons name="arrow-forward" size={18} color="#0A0F0B" />
+              <Text style={[styles.primaryButtonText, { color: theme.onPrimary }]}>Start</Text>
+              <Ionicons name="arrow-forward" size={18} color={theme.onPrimary} />
             </TouchableOpacity>
           </View>
         </View>
@@ -465,42 +455,9 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
-  },
-  headerInner: {
-    width: '100%',
-    maxWidth: 480,
-    alignSelf: 'center',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
-  },
-  headerTitle: {
-    ...typography.sectionHeading,
-    letterSpacing: -0.4,
-  },
-  headerPlaceholder: {
-    width: 40,
-  },
   scrollContent: {
     flexGrow: 1,
-    paddingTop: 10,
+    paddingTop: 16,
   },
   responsiveWrapper: {
     width: '100%',
@@ -510,115 +467,154 @@ const styles = StyleSheet.create({
   titleSection: {
     marginBottom: 20,
   },
-  tagBadge: {
-    alignSelf: 'flex-start',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-    marginBottom: 10,
-  },
-  tagBadgeText: {
-    ...typography.caption,
-    letterSpacing: 0.8,
-  },
-  mainHeading: {
+  screenTitle: {
     ...typography.screenTitle,
     letterSpacing: -0.6,
     marginBottom: 4,
   },
-  subHeading: {
+  subtitle: {
     ...typography.secondary,
   },
-  groupedCard: {
+  loading: {
+    marginTop: 48,
+  },
+  offlineNote: {
+    marginBottom: 16,
+  },
+  note: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    marginBottom: 16,
+  },
+  noteText: {
+    ...typography.secondary,
+    flex: 1,
+  },
+  pickCard: {
     borderRadius: 22,
     borderWidth: 1,
-    paddingVertical: 2,
-    marginBottom: 18,
-    shadowColor: '#000',
+    padding: 18,
+    marginBottom: 24,
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.04,
     shadowRadius: 8,
     elevation: 2,
   },
-  programCardRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 13,
-    paddingHorizontal: 16,
+  pickEyebrow: {
+    ...typography.secondary,
+    fontWeight: '600',
+    marginBottom: 4,
   },
-  iconCircle: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+  pickTitle: {
+    ...typography.sectionHeading,
+    letterSpacing: -0.4,
+    marginBottom: 4,
+  },
+  pickLine: {
+    ...typography.secondary,
+    marginBottom: 16,
+  },
+  primaryButton: {
+    minHeight: 54,
+    borderRadius: 27,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 14,
-  },
-  glyphText: {
-    ...typography.sectionHeading,
-    color: '#0A0F0B',
-    textAlign: 'center',
-  },
-  textStack: {
-    flex: 1,
-  },
-  titleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
     gap: 8,
   },
-  programTitle: {
+  primaryButtonText: {
+    ...typography.button,
+    textAlign: 'center',
+    flexShrink: 1,
+  },
+  sectionHeading: {
+    ...typography.button,
+    marginBottom: 10,
+  },
+  groupedCard: {
+    borderRadius: 22,
+    borderWidth: 1,
+    paddingVertical: 2,
+    shadowColor: PALETTE.dark,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  row: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    minHeight: 64,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  badge: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  badgeSymbol: {
+    ...typography.sectionHeading,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  rowText: {
+    flex: 1,
+  },
+  rowTitleLine: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 6,
+  },
+  rowTitle: {
     ...typography.button,
     letterSpacing: -0.2,
   },
-  recPill: {
-    paddingHorizontal: 7,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  recPillText: {
-    ...typography.caption,
-    color: '#0A0F0B',
-    letterSpacing: 0.5,
-  },
-  programSubtitle: {
-    ...typography.caption,
+  rowDesc: {
+    ...typography.secondary,
     marginTop: 2,
+  },
+  rowRight: {
+    alignItems: 'flex-end',
+    flexShrink: 0,
+    maxWidth: '40%',
+  },
+  rowLevel: {
+    ...typography.secondary,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  rowMastered: {
+    ...typography.secondary,
+    textAlign: 'right',
+  },
+  tag: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  tagText: {
+    ...typography.secondary,
+    fontWeight: '600',
   },
   cardDivider: {
     height: 1,
     marginHorizontal: 16,
   },
-  othersHeaderCard: {
-    borderRadius: 22,
-    padding: 16,
-    borderWidth: 1,
-  },
-  othersTouchable: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  othersTextGroup: {
-    flex: 1,
-  },
-  othersTitle: {
-    ...typography.button,
-  },
-  othersSubtitle: {
-    ...typography.caption,
-    marginTop: 2,
-  },
-  futureList: {
-    marginTop: 12,
-  },
-  divider: {
-    height: 1,
-    marginBottom: 10,
-  },
   sheetBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.65)',
+    backgroundColor: PALETTE.scrim,
     justifyContent: 'flex-end',
   },
   sheetBackdropDismiss: {
@@ -631,64 +627,68 @@ const styles = StyleSheet.create({
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderTopWidth: 1,
-    paddingHorizontal: 22,
-    paddingTop: 10,
-  },
-  sheetHandle: {
-    width: 38,
-    height: 4,
-    borderRadius: 2,
-    alignSelf: 'center',
-    marginBottom: 16,
+    paddingHorizontal: 20,
+    paddingTop: 16,
   },
   sheetHeader: {
-    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginBottom: 8,
   },
   sheetTitle: {
     ...typography.sectionHeading,
     letterSpacing: -0.4,
-    textAlign: 'center',
+    flex: 1,
   },
-  difficultyList: {
+  closeButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sheetScroll: {
+    flexGrow: 0,
+    flexShrink: 1,
+  },
+  sheetScrollContent: {
+    paddingBottom: 4,
+  },
+  sheetDesc: {
+    ...typography.secondary,
+    marginBottom: 14,
+  },
+  optionList: {
     gap: 8,
-    marginBottom: 18,
+    marginBottom: 12,
   },
-  diffCard: {
+  option: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 14,
+    minHeight: 56,
+    paddingVertical: 12,
     paddingHorizontal: 16,
     borderRadius: 16,
     borderWidth: 1.5,
+    gap: 12,
   },
-  diffCardTitle: {
+  optionText: {
+    flex: 1,
+    alignItems: 'flex-start',
+  },
+  optionTitle: {
     ...typography.button,
   },
-  checkCircle: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    borderWidth: 1.5,
-    alignItems: 'center',
-    justifyContent: 'center',
+  optionDetailInline: {
+    ...typography.secondary,
   },
-  continueButton: {
-    height: 54,
-    borderRadius: 27,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
+  optionDetail: {
+    ...typography.secondary,
+    marginTop: 2,
   },
-  continueButtonText: {
-    ...typography.button,
-    color: '#0A0F0B',
-    letterSpacing: 1,
+  optionTag: {
+    marginTop: 6,
+    borderWidth: 1,
   },
 });

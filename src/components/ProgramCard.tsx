@@ -46,7 +46,7 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
                 styles.symbolText,
                 // Badges are pastel in both themes, so the symbol stays dark
                 { color: PALETTE.onPrimary },
-                isLocked && { color: theme.muted },
+                isLocked && { color: theme.subtext },
               ]}
             >
               {symbol}
@@ -55,7 +55,7 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
             <Ionicons
               name={iconName || 'help-outline'}
               size={20}
-              color={isLocked ? theme.muted : PALETTE.onPrimary}
+              color={isLocked ? theme.subtext : PALETTE.onPrimary}
             />
           )}
         </View>
@@ -66,13 +66,13 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
             style={[
               styles.title,
               { color: theme.text },
-              isLocked && { color: theme.muted },
+              isLocked && { color: theme.subtext },
             ]}
           >
             {title}
           </Text>
           {subtitle ? (
-            <Text style={[styles.subtitle, { color: theme.muted }]} numberOfLines={1}>
+            <Text style={[styles.subtitle, { color: theme.subtext }]} numberOfLines={1}>
               {subtitle}
             </Text>
           ) : null}
@@ -86,8 +86,8 @@ export const ProgramCard: React.FC<ProgramCardProps> = ({
               { backgroundColor: theme.isDark ? '#2C2C2E' : '#E5E5EA' },
             ]}
           >
-            <Ionicons name="lock-closed" size={14} color={theme.muted} />
-            <Text style={[styles.lockText, { color: theme.muted }]}>SOON</Text>
+            <Ionicons name="lock-closed" size={14} color={theme.subtext} />
+            <Text style={[styles.lockText, { color: theme.subtext }]}>SOON</Text>
           </View>
         ) : (
           <Text style={[styles.progressText, { color: theme.text }]}>
@@ -137,7 +137,6 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     ...typography.caption,
-    color: '#8E8E93',
     marginTop: 2,
   },
   progressText: {
@@ -155,7 +154,6 @@ const styles = StyleSheet.create({
   },
   lockText: {
     ...typography.caption,
-    color: '#8E8E93',
     letterSpacing: 0.5,
   },
   divider: {

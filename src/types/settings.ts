@@ -23,6 +23,7 @@ export interface UserSettings {
   comfort_level?: ComfortLevel | null;
   friction_areas?: FrictionArea[] | null; // Empty array = "Not sure, test me"
   friction_area?: FrictionArea | null;    // Legacy single pick, still written for old readers
+  level_set_at?: string | null;           // When the Level last changed; the coach restarts from it
   updated_at?: string;
 }
 

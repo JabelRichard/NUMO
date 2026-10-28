@@ -20,26 +20,26 @@ import Animated, {
 import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
-import { getUserProfile, getUserSettings } from '../../src/services/settingsService';
+import { getUserProfile } from '../../src/services/settingsService';
+import { CoachData, LoadedCoachData, loadCoachDataWithFallback } from '../../src/services/coachService';
 import {
-  getRecentWorkouts,
-  getWeeklyStats,
-  flushWorkoutOutbox,
-  WorkoutSessionRecord,
-  getNextFocus,
-  FocusOperation,
-} from '../../src/services/workoutService';
-import { supabase } from '../../src/config/supabase';
+  CoachOperation,
+  COPY,
+  focusLabel,
+  getCoachPlan,
+  roundLength,
+  toWorkoutParams,
+  workoutForOperation,
+} from '../../src/lib/coach';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography } from '@/src/constants/typography';
-import { OfflineNotice } from '../../src/components/OfflineNotice';
+import { OfflineNote } from '../../src/components/OfflineNote';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { getInitials } from '../../src/utils/getInitials';
-import { getTrainingGoals } from '../../src/services/profileService';
-import { comfortToDifficulty } from '../../src/types/profile';
 
-type Difficulty = 'easy' | 'medium' | 'hard';
-type OperationType = FocusOperation;
+type OperationType = CoachOperation;
+
+const EMPTY_COACH_DATA: CoachData = { plan: {}, workouts: [] };
 
 interface OperationBubbleProps {
   type: OperationType;
@@ -102,33 +102,6 @@ function OperationBubble({ type, isFocalCenter = false, themeColors }: Operation
   );
 }
 
-async function fetchUserWorkouts(userId: string): Promise<WorkoutSessionRecord[]> {
-  const { data, error } = await supabase
-    .from('workout_sessions')
-    .select('*')
-    .eq('user_id', userId)
-    .order('completed_at', { ascending: true });
-
-  if (error) throw error;
-  return (data || []) as WorkoutSessionRecord[];
-}
-
-const OP_DISPLAY_NAMES: Record<OperationType, string> = {
-  addition: 'Addition',
-  subtraction: 'Subtraction',
-  multiplication: 'Multiplication',
-  division: 'Division',
-  mixed: 'Mixed Challenge',
-};
-
-const OP_SUBHEADINGS: Record<OperationType, string> = {
-  addition: 'Build confidence on quick mental additions and carries.',
-  subtraction: 'Strengthen mental differences and subtraction recall.',
-  multiplication: 'Sharpen recall across your times tables.',
-  division: 'Master quick quotients and factor identification.',
-  mixed: 'Balanced sprint across all 4 math operations.',
-};
-
 export default function DashboardScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -141,15 +114,13 @@ export default function DashboardScreen() {
   const isInitialMount = useRef(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   // Reload when the connection comes back (loadDashboardState is defined below; called later).
-  const { isOffline, setIsOffline, recheck } = useOnlineStatus(() => loadDashboardState());
+  const { isOffline, recheck } = useOnlineStatus(() => loadDashboardState());
   const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
-  const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
-  // First-workout difficulty from the onboarding comfort level.
-  const [startingDifficulty, setStartingDifficulty] = useState<Difficulty>('easy');
-  const [allWorkouts, setAllWorkouts] = useState<WorkoutSessionRecord[]>([]);
-  const [totalSolved, setTotalSolved] = useState<number>(0);
+  const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
+  // Only the newest load may update the screen.
+  const loadIdRef = useRef(0);
 
-  // User Interactive Selection State
+  // A tapped outer bubble is a one-time choice; the coach's plan returns afterwards.
   const [selectedOverrideOp, setSelectedOverrideOp] = useState<OperationType | null>(null);
 
   // Animations
@@ -182,63 +153,40 @@ export default function DashboardScreen() {
     );
   }, [pulseCenter]);
 
+  // Same as Practice: live data, else the cached copy plus queued workouts, else the
+  // plan saved on this phone. Offline never replaces the screen; a small note says so.
   const loadDashboardState = useCallback(async () => {
-    if (!(await recheck())) {
-      setIsLoading(false);
-      return;
+    const userId = session?.user?.id;
+    if (!userId) return;
+    const loadId = ++loadIdRef.current;
+    const online = await recheck();
+
+    // The name and photo are extras; the screen works without them.
+    if (online) {
+      getUserProfile(userId)
+        .then((profileData) => {
+          if (profileData) setProfile(profileData);
+        })
+        .catch(() => {});
     }
+
+    // Also pushes any workouts that failed to save offline.
+    const next = await loadCoachDataWithFallback(userId, online);
+    if (loadId !== loadIdRef.current) return;
+    setLoaded(next);
 
     if (isInitialMount.current) {
-      setIsLoading(true);
+      setIsLoading(false);
+      isInitialMount.current = false;
+      contentOpacity.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.quad) });
+      contentTranslateY.value = withTiming(0, { duration: 400, easing: Easing.out(Easing.quad) });
     }
-
-    try {
-      // Push any workouts that failed to save offline before reading history.
-      if (session?.user?.id) {
-        await flushWorkoutOutbox(session.user.id);
-      }
-
-      const [workoutsData, statsData, settingsData, profileData, trainingGoals] = await Promise.all([
-        session?.user?.id ? fetchUserWorkouts(session.user.id).catch(() => getRecentWorkouts()) : getRecentWorkouts(),
-        getWeeklyStats(),
-        session?.user?.id ? getUserSettings(session.user.id).catch(() => null) : null,
-        session?.user?.id ? getUserProfile(session.user.id).catch(() => null) : null,
-        getTrainingGoals().catch(() => null),
-      ]);
-
-      if (profileData) setProfile(profileData);
-      setStartingDifficulty(
-        comfortToDifficulty(settingsData?.comfort_level ?? trainingGoals?.comfortLevel)
-      );
-      if (settingsData?.daily_question_goal) {
-        setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
-      }
-
-      const parsedWorkouts = Array.isArray(workoutsData)
-        ? workoutsData
-        : (workoutsData as any)?.data || [];
-
-      setAllWorkouts(parsedWorkouts);
-      setTotalSolved(statsData?.solvedCount || 0);
-      setIsOffline(false);
-
-      if (isInitialMount.current) {
-        setIsLoading(false);
-        isInitialMount.current = false;
-        contentOpacity.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.quad) });
-        contentTranslateY.value = withTiming(0, { duration: 400, easing: Easing.out(Easing.quad) });
-      }
-    } catch {
-      setIsOffline(true);
-      if (isInitialMount.current) {
-        setIsLoading(false);
-        isInitialMount.current = false;
-      }
-    }
-  }, [session?.user?.id, contentOpacity, contentTranslateY, recheck, setIsOffline]);
+  }, [session?.user?.id, contentOpacity, contentTranslateY, recheck]);
 
   useFocusEffect(
     useCallback(() => {
+      // Coming back from a workout: drop the one-time pick and follow the plan again.
+      setSelectedOverrideOp(null);
       loadDashboardState();
     }, [loadDashboardState])
   );
@@ -259,7 +207,7 @@ export default function DashboardScreen() {
   const isDark = theme.isDark;
   const screenBg = isDark ? '#0A0F0B' : theme.background || '#F1ECE9';
   const textColor = theme.text;
-  const textSubtle = theme.muted;
+  const textSubtle = theme.subtext;
   const cardBg = theme.card;
   const accentGreen = '#BCE3AA';
   const accentLilac = '#F2CAEC';
@@ -278,148 +226,54 @@ export default function DashboardScreen() {
     session?.user?.user_metadata?.avatar_url ||
     null;
 
-  const isNewUser = !isLoading && allWorkouts.length === 0 && totalSolved === 0;
+  const coachData = loaded?.data ?? EMPTY_COACH_DATA;
 
-  const latestWorkout = useMemo(() => {
-    if (!allWorkouts || allWorkouts.length === 0) return null;
-    return allWorkouts.reduce<WorkoutSessionRecord | null>((latest, workout) => {
-      if (!latest) return workout;
-      const latestTime = new Date(latest.completed_at).getTime();
-      const workoutTime = new Date(workout.completed_at).getTime();
-      return workoutTime > latestTime ? workout : latest;
-    }, null);
-  }, [allWorkouts]);
+  // Today's plan from the shared coach (the same one Results, Practice and Statistics use).
+  // Without history (offline, nothing cached) there is no pick: "Pick something to practice".
+  const coach = useMemo(
+    () =>
+      getCoachPlan(coachData.plan, coachData.workouts, new Date(), {
+        historyUnknown: loaded?.from === 'phone',
+      }),
+    [coachData, loaded?.from]
+  );
 
-  const workoutsCompletedToday = useMemo(() => {
-    if (!allWorkouts || allWorkouts.length === 0) return 0;
-    const now = new Date();
-    return allWorkouts.filter((w) => {
-      if (!w.completed_at) return false;
-      const d = new Date(w.completed_at);
-      return (
-        d.getDate() === now.getDate() &&
-        d.getMonth() === now.getMonth() &&
-        d.getFullYear() === now.getFullYear()
-      );
-    }).length;
-  }, [allWorkouts]);
+  const pickedRequest = useMemo(
+    () => (selectedOverrideOp ? workoutForOperation(coach, coachData.plan, selectedOverrideOp) : null),
+    [coach, coachData.plan, selectedOverrideOp]
+  );
 
-  const hasJustCompletedWorkout = useMemo(() => {
-    if (!latestWorkout?.completed_at) return false;
-    const latestDate = new Date(latestWorkout.completed_at);
-    const now = new Date();
-    if (Number.isNaN(latestDate.getTime())) return false;
+  const focusOp: OperationType = selectedOverrideOp ?? coach.focus;
+  const focusText = selectedOverrideOp
+    ? focusLabel(selectedOverrideOp, selectedOverrideOp === 'mixed' ? undefined : coach.levels[selectedOverrideOp])
+    : coach.focusLabel;
 
-    const isSameCalendarDay =
-      latestDate.getDate() === now.getDate() &&
-      latestDate.getMonth() === now.getMonth() &&
-      latestDate.getFullYear() === now.getFullYear();
-
-    if (!isSameCalendarDay) return false;
-
-    const diffHours = (now.getTime() - latestDate.getTime()) / (1000 * 60 * 60);
-    return diffHours >= 0 && diffHours <= 6;
-  }, [latestWorkout]);
-
-  const determineAdaptiveDifficulty = (): Difficulty => {
-    if (allWorkouts.length === 0) return startingDifficulty;
-    const sample = allWorkouts.slice(0, 5);
-    const avgAccuracy = sample.reduce((acc, curr) => acc + (Number(curr.accuracy) || 0), 0) / sample.length;
-    const avgTimePerQuestionMs = sample.reduce((acc, curr) => acc + (Number(curr.average_time_per_question) || 0), 0) / sample.length;
-
-    if (avgAccuracy >= 85 && avgTimePerQuestionMs <= 3500) return 'hard';
-    if (avgAccuracy >= 70) return 'medium';
-    return 'easy';
-  };
-
-  // Dynamic Focus & Messaging Engine
-  const { focusOp, badgeText, headingText, subheadingText, buttonText } = useMemo(() => {
-    if (isNewUser) {
-      const activeOp = selectedOverrideOp || ('mixed' as OperationType);
+  const { headingText, subheadingText, buttonText } = useMemo(() => {
+    if (selectedOverrideOp && pickedRequest) {
+      const length = roundLength(pickedRequest.questionCount, coachData.plan.sessionDurationMinutes);
       return {
-        focusOp: activeOp,
-        badgeText: selectedOverrideOp ? 'CUSTOM SELECTION' : 'WELCOME TO NUMO',
-        headingText: selectedOverrideOp ? `Custom Focus: ${OP_DISPLAY_NAMES[selectedOverrideOp]}` : "Let's find your baseline.",
-        subheadingText: selectedOverrideOp ? OP_SUBHEADINGS[selectedOverrideOp] : 'Start with a balanced challenge so NUMO can learn how you solve.',
-        buttonText: 'START TRAINING',
+        headingText: COPY.pickHeading(selectedOverrideOp),
+        subheadingText: coach.historyUnknown
+          ? COPY.practiceOnlyPickSubheading(length)
+          : coach.isFirstWorkout
+            ? COPY.pickWarmupSubheading(length)
+            : COPY.pickSubheading(length),
+        buttonText: coach.isFirstWorkout ? COPY.warmupButton : COPY.startButton,
       };
     }
-
-    const recommendation = getNextFocus(allWorkouts);
-    const effectiveOp: OperationType = selectedOverrideOp || (recommendation.targetOp as OperationType);
-    const isCustom = Boolean(selectedOverrideOp && selectedOverrideOp !== recommendation.targetOp);
-
-    // If user explicitly picked an operation via outer bubble
-    if (isCustom) {
-      return {
-        focusOp: effectiveOp,
-        badgeText: 'CUSTOM SELECTION',
-        headingText: `Custom Focus: ${OP_DISPLAY_NAMES[effectiveOp]}`,
-        subheadingText: OP_SUBHEADINGS[effectiveOp],
-        buttonText: hasJustCompletedWorkout ? 'START ANOTHER WORKOUT' : 'START TRAINING',
-      };
-    }
-
-    // Fresh Day / First Workout of Today
-    if (workoutsCompletedToday === 0 && !isNewUser) {
-      const opName = OP_DISPLAY_NAMES[effectiveOp];
-      const isTour = recommendation.stage === 'tour';
-
-      return {
-        focusOp: effectiveOp,
-        badgeText: isTour ? 'PLACEMENT TOUR' : "COACH'S DAILY PICK",
-        headingText: isTour
-          ? `Explore ${opName}`
-          : `Start today with ${opName}`,
-        subheadingText: isTour
-          ? `Complete 10 quick ${opName.toLowerCase()} questions to continue your tour.`
-          : `Warm up your mental pace and keep your consistency streak alive.`,
-        buttonText: "START TODAY'S WORKOUT",
-      };
-    }
-
-    // Default to Coach's Choice / Tour Recommendation
-    if (hasJustCompletedWorkout) {
-      let postBadge = 'NICE WORK TODAY';
-      let postHeading = 'Ready for another challenge?';
-
-      if (workoutsCompletedToday === 2) {
-        postBadge = 'KEEP IT GOING';
-        postHeading = 'Ready to push a little further?';
-      } else if (workoutsCompletedToday >= 3) {
-        postBadge = 'GREAT SESSION';
-        postHeading = "You're building serious fluency.";
-      }
-
-      return {
-        focusOp: effectiveOp,
-        badgeText: postBadge,
-        headingText: postHeading,
-        subheadingText: recommendation.subheading || 'Keep building your speed and accuracy, or try a different challenge.',
-        buttonText: 'START ANOTHER WORKOUT',
-      };
-    }
-
     return {
-      focusOp: effectiveOp,
-      badgeText: recommendation.stage === 'tour' ? 'PLACEMENT TOUR' : 'COACH RECOMMENDATION',
-      headingText: recommendation.heading,
-      subheadingText: recommendation.subheading,
-      buttonText: 'START TRAINING',
+      headingText: coach.message.heading,
+      subheadingText: coach.message.subheading,
+      buttonText: coach.message.button,
     };
-  }, [isNewUser, selectedOverrideOp, hasJustCompletedWorkout, workoutsCompletedToday, allWorkouts]);
+  }, [coach, coachData.plan.sessionDurationMinutes, pickedRequest, selectedOverrideOp]);
 
   const handleStartWorkout = () => {
-    const recommendedDifficulty = determineAdaptiveDifficulty();
-    const questionCount = isNewUser ? 10 : userQuestionGoal;
-
+    const request = pickedRequest ?? coach.workout;
     router.push({
       pathname: '/workout' as any,
       params: {
-        mode: focusOp === 'mixed' ? 'adaptive_mix' : focusOp,
-        difficulty: isNewUser ? startingDifficulty : recommendedDifficulty,
-        count: questionCount.toString(),
-        source: selectedOverrideOp ? 'home_manual_selection' : 'home_coach',
+        ...toWorkoutParams(request),
         reset: 'true',
         sessionKey: Date.now().toString(),
       },
@@ -441,10 +295,6 @@ export default function DashboardScreen() {
   const topRightOp = outerOps[1];
   const bottomLeftOp = outerOps[2];
   const bottomRightOp = outerOps[3];
-
-  if (isOffline) {
-    return <OfflineNotice onRetry={loadDashboardState} isRetrying={isLoading} />;
-  }
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
@@ -508,28 +358,31 @@ export default function DashboardScreen() {
         </Animated.View>
       ) : (
         <Animated.View style={[styles.mainContainer, containerAnimatedStyle]}>
-          
+          {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
+
           {/* Upper Text Stage */}
           <View style={styles.upperStage}>
-            <View
-              style={[
-                styles.tagBadge,
-                {
-                  backgroundColor: isDark
-                    ? 'rgba(188, 227, 170, 0.18)'
-                    : accentLilac,
-                },
-              ]}
-            >
-              <Text
+            {coach.goalLine && (
+              <View
                 style={[
-                  styles.tagBadgeText,
-                  { color: isDark ? accentGreen : '#0A0F0B' },
+                  styles.tagBadge,
+                  {
+                    backgroundColor: isDark
+                      ? 'rgba(188, 227, 170, 0.18)'
+                      : accentLilac,
+                  },
                 ]}
               >
-                {badgeText}
-              </Text>
-            </View>
+                <Text
+                  style={[
+                    styles.tagBadgeText,
+                    { color: isDark ? accentGreen : '#0A0F0B' },
+                  ]}
+                >
+                  {coach.goalLine}
+                </Text>
+              </View>
+            )}
 
             <Text style={[styles.clarityHeading, { color: textColor }]}>
               {headingText}
@@ -592,6 +445,9 @@ export default function DashboardScreen() {
                     }}
                   />
                 </TouchableOpacity>
+                <Text style={[styles.focusLabel, { color: textColor }]} numberOfLines={1}>
+                  {focusText}
+                </Text>
               </Animated.View>
 
               {/* Bottom Row: Interactive Outer Bubbles */}
@@ -624,6 +480,16 @@ export default function DashboardScreen() {
               </View>
 
             </View>
+
+            {coach.tryNew && !selectedOverrideOp && (
+              <TouchableOpacity
+                style={styles.tryNewLink}
+                activeOpacity={0.7}
+                onPress={() => setSelectedOverrideOp(coach.tryNew!.operation)}
+              >
+                <Text style={[styles.tryNewText, { color: textSubtle }]}>{coach.tryNew.text}</Text>
+              </TouchableOpacity>
+            )}
           </View>
 
           {/* Start Button */}
@@ -697,6 +563,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     zIndex: 1,
   },
+  offlineNote: {
+    marginTop: 12,
+  },
   upperStage: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -710,7 +579,6 @@ const styles = StyleSheet.create({
   },
   tagBadgeText: {
     ...typography.caption,
-    letterSpacing: 1,
   },
   clarityHeading: {
     ...typography.display,
@@ -742,6 +610,22 @@ const styles = StyleSheet.create({
   },
   centerFocalWrap: {
     zIndex: 3,
+    alignItems: 'center',
+  },
+  focusLabel: {
+    ...typography.caption,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  tryNewLink: {
+    marginTop: 18,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+  },
+  tryNewText: {
+    ...typography.caption,
+    textAlign: 'center',
+    textDecorationLine: 'underline',
   },
   operationCircle: {
     alignItems: 'center',
@@ -777,7 +661,6 @@ const styles = StyleSheet.create({
   startButtonText: {
     ...typography.button,
     color: '#0A0F0B',
-    letterSpacing: 1.2,
   },
   skeletonBadge: {
     width: 130,

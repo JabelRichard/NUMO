@@ -22,9 +22,12 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography, inputTypography } from '@/src/constants/typography';
 import { supabase } from '../../src/config/supabase';
+import { syncBeforeSignOut } from '../../src/services/localDataService';
 import {
   scheduleDailyReminder,
   cancelDailyReminder,
+  REMINDERS_ENABLED_KEY,
+  REMINDER_TIME_KEY,
 } from '../../src/services/notificationService';
 
 const APP_VERSION = '1.0.4';
@@ -33,8 +36,8 @@ const BUILD_NUMBER = '24';
 const STORAGE_KEYS = {
   SOUND_ENABLED: '@numo_sound_enabled',
   HAPTICS_ENABLED: '@numo_haptics_enabled',
-  REMINDERS_ENABLED: '@numo_reminders_enabled',
-  REMINDER_TIME: '@numo_reminder_time',
+  REMINDERS_ENABLED: REMINDERS_ENABLED_KEY,
+  REMINDER_TIME: REMINDER_TIME_KEY,
 };
 
 const TIME_OPTIONS = [
@@ -60,7 +63,7 @@ export default function SettingsScreen() {
   const screenBg = isDark ? '#0A0F0B' : '#FFFFFF';
   const cardBg = isDark ? '#141C15' : '#FAFAFA';
   const primaryText = isDark ? '#F1ECE9' : '#0A0F0B';
-  const secondaryText = isDark ? 'rgba(241, 236, 233, 0.6)' : '#8E8E93';
+  const secondaryText = theme.subtext;
   const borderSubtle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
   const dividerColor = isDark ? 'rgba(255, 255, 255, 0.06)' : 'rgba(10, 15, 11, 0.06)';
   const greenAccent = '#BCE3AA';
@@ -78,7 +81,8 @@ export default function SettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
-  const [remindersEnabled, setRemindersEnabled] = useState(true);
+  // Off until the person turns it on; sign-out cancels it and clears the setting.
+  const [remindersEnabled, setRemindersEnabled] = useState(false);
   const [reminderTime, setReminderTime] = useState('08:00 AM');
 
   const [passwordModalVisible, setPasswordModalVisible] = useState(false);
@@ -89,6 +93,7 @@ export default function SettingsScreen() {
 
   const [timePickerVisible, setTimePickerVisible] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
 
   const loadPreferences = useCallback(async () => {
     try {
@@ -214,15 +219,42 @@ export default function SettingsScreen() {
     }
   };
 
+  const finishSignOut = async () => {
+    try {
+      await signOut();
+    } catch (e) {
+      console.warn('Sign out failed:', e);
+    } finally {
+      setIsSigningOut(false);
+      router.replace('/(auth)/welcome' as any);
+    }
+  };
+
+  // Sign-out clears this person's data from the phone. Workouts that haven't
+  // synced are tried first; if some are still waiting, ask before going ahead.
   const handleSignOut = () => {
+    if (isSigningOut) return;
     Alert.alert('Sign Out', 'Are you sure you want to sign out of NUMO?', [
       { text: 'Cancel', style: 'cancel' },
       {
         text: 'Sign Out',
         style: 'destructive',
         onPress: async () => {
-          await signOut();
-          router.replace('/(auth)/welcome' as any);
+          setIsSigningOut(true);
+          const unsynced = userId ? await syncBeforeSignOut(userId) : 0;
+          if (unsynced === 0) {
+            await finishSignOut();
+            return;
+          }
+          Alert.alert(
+            'Workouts not synced',
+            "You have workouts that haven't synced yet. Sign out anyway?",
+            [
+              { text: 'Cancel', style: 'cancel', onPress: () => setIsSigningOut(false) },
+              { text: 'Sign Out Anyway', style: 'destructive', onPress: () => void finishSignOut() },
+            ],
+            { cancelable: true, onDismiss: () => setIsSigningOut(false) }
+          );
         },
       },
     ]);
@@ -252,7 +284,8 @@ export default function SettingsScreen() {
               }
 
               try {
-                await signOut();
+                // The account is gone, so its unsynced workouts can't be saved anymore.
+                await signOut({ discardUnsynced: true });
               } catch {
                 // Auth user is already gone; local sign-out may fail.
               }
@@ -526,7 +559,12 @@ export default function SettingsScreen() {
 
               <View style={[styles.rowDivider, { backgroundColor: dividerColor }]} />
 
-              <TouchableOpacity style={styles.settingRow} activeOpacity={0.7} onPress={handleSignOut}>
+              <TouchableOpacity
+                style={styles.settingRow}
+                activeOpacity={0.7}
+                onPress={handleSignOut}
+                disabled={isSigningOut}
+              >
                 <View style={styles.settingLeft}>
                   <View
                     style={[
@@ -536,9 +574,15 @@ export default function SettingsScreen() {
                   >
                     <Ionicons name="log-out-outline" size={18} color={primaryText} />
                   </View>
-                  <Text style={[styles.settingTitle, { color: primaryText }]}>Sign Out</Text>
+                  <Text style={[styles.settingTitle, { color: primaryText }]}>
+                    {isSigningOut ? 'Signing Out…' : 'Sign Out'}
+                  </Text>
                 </View>
-                <Ionicons name="chevron-forward" size={17} color={secondaryText} />
+                {isSigningOut ? (
+                  <ActivityIndicator size="small" color={secondaryText} />
+                ) : (
+                  <Ionicons name="chevron-forward" size={17} color={secondaryText} />
+                )}
               </TouchableOpacity>
 
               <View style={[styles.rowDivider, { backgroundColor: dividerColor }]} />

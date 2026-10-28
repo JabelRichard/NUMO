@@ -8,59 +8,106 @@ import {
   Platform,
   Modal,
   ScrollView,
+  ActivityIndicator,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
+  useReducedMotion,
   withTiming,
   withSpring,
   withRepeat,
   withSequence,
+  withDelay,
+  interpolate,
   Easing,
+  FadeIn,
   runOnJS,
 } from 'react-native-reanimated';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
 import { QuestionAttemptResult } from '../../src/lib/math/types';
+import { flushWorkoutOutbox, getQueuedWorkoutCount } from '../../src/services/workoutService';
 import {
-  getRecentWorkouts,
-  fetchAllWorkouts,
-  flushWorkoutOutbox,
-  getQueuedWorkoutCount,
-  getNextFocus,
-  WorkoutSessionRecord,
-  WorkoutSummarySnapshot,
-  FocusOperation,
-} from '../../src/services/workoutService';
-import { getUserSettings } from '../../src/services/settingsService';
+  acceptLevelSuggestion,
+  addOperationToPlan,
+  CoachData,
+  COACH_LOAD_TIMEOUT_MS,
+  dismissGraduationPrompt,
+  dismissLevelPrompt,
+  getGraduationPromptDismissedAt,
+  getLevelPromptDismissedAt,
+  loadCachedCoachData,
+  loadCoachData,
+  saveFocusChoice,
+} from '../../src/services/coachService';
+import {
+  buildBreakdown,
+  CoachWorkout,
+  comfortName,
+  compareWithLast,
+  COPY,
+  findLastComparable,
+  getResultsFeedback,
+  getVerdict,
+  normalizeOperation,
+  operationName,
+  ResultsFeedback,
+  roundLength,
+  sameAgainWorkout,
+  toWorkoutParams,
+  usualMsPerQuestion,
+  workoutTitle,
+  WorkoutSource,
+} from '../../src/lib/coach';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '../../src/constants/palette';
-import { typography } from '../../src/constants/typography';
+import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
+import { withTimeout } from '../../src/utils/withTimeout';
 
-type PriorWorkoutSummary = WorkoutSummarySnapshot;
+type IconName = keyof typeof Ionicons.glyphMap;
+
+const TOTAL_STEPS = 2;
+const CONFETTI_PIECES = 26;
+
+/** History for one finished round. `data` is null when there is nothing to plan from (offline, nothing cached). */
+type LoadedHistory = {
+  key: string;
+  data: CoachData | null;
+  levelDismissed: string | null;
+  graduationDismissed: string | null;
+};
+
+type AskedQuestions = Pick<ResultsFeedback, 'graduation' | 'focusQuestion' | 'levelSuggestion'> & { key: string };
+
+type Celebration = { key: string; icon: IconName; text: string; confetti: boolean };
+
+/** "1.8 seconds per question". */
+function secondsPerQuestion(ms: number): string {
+  const seconds = Math.round(ms / 100) / 10;
+  return `${seconds} ${seconds === 1 ? 'second' : 'seconds'} per question`;
+}
 
 function AnimatedRollingNumber({
   target,
+  animate,
   duration = 750,
   style,
-  suffix = '',
-  prefix = '',
 }: {
   target: number;
+  animate: boolean;
   duration?: number;
   style?: any;
-  suffix?: string;
-  prefix?: string;
 }) {
-  const [displayVal, setDisplayVal] = useState(0);
+  const [displayVal, setDisplayVal] = useState(animate ? 0 : target);
 
   useEffect(() => {
-    if (isNaN(target) || target <= 0) {
-      setDisplayVal(0);
+    if (!animate || isNaN(target) || target <= 0) {
+      setDisplayVal(isNaN(target) ? 0 : target);
       return;
     }
     let start = 0;
@@ -82,34 +129,35 @@ function AnimatedRollingNumber({
     }, intervalTime);
 
     return () => clearInterval(timer);
-  }, [target, duration]);
+  }, [target, duration, animate]);
 
   return (
-    <Text style={style}>
-      {prefix}
+    <Text style={style} maxFontSizeMultiplier={MAX_FONT_SCALE.problem}>
       {displayVal}
-      {suffix}
     </Text>
   );
 }
 
 function IconStage({
   icon,
-  iconColor,
   haloColor,
-  discColor,
+  animate,
   size = 54,
 }: {
-  icon: keyof typeof Ionicons.glyphMap;
-  iconColor: string;
+  icon: IconName;
   haloColor: string;
-  discColor: string;
+  animate: boolean;
   size?: number;
 }) {
   const floatAnim = useSharedValue(0);
-  const scaleAnim = useSharedValue(0.7);
+  const scaleAnim = useSharedValue(animate ? 0.7 : 1);
 
   useEffect(() => {
+    if (!animate) {
+      floatAnim.value = 0;
+      scaleAnim.value = 1;
+      return;
+    }
     scaleAnim.value = withSpring(1, { damping: 11, stiffness: 120 });
     floatAnim.value = withRepeat(
       withSequence(
@@ -119,19 +167,114 @@ function IconStage({
       -1,
       true
     );
-  }, [floatAnim, scaleAnim]);
+  }, [floatAnim, scaleAnim, animate]);
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ translateY: floatAnim.value }, { scale: scaleAnim.value }],
   }));
 
   return (
-    <View style={styles.stageOuterWrap}>
+    <View style={styles.stageOuterWrap} importantForAccessibility="no-hide-descendants" accessibilityElementsHidden>
       <View style={[styles.haloGlow, { backgroundColor: haloColor }]} />
-      <Animated.View style={[styles.floatingBadge, { backgroundColor: discColor }, animatedStyle]}>
-        <Ionicons name={icon} size={size} color={iconColor} />
+      <Animated.View style={[styles.floatingBadge, animatedStyle]}>
+        <Ionicons name={icon} size={size} color={PALETTE.onPrimary} />
       </Animated.View>
       <View style={styles.pedestalShadow} />
+    </View>
+  );
+}
+
+/** A good moment: level up, mastered, goal done, perfect round. */
+function CelebrationCard({
+  icon,
+  text,
+  backgroundColor,
+  textColor,
+}: {
+  icon: IconName;
+  text: string;
+  backgroundColor: string;
+  textColor: string;
+}) {
+  return (
+    <View style={[styles.celebrationCard, { backgroundColor }]} accessible accessibilityLabel={text}>
+      <View style={styles.celebrationIconDisc}>
+        <Ionicons name={icon} size={30} color={PALETTE.onPrimary} />
+      </View>
+      <Text style={[styles.celebrationText, { color: textColor }]}>{text}</Text>
+    </View>
+  );
+}
+
+function ConfettiPiece({
+  x,
+  drift,
+  fall,
+  spin,
+  delay,
+  duration,
+  size,
+  color,
+}: {
+  x: number;
+  drift: number;
+  fall: number;
+  spin: number;
+  delay: number;
+  duration: number;
+  size: number;
+  color: string;
+}) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = withDelay(delay, withTiming(1, { duration, easing: Easing.out(Easing.quad) }));
+  }, [progress, delay, duration]);
+
+  const animatedStyle = useAnimatedStyle(() => ({
+    opacity: interpolate(progress.value, [0, 0.08, 0.75, 1], [0, 1, 1, 0]),
+    transform: [
+      { translateX: drift * progress.value },
+      { translateY: -30 + fall * progress.value },
+      { rotate: `${spin * progress.value}deg` },
+    ],
+  }));
+
+  return (
+    <Animated.View
+      style={[styles.confettiPiece, { left: x, width: size, height: size * 0.5, backgroundColor: color }, animatedStyle]}
+    />
+  );
+}
+
+/** A short, light burst from the top of the screen. Plays once. */
+function ConfettiBurst({ colors }: { colors: string[] }) {
+  const { width, height } = useWindowDimensions();
+  const pieces = useMemo(
+    () =>
+      Array.from({ length: CONFETTI_PIECES }, (_, i) => ({
+        x: Math.random() * width,
+        drift: (Math.random() - 0.5) * 120,
+        fall: height * (0.4 + Math.random() * 0.25),
+        spin: (Math.random() < 0.5 ? -1 : 1) * (240 + Math.random() * 360),
+        delay: Math.random() * 300,
+        duration: 1500 + Math.random() * 700,
+        size: 7 + Math.random() * 4,
+        color: colors[i % colors.length],
+      })),
+    [width, height, colors]
+  );
+
+  return (
+    <View
+      pointerEvents="none"
+      style={StyleSheet.absoluteFill}
+      importantForAccessibility="no-hide-descendants"
+      accessibilityElementsHidden
+    >
+      {pieces.map((piece, i) => (
+        <ConfettiPiece key={i} {...piece} />
+      ))}
     </View>
   );
 }
@@ -139,46 +282,68 @@ function IconStage({
 export default function ResultsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { width } = useWindowDimensions();
   const { theme } = useTheme();
   const { session } = useAuth();
+  const reduceMotion = useReducedMotion();
 
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
 
-  const { mode, difficulty, results, sessionKey, savedSessionId, saveStatus, prior } =
+  const { mode, difficulty, source, completedAt, results, sessionKey, savedSessionId, saveStatus } =
     useLocalSearchParams<{
       mode?: string;
       difficulty?: string;
+      source?: string;
+      completedAt?: string;
       results?: string;
       sessionKey?: string;
       savedSessionId?: string;
       saveStatus?: string;
-      prior?: string;
     }>();
 
   const userId = session?.user?.id;
+  // This screen stays mounted between workouts (it's a tab); everything loaded or
+  // asked here is tied to this key so nothing from an earlier round shows up.
+  const roundKey = `${sessionKey ?? ''}|${completedAt ?? ''}`;
 
-  const [currentStep, setCurrentStep] = useState<1 | 2 | 3>(1);
-  const [priorSummary, setPriorSummary] = useState<PriorWorkoutSummary | null>(null);
+  const [currentStep, setCurrentStep] = useState<1 | 2>(1);
   const [showMistakesModal, setShowMistakesModal] = useState(false);
-  const [historicalWorkouts, setHistoricalWorkouts] = useState<WorkoutSessionRecord[]>([]);
-  const [userQuestionGoal, setUserQuestionGoal] = useState<number>(10);
+  // The plan and earlier workouts (without this one), for the coach's feedback.
+  const [loaded, setLoaded] = useState<LoadedHistory | null>(null);
+  // The question asked on this screen, fixed when it first shows, so answering one
+  // (which changes the plan) never brings up another one here.
+  const [askedState, setAskedState] = useState<AskedQuestions | null>(null);
+  const [graduationAnswer, setGraduationAnswer] = useState<'yes' | 'no' | null>(null);
+  const [focusAnswer, setFocusAnswer] = useState<'yes' | 'no' | null>(null);
+  const [levelAnswer, setLevelAnswer] = useState<'yes' | 'no' | null>(null);
   const [isSaveQueued, setIsSaveQueued] = useState(saveStatus === 'queued');
   const [isRetryingSync, setIsRetryingSync] = useState(false);
 
   const stepOpacity = useSharedValue(1);
   const stepTranslateX = useSharedValue(0);
-  const hasLoadedRef = useRef(false);
   const isAnimatingRef = useRef(false);
+  // Bumped by every load and every new round, so a slow, older load can't overwrite a newer one.
+  const loadIdRef = useRef(0);
+  const celebratedRef = useRef(new Set<string>());
+
+  const history = loaded?.key === roundKey ? loaded : null;
+  const coachData = history?.data ?? null;
+  const historyStatus: 'loading' | 'ready' | 'limited' = !history ? 'loading' : coachData ? 'ready' : 'limited';
+  const asked = askedState?.key === roundKey ? askedState : null;
 
   useEffect(() => {
     setCurrentStep(1);
-    hasLoadedRef.current = false;
     isAnimatingRef.current = false;
-    setIsSaveQueued(saveStatus === 'queued');
+    setShowMistakesModal(false);
+    setGraduationAnswer(null);
+    setFocusAnswer(null);
+    setLevelAnswer(null);
     stepOpacity.value = 1;
     stepTranslateX.value = 0;
-  }, [sessionKey, results, saveStatus, stepOpacity, stepTranslateX]);
+  }, [roundKey, stepOpacity, stepTranslateX]);
+
+  useEffect(() => {
+    setIsSaveQueued(saveStatus === 'queued');
+  }, [roundKey, saveStatus]);
 
   const attempts: QuestionAttemptResult[] = useMemo(() => {
     if (!results) return [];
@@ -187,9 +352,10 @@ export default function ResultsScreen() {
       const parsed = JSON.parse(decoded);
       if (!Array.isArray(parsed)) return [];
 
+      // Missing timing stays 0: speed then shows "—" instead of a made-up number.
       return parsed.map((item: any) => ({
         ...item,
-        timeTakenMs: item.timeTakenMs ?? item.timeSpentMs ?? 1800,
+        timeTakenMs: Number(item.timeTakenMs ?? item.timeSpentMs) || 0,
       }));
     } catch {
       return [];
@@ -197,135 +363,122 @@ export default function ResultsScreen() {
   }, [results]);
 
   const totalQuestions = attempts.length;
-  const correctAttempts = attempts.filter((a) => a.isCorrect);
   const missedAttempts = attempts.filter((a) => !a.isCorrect);
-  const correctCount = correctAttempts.length;
+  const correctCount = totalQuestions - missedAttempts.length;
   const accuracy = totalQuestions > 0 ? Math.round((correctCount / totalQuestions) * 100) : 0;
-  const totalTimeSpentMs = attempts.reduce((acc, item) => acc + (item.timeTakenMs || 0), 0);
-  const avgPaceNum = totalQuestions > 0 && totalTimeSpentMs > 0
-    ? parseFloat((totalTimeSpentMs / totalQuestions / 1000).toFixed(1))
-    : 1.8;
+  const isPerfect = totalQuestions > 0 && missedAttempts.length === 0;
+  const hasTiming = totalQuestions > 0 && attempts.every((a) => a.timeTakenMs > 0);
+  const totalTimeSpentMs = hasTiming ? attempts.reduce((acc, item) => acc + item.timeTakenMs, 0) : 0;
+  const msPerQuestion = hasTiming ? totalTimeSpentMs / totalQuestions : null;
+  const speedText = msPerQuestion !== null ? secondsPerQuestion(msPerQuestion) : '— seconds per question';
 
-  const performanceVerdict = useMemo(() => {
-    if (accuracy >= 90 && avgPaceNum <= 2.2) {
-      return {
-        title: 'Fast & accurate',
-        desc: 'Sharp instinct and quick retrieval under pressure.',
-      };
-    }
-    if (accuracy >= 80 && avgPaceNum <= 2.2) {
-      return {
-        title: 'Quick and mostly accurate',
-        desc: 'Great tempo. Tighten up a couple of answers to hit 90%+.',
-      };
-    }
-    if (accuracy >= 80 && avgPaceNum > 2.2) {
-      return {
-        title: 'Accurate, steady pace',
-        desc: 'High precision round. Speed will build naturally with reps.',
-      };
-    }
-    if (accuracy < 75 && avgPaceNum <= 1.9) {
-      return {
-        title: 'Fast, but watch accuracy',
-        desc: 'Quick answers, but take half a second to verify mental carries.',
-      };
-    }
-    return {
-      title: 'Keep building consistency',
-      desc: 'Solid session completed. Daily consistency builds mental fluency.',
-    };
-  }, [accuracy, avgPaceNum]);
+  // This workout as the coach sees it.
+  const currentWorkout = useMemo((): CoachWorkout => ({
+    operation: normalizeOperation(mode),
+    difficulty: difficulty || 'easy',
+    total_questions: totalQuestions,
+    correct_answers: correctCount,
+    total_time: totalTimeSpentMs,
+    completed_at: completedAt || new Date().toISOString(),
+    source: (['warmup', 'coach', 'manual'] as WorkoutSource[]).includes(source as WorkoutSource)
+      ? (source as WorkoutSource)
+      : 'manual',
+    breakdown: buildBreakdown(attempts),
+  }), [mode, difficulty, totalQuestions, correctCount, totalTimeSpentMs, completedAt, source, attempts]);
 
-  // Synchronized Recommendation Engine: Blends history + this completed session
-  const recommendation = useMemo(() => {
-    const rawMode = (mode || 'mixed').toLowerCase();
-    const currentOp: FocusOperation =
-      rawMode === 'adaptive_mix' || rawMode === 'mixed'
-        ? 'mixed'
-        : (rawMode as FocusOperation);
+  // Same coach as Home: what we learned, level changes, questions, and what's next.
+  const feedback = useMemo(() => {
+    if (!coachData || !history) return null;
+    return getResultsFeedback({
+      plan: coachData.plan,
+      history: coachData.workouts,
+      current: currentWorkout,
+      levelPromptDismissedAt: history.levelDismissed,
+      graduationPromptDismissedAt: history.graduationDismissed,
+    });
+  }, [coachData, history, currentWorkout]);
 
-    const syntheticCurrentSession = {
-      operation: currentOp,
-      total_questions: totalQuestions,
-      correct_answers: correctCount,
-      total_time: totalTimeSpentMs,
-      completed_at: new Date().toISOString(),
-    };
-
-    const combinedWorkouts = [...historicalWorkouts, syntheticCurrentSession];
-    const rec = getNextFocus(combinedWorkouts);
-
-    let badge = 'COACH RECOMMENDATION';
-    if (rec.stage === 'tour') {
-      badge = 'PLACEMENT TOUR';
-    } else if (accuracy === 100) {
-      badge = 'FLAWLESS EXECUTION';
-    }
-
-    return {
-      targetMode: rec.targetOp,
-      stage: rec.stage,
-      badge,
-      title: rec.heading,
-      desc: rec.subheading,
-    };
-  }, [mode, totalQuestions, correctCount, totalTimeSpentMs, historicalWorkouts, accuracy]);
-
-  // Read-only: workout.tsx has already saved (or queued) this session. Anything
-  // fetched from the DB must exclude it so we never compare a session to itself.
-  const loadHistory = useCallback(async () => {
-    if (!userId) return;
-    const excludeCurrent = (rows: WorkoutSessionRecord[]) =>
-      savedSessionId ? rows.filter((w) => w.id !== savedSessionId) : rows;
-
-    const [allWorkoutsData, settingsData] = await Promise.all([
-      fetchAllWorkouts(userId).catch(() => [] as WorkoutSessionRecord[]),
-      getUserSettings(userId).catch(() => null),
-    ]);
-    setHistoricalWorkouts(excludeCurrent(allWorkoutsData || []));
-    if (settingsData?.daily_question_goal) {
-      setUserQuestionGoal(Number(settingsData.daily_question_goal) || 10);
-    }
-  }, [userId, savedSessionId]);
+  // Against the last round of the same operation and level, and the user's own usual pace.
+  const comparison = useMemo(
+    () => (coachData ? compareWithLast(currentWorkout, findLastComparable(coachData.workouts, currentWorkout)) : null),
+    [coachData, currentWorkout]
+  );
+  const usualMs = useMemo(
+    () => (coachData ? usualMsPerQuestion(coachData.workouts, currentWorkout) : null),
+    [coachData, currentWorkout]
+  );
+  const verdict = getVerdict(accuracy, msPerQuestion, usualMs);
 
   useEffect(() => {
-    if (attempts.length === 0 || hasLoadedRef.current) return;
-    hasLoadedRef.current = true;
+    if (feedback && !asked) {
+      const { graduation, focusQuestion, levelSuggestion } = feedback;
+      setAskedState({ key: roundKey, graduation, focusQuestion, levelSuggestion });
+    }
+  }, [feedback, asked, roundKey]);
 
-    async function loadComparison() {
+  // Read-only: workout.tsx has already saved (or queued) this session. Anything
+  // fetched must exclude it so we never count a session twice. Never throws.
+  const loadHistory = useCallback(async (): Promise<Omit<LoadedHistory, 'key'>> => {
+    const empty = { data: null, levelDismissed: null, graduationDismissed: null };
+    if (!userId) return empty;
+    const finishedAt = completedAt ? new Date(completedAt).getTime() : NaN;
+    const isCurrent = (w: CoachWorkout) =>
+      (savedSessionId && w.id === savedSessionId) || new Date(w.completed_at).getTime() === finishedAt;
+
+    let data: CoachData | null = null;
+    try {
+      data = await withTimeout(loadCoachData(userId), COACH_LOAD_TIMEOUT_MS);
+    } catch {
+      // Offline: the copy saved on this phone plus anything queued here.
       try {
-        // Snapshot of the previous workout, captured by workout.tsx before it cached this one.
-        let resolvedPrior: PriorWorkoutSummary | null = null;
-        if (prior) {
-          try {
-            resolvedPrior = JSON.parse(prior);
-          } catch {}
-        }
-
-        if (!resolvedPrior && userId) {
-          const dbRecents = await getRecentWorkouts();
-          const last = dbRecents.find((w) => w.id !== savedSessionId);
-          if (last) {
-            resolvedPrior = {
-              accuracy: Math.round(last.accuracy),
-              avgTimeSecs: parseFloat(((last.average_time_per_question || 2000) / 1000).toFixed(1)),
-              correctCount: last.correct_answers,
-              totalQuestions: last.total_questions,
-              completedAt: last.completed_at,
-            };
-          }
-        }
-
-        setPriorSummary(resolvedPrior);
-        await loadHistory();
-      } catch (e) {
-        console.warn('Could not load prior summary or history:', e);
+        data = await loadCachedCoachData(userId);
+      } catch {
+        data = null;
       }
     }
 
-    loadComparison();
-  }, [attempts, prior, savedSessionId, userId, loadHistory]);
+    let levelDismissed: string | null = null;
+    let graduationDismissed: string | null = null;
+    try {
+      [levelDismissed, graduationDismissed] = await Promise.all([
+        getLevelPromptDismissedAt(userId),
+        getGraduationPromptDismissedAt(userId),
+      ]);
+    } catch {
+      // Treated as never dismissed.
+    }
+
+    return {
+      data: data ? { plan: data.plan, workouts: data.workouts.filter((w) => !isCurrent(w)) } : null,
+      levelDismissed,
+      graduationDismissed,
+    };
+  }, [userId, savedSessionId, completedAt]);
+
+  const refreshHistory = useCallback(async () => {
+    const loadId = ++loadIdRef.current;
+    let result: Omit<LoadedHistory, 'key'>;
+    try {
+      result = await loadHistory();
+    } catch {
+      result = { data: null, levelDismissed: null, graduationDismissed: null };
+    }
+    if (loadId !== loadIdRef.current) return;
+    // Set together, so the first feedback already knows about earlier "Not now" answers.
+    setLoaded({ key: roundKey, ...result });
+  }, [loadHistory, roundKey]);
+
+  useEffect(() => {
+    if (attempts.length === 0) {
+      loadIdRef.current += 1;
+      setLoaded({ key: roundKey, data: null, levelDismissed: null, graduationDismissed: null });
+      return;
+    }
+    refreshHistory();
+    return () => {
+      loadIdRef.current += 1;
+    };
+  }, [attempts, roundKey, refreshHistory]);
 
   const handleRetrySync = async () => {
     if (!userId || isRetryingSync) return;
@@ -335,44 +488,71 @@ export default function ResultsScreen() {
       const remaining = await getQueuedWorkoutCount(userId);
       if (remaining === 0) {
         setIsSaveQueued(false);
-        await loadHistory().catch(() => {});
+        await refreshHistory();
       }
+    } catch (e) {
+      console.warn('Retry sync failed:', e);
     } finally {
       setIsRetryingSync(false);
     }
   };
 
-  const comparisonData = useMemo(() => {
-    if (!priorSummary) return null;
+  // Biggest first: mastered everything, mastered one, goal done, level up.
+  const celebrations = useMemo((): Celebration[] => {
+    if (!feedback) return [];
+    const list: Celebration[] = [];
+    if (feedback.allMastered) {
+      list.push({ key: 'all', icon: 'trophy', text: feedback.allMastered, confetti: true });
+    } else {
+      for (const op of feedback.newlyMastered) {
+        list.push({ key: `mastered-${op}`, icon: 'ribbon', text: COPY.mastered(op), confetti: true });
+      }
+    }
+    if (feedback.goalJustDone) {
+      list.push({ key: 'goal', icon: 'checkmark-done', text: COPY.goalDoneHeading, confetti: true });
+    }
+    for (const change of feedback.levelChanges) {
+      if (change.direction === 'up') {
+        list.push({ key: `up-${change.operation}`, icon: 'trending-up', text: change.text, confetti: false });
+      }
+    }
+    return list;
+  }, [feedback]);
 
-    const accDiff = accuracy - priorSummary.accuracy;
-    const timeDiff = parseFloat((avgPaceNum - priorSummary.avgTimeSecs).toFixed(1));
-    const scoreDiff = correctCount - priorSummary.correctCount;
+  // Calm lines: what we learned and levels going down.
+  const coachLines = feedback
+    ? [feedback.learned, ...feedback.levelChanges.filter((c) => c.direction === 'down').map((c) => c.text)].filter(
+        (line): line is string => Boolean(line)
+      )
+    : [];
 
-    return {
-      accuracyDelta: `${accDiff >= 0 ? '+' : ''}${accDiff}%`,
-      isAccPositive: accDiff >= 0,
-      timeDelta:
-        timeDiff === 0
-          ? 'Same pace'
-          : timeDiff < 0
-          ? `${Math.abs(timeDiff)}s faster`
-          : `${timeDiff}s slower`,
-      isTimePositive: timeDiff <= 0,
-      isTimeNeutral: timeDiff === 0,
-      scoreDelta: `${scoreDiff >= 0 ? '+' : ''}${scoreDiff}`,
-      isScorePositive: scoreDiff >= 0,
-    };
-  }, [priorSummary, accuracy, avgPaceNum, correctCount]);
+  const hasCelebration = currentStep === 1 ? isPerfect : celebrations.length > 0;
+  const showConfetti = currentStep === 2 && !reduceMotion && celebrations.some((c) => c.confetti);
+
+  // One success haptic per screen with a celebration.
+  useEffect(() => {
+    if (!hasCelebration) return;
+    const key = `${roundKey}:${currentStep}`;
+    if (celebratedRef.current.has(key)) return;
+    celebratedRef.current.add(key);
+    if (Platform.OS !== 'web') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    }
+  }, [hasCelebration, roundKey, currentStep]);
+
+  // With no history to plan from, offer the same round again, never a warm-up.
+  const nextWorkout = useMemo(
+    () => feedback?.next.workout ?? (historyStatus === 'limited' ? sameAgainWorkout(currentWorkout) : null),
+    [feedback, historyStatus, currentWorkout]
+  );
 
   const finishStepAnimation = () => {
     isAnimatingRef.current = false;
   };
 
   const handleNextStep = () => {
-    // Functional update so a stale closure can never skip a step.
-    setCurrentStep((prev) => (prev < 3 ? ((prev + 1) as 2 | 3) : prev));
-    stepTranslateX.value = 24;
+    setCurrentStep(2);
+    stepTranslateX.value = reduceMotion ? 0 : 24;
     stepOpacity.value = withTiming(1, { duration: 220 }, () => {
       runOnJS(finishStepAnimation)();
     });
@@ -381,7 +561,7 @@ export default function ResultsScreen() {
 
   const advanceStep = () => {
     // Ignore taps while a transition is running (double-tap on "Continue").
-    if (isAnimatingRef.current || currentStep >= 3) return;
+    if (isAnimatingRef.current || currentStep >= TOTAL_STEPS) return;
     isAnimatingRef.current = true;
 
     if (Platform.OS !== 'web') {
@@ -393,19 +573,13 @@ export default function ResultsScreen() {
   };
 
   const handleStartNextWorkout = () => {
+    if (!nextWorkout) return;
     if (Platform.OS !== 'web') {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     }
 
-    const nextMode = recommendation.targetMode || 'mixed';
-    const resolvedMode = nextMode === 'mixed' ? 'adaptive_mix' : nextMode;
-    const isNewUser = historicalWorkouts.length === 0;
-
     const targetPayload = {
-      mode: resolvedMode,
-      difficulty: difficulty || 'easy',
-      count: isNewUser ? '10' : userQuestionGoal.toString(),
-      source: 'results_coach',
+      ...toWorkoutParams(nextWorkout),
       reset: 'true',
       sessionKey: Date.now().toString(),
     };
@@ -423,6 +597,60 @@ export default function ResultsScreen() {
     }
   };
 
+  const updatePlan = (change: (plan: CoachData['plan']) => CoachData['plan']) => {
+    setLoaded((prev) => (prev?.data ? { ...prev, data: { ...prev.data, plan: change(prev.data.plan) } } : prev));
+  };
+
+  // "Want to add × Multiplying to your plan?"
+  const handleGraduationAnswer = async (yes: boolean) => {
+    if (!asked?.graduation || !userId || !coachData) return;
+    setGraduationAnswer(yes ? 'yes' : 'no');
+    if (!yes) {
+      await dismissGraduationPrompt(userId);
+      return;
+    }
+    try {
+      const frictionAreas = await addOperationToPlan(userId, coachData.plan, asked.graduation.operation);
+      updatePlan((plan) => ({ ...plan, frictionAreas }));
+    } catch (e) {
+      console.warn('Failed to add operation to plan:', e);
+      setGraduationAnswer(null);
+    }
+  };
+
+  // "Want to focus on ÷ Dividing?"
+  const handleFocusAnswer = async (yes: boolean) => {
+    if (!asked?.focusQuestion || !userId || !coachData) return;
+    setFocusAnswer(yes ? 'yes' : 'no');
+    if (!yes) return; // Not now: stay on mixed practice; we ask again in a few workouts.
+    const operation = asked.focusQuestion.operation;
+    try {
+      await saveFocusChoice(userId, operation);
+      updatePlan((plan) => ({ ...plan, frictionAreas: [operation] }));
+    } catch (e) {
+      console.warn('Failed to save focus choice:', e);
+      setFocusAnswer(null);
+    }
+  };
+
+  // "Want to change your level to Confident?"
+  const handleLevelAnswer = async (yes: boolean) => {
+    if (!asked?.levelSuggestion || !userId || !coachData) return;
+    setLevelAnswer(yes ? 'yes' : 'no');
+    if (!yes) {
+      await dismissLevelPrompt(userId);
+      return;
+    }
+    const level = asked.levelSuggestion.level;
+    try {
+      await acceptLevelSuggestion(userId, level);
+      updatePlan((plan) => ({ ...plan, comfortLevel: level, levelSetAt: new Date().toISOString() }));
+    } catch (e) {
+      console.warn('Failed to save level:', e);
+      setLevelAnswer(null);
+    }
+  };
+
   const handleGoHome = () => {
     if (Platform.OS !== 'web') {
       Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -437,325 +665,386 @@ export default function ResultsScreen() {
 
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
   const textColor = isDark ? PALETTE.backgroundLight : PALETTE.dark;
-  const subtextColor = isDark ? 'rgba(241, 236, 233, 0.65)' : 'rgba(10, 15, 11, 0.55)';
-  const cardBg = isDark ? '#141C15' : PALETTE.white;
-  const borderSubtle = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.08)';
+  const subtextColor = theme.subtext;
+  const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
+  const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
+  const fillColor = isDark ? PALETTE.fillDark : PALETTE.fillLight;
+  const accentSoft = isDark ? PALETTE.primarySoftDark : PALETTE.primarySoftLight;
+  // Green for "better" text; sage itself is too faint on light backgrounds.
+  const betterColor = isDark ? PALETTE.primary : PALETTE.primaryDeep;
+  const confettiColors = useMemo(
+    () => (isDark ? [PALETTE.primary, PALETTE.primarySoftLight] : [PALETTE.primary, PALETTE.primaryDeep]),
+    [isDark]
+  );
+
+  const renderQuestion = (
+    text: string,
+    onAnswer: (yes: boolean) => void,
+    yesLabel: string,
+    noLabel: string,
+    context?: string | null
+  ) => (
+    <View style={[styles.questionCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+      {context ? <Text style={[styles.recDesc, { color: subtextColor, marginBottom: 6 }]}>{context}</Text> : null}
+      <Text style={[styles.recTitle, { color: textColor }]}>{text}</Text>
+      <View style={styles.questionButtons}>
+        <TouchableOpacity
+          style={[styles.questionYes, { backgroundColor: PALETTE.primary }]}
+          onPress={() => onAnswer(true)}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={yesLabel}
+        >
+          <Text style={styles.questionYesText}>Yes</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.questionNo}
+          onPress={() => onAnswer(false)}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={noLabel}
+        >
+          <Text style={[styles.questionNoText, { color: subtextColor }]}>Not now</Text>
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const primaryLabel = currentStep === 1
+    ? 'Continue'
+    : feedback?.next.goalDoneToday
+    ? COPY.bonusButton
+    : 'Start next workout';
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* TOP TIMELINE NAVIGATION */}
+      {/* TOP PROGRESS + CLOSE */}
       <View style={styles.topTimelineWrapper}>
         <View style={styles.topTimelineRow}>
-          <View style={styles.timelineSegmentsRow}>
-            {[1, 2, 3].map((step) => {
-              const isFilled = step <= currentStep;
-              return (
-                <View
-                  key={step}
-                  style={[
-                    styles.timelineSegment,
-                    {
-                      backgroundColor: isFilled
-                        ? PALETTE.primary
-                        : isDark
-                        ? 'rgba(255, 255, 255, 0.12)'
-                        : 'rgba(10, 15, 11, 0.1)',
-                    },
-                  ]}
-                />
-              );
-            })}
+          <View
+            style={styles.timelineSegmentsRow}
+            accessible
+            accessibilityRole="progressbar"
+            accessibilityLabel={`Step ${currentStep} of ${TOTAL_STEPS}`}
+            accessibilityValue={{ min: 1, max: TOTAL_STEPS, now: currentStep }}
+          >
+            {Array.from({ length: TOTAL_STEPS }, (_, i) => i + 1).map((step) => (
+              <View
+                key={step}
+                style={[styles.timelineSegment, { backgroundColor: step <= currentStep ? PALETTE.primary : fillColor }]}
+              />
+            ))}
           </View>
 
-          <View style={styles.timelineActionWrap}>
-            {currentStep === 1 ? (
-              <TouchableOpacity
-                style={[styles.closeIconBtn, { backgroundColor: cardBg }]}
-                onPress={handleGoHome}
-                activeOpacity={0.7}
-                hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-              >
-                <Ionicons name="close" size={18} color={textColor} />
-              </TouchableOpacity>
-            ) : (
-              <View style={styles.closeIconPlaceholder} />
-            )}
-          </View>
+          <TouchableOpacity
+            style={[styles.closeIconBtn, { backgroundColor: cardBg }]}
+            onPress={handleGoHome}
+            activeOpacity={0.7}
+            accessibilityRole="button"
+            accessibilityLabel="Close"
+          >
+            <Ionicons name="close" size={20} color={textColor} />
+          </TouchableOpacity>
         </View>
       </View>
 
-      {/* BODY CONTENT CONTAINER */}
+      {/* BODY */}
       <Animated.View style={[styles.contentWrapper, stepAnimatedStyle]}>
-        {/* BEAT 1: YOUR RESULT */}
-        {currentStep === 1 && (
-          <View style={styles.stepContainer}>
-            <IconStage
-              icon="sparkles"
-              iconColor={PALETTE.dark}
-              discColor={PALETTE.accentLilac}
-              haloColor={isDark ? 'rgba(242, 202, 236, 0.12)' : 'rgba(242, 202, 236, 0.35)'}
-              size={52}
-            />
+        <ScrollView
+          key={currentStep}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          {/* SCREEN 1: YOUR RESULT */}
+          {currentStep === 1 && (
+            <View style={styles.stepContainer}>
+              <IconStage icon="sparkles" haloColor={accentSoft} animate={!reduceMotion} size={52} />
 
-            <Text style={[styles.stepHeadline, { color: textColor }]}>Workout complete</Text>
-
-            <View style={styles.scoreRow}>
-              <AnimatedRollingNumber target={correctCount} style={[styles.massiveScoreText, { color: textColor }]} />
-              <Text style={[styles.massiveScoreDivider, { color: subtextColor }]}>/{totalQuestions}</Text>
-            </View>
-
-            <Text style={[styles.metricSubtitle, { color: textColor }]}>
-              {accuracy}% accuracy · {avgPaceNum}s average
-            </Text>
-
-            <View style={[styles.interpretationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <Text style={[styles.interpretationTitle, { color: textColor }]}>
-                {performanceVerdict.title}
+              <Text style={[styles.stepHeadline, { color: textColor }]} maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}>
+                Your result
               </Text>
-              <Text style={[styles.interpretationDesc, { color: subtextColor }]}>
-                {performanceVerdict.desc}
-              </Text>
-            </View>
 
-            {missedAttempts.length > 0 ? (
-              <TouchableOpacity
-                style={[styles.mistakeReviewPill, { backgroundColor: isDark ? 'rgba(235, 87, 87, 0.16)' : 'rgba(235, 87, 87, 0.08)' }]}
-                activeOpacity={0.8}
-                onPress={() => setShowMistakesModal(true)}
+              <View
+                style={styles.scoreRow}
+                accessible
+                accessibilityLabel={`${correctCount} out of ${totalQuestions} correct`}
               >
-                <Ionicons name="eye-outline" size={15} color={PALETTE.dangerText} />
-                <Text style={styles.mistakeReviewPillText}>
-                  Review {missedAttempts.length} missed {missedAttempts.length === 1 ? 'question' : 'questions'}
+                <AnimatedRollingNumber
+                  key={roundKey}
+                  target={correctCount}
+                  animate={!reduceMotion}
+                  style={[styles.massiveScoreText, { color: textColor }]}
+                />
+                <Text
+                  style={[styles.massiveScoreDivider, { color: subtextColor }]}
+                  maxFontSizeMultiplier={MAX_FONT_SCALE.display}
+                >
+                  /{totalQuestions}
                 </Text>
-                <Ionicons name="chevron-forward" size={14} color={PALETTE.dangerText} />
-              </TouchableOpacity>
-            ) : (
-              <View style={[styles.flawlessPill, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.18)' : 'rgba(188, 227, 170, 0.35)' }]}>
-                <Ionicons name="shield-checkmark" size={15} color={PALETTE.dark} />
-                <Text style={styles.flawlessPillText}>Flawless Round · 100% Accuracy</Text>
               </View>
-            )}
 
-            {isSaveQueued && (
-              <View style={[styles.syncNotice, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-                <Ionicons name="cloud-offline-outline" size={16} color={subtextColor} />
-                <Text style={[styles.syncNoticeText, { color: subtextColor }]}>
-                  Saved on this device. It will sync when you're back online.
-                </Text>
-                <TouchableOpacity onPress={handleRetrySync} disabled={isRetryingSync} hitSlop={8}>
-                  <Text style={[styles.syncNoticeAction, { color: textColor }]}>
-                    {isRetryingSync ? 'Retrying…' : 'Retry'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            )}
-          </View>
-        )}
+              <Text
+                style={[styles.metricSubtitle, { color: textColor }]}
+                accessibilityLabel={`${accuracy}% accuracy, ${msPerQuestion !== null ? speedText : 'speed not recorded'}`}
+              >
+                {accuracy}% accuracy · {speedText}
+              </Text>
 
-        {/* BEAT 2: YOUR PROGRESS */}
-        {currentStep === 2 && (
-          <View style={styles.stepContainer}>
-            <IconStage
-              icon="trending-up"
-              iconColor={PALETTE.dark}
-              discColor={PALETTE.primary}
-              haloColor={isDark ? 'rgba(188, 227, 170, 0.14)' : 'rgba(188, 227, 170, 0.4)'}
-              size={54}
-            />
-
-            <Text style={[styles.stepHeadline, { color: textColor }]}>Your progress</Text>
-            <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
-              {comparisonData ? 'Compared to your last workout' : 'Establishing your personal standard'}
-            </Text>
-
-            {comparisonData ? (
-              <View style={[styles.comparisonCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-                <View style={styles.tableRowHeader}>
-                  <Text style={[styles.tableColHeader, { color: subtextColor }]}>Metric</Text>
-                  <Text style={[styles.tableColHeader, { color: subtextColor, textAlign: 'center' }]}>Today</Text>
-                  <Text style={[styles.tableColHeader, { color: subtextColor, textAlign: 'right' }]}>Change</Text>
-                </View>
-
-                <View style={[styles.tableDivider, { backgroundColor: borderSubtle }]} />
-
-                <View style={styles.tableRow}>
-                  <Text style={[styles.tableLabel, { color: textColor }]}>Accuracy</Text>
-                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{accuracy}%</Text>
-                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isAccPositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
-                    <Text style={[styles.deltaText, { color: comparisonData.isAccPositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
-                      {comparisonData.accuracyDelta}
-                    </Text>
+              {historyStatus !== 'loading' && (
+                <Animated.View entering={FadeIn.duration(250)} style={styles.fullWidth}>
+                  <View style={[styles.interpretationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                    <Text style={[styles.interpretationTitle, { color: textColor }]}>{verdict.title}</Text>
+                    <Text style={[styles.interpretationDesc, { color: subtextColor }]}>{verdict.desc}</Text>
                   </View>
-                </View>
 
-                <View style={styles.tableRow}>
-                  <Text style={[styles.tableLabel, { color: textColor }]}>Avg. pace</Text>
-                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{avgPaceNum}s</Text>
-                  <View
-                    style={[
-                      styles.deltaBadge,
-                      {
-                        backgroundColor: comparisonData.isTimeNeutral
-                          ? isDark
-                            ? 'rgba(255,255,255,0.08)'
-                            : 'rgba(0,0,0,0.06)'
-                          : comparisonData.isTimePositive
-                          ? 'rgba(188, 227, 170, 0.25)'
-                          : 'rgba(235, 87, 87, 0.12)',
-                      },
-                    ]}
-                  >
+                  {comparison && (
                     <Text
                       style={[
-                        styles.deltaText,
-                        {
-                          color: comparisonData.isTimeNeutral
-                            ? subtextColor
-                            : comparisonData.isTimePositive
-                            ? isDark
-                              ? PALETTE.primary
-                              : '#2E7D32'
-                            : PALETTE.dangerText,
-                        },
+                        styles.comparisonText,
+                        { color: comparison.tone === 'better' ? betterColor : subtextColor },
                       ]}
                     >
-                      {comparisonData.timeDelta}
+                      {comparison.text}
                     </Text>
-                  </View>
-                </View>
+                  )}
+                </Animated.View>
+              )}
 
-                <View style={styles.tableRow}>
-                  <Text style={[styles.tableLabel, { color: textColor }]}>Correct</Text>
-                  <Text style={[styles.tableValue, { color: textColor, textAlign: 'center' }]}>{correctCount}/{totalQuestions}</Text>
-                  <View style={[styles.deltaBadge, { backgroundColor: comparisonData.isScorePositive ? 'rgba(188, 227, 170, 0.25)' : 'rgba(235, 87, 87, 0.12)' }]}>
-                    <Text style={[styles.deltaText, { color: comparisonData.isScorePositive ? (isDark ? PALETTE.primary : '#2E7D32') : PALETTE.dangerText }]}>
-                      {comparisonData.scoreDelta}
+              {isPerfect ? (
+                <View style={styles.celebrationSpacing}>
+                  <CelebrationCard
+                    icon="star"
+                    text="Perfect round · 100% correct"
+                    backgroundColor={accentSoft}
+                    textColor={textColor}
+                  />
+                </View>
+              ) : missedAttempts.length > 0 ? (
+                <TouchableOpacity
+                  style={[styles.mistakeReviewPill, { backgroundColor: fillColor }]}
+                  activeOpacity={0.8}
+                  onPress={() => setShowMistakesModal(true)}
+                  accessibilityRole="button"
+                >
+                  <Ionicons name="eye-outline" size={18} color={subtextColor} />
+                  <Text style={[styles.mistakeReviewPillText, { color: textColor }]}>
+                    Review {missedAttempts.length} {missedAttempts.length === 1 ? 'question' : 'questions'}
+                  </Text>
+                  <Ionicons name="chevron-forward" size={16} color={subtextColor} />
+                </TouchableOpacity>
+              ) : null}
+
+              {isSaveQueued && (
+                <View style={[styles.syncNotice, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                  <Ionicons name="cloud-offline-outline" size={18} color={subtextColor} />
+                  <Text style={[styles.syncNoticeText, { color: subtextColor }]}>
+                    Saved on this device. It will sync when you're back online.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.syncNoticeActionBtn}
+                    onPress={handleRetrySync}
+                    disabled={isRetryingSync}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry sync"
+                  >
+                    <Text style={[styles.syncNoticeAction, { color: textColor }]}>
+                      {isRetryingSync ? 'Retrying…' : 'Retry'}
                     </Text>
-                  </View>
+                  </TouchableOpacity>
                 </View>
-              </View>
-            ) : (
-              <View style={[styles.baselineCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-                <View style={[styles.baselineIconWrap, { backgroundColor: isDark ? 'rgba(188,227,170,0.15)' : PALETTE.primary }]}>
-                  <Ionicons name="flag-outline" size={24} color="#0A0F0B" />
-                </View>
-                <Text style={[styles.baselineTitle, { color: textColor }]}>Your baseline is set</Text>
-                <Text style={[styles.baselineDesc, { color: subtextColor }]}>
-                  This workout is recorded as your benchmark. Progress deltas will calculate on your next session.
-                </Text>
-              </View>
-            )}
-          </View>
-        )}
-
-        {/* BEAT 3: YOUR NEXT STEP (SYNCHRONIZED WITH SINGLE SOURCE OF TRUTH) */}
-        {currentStep === 3 && (
-          <View style={styles.stepContainer}>
-            <IconStage
-              icon="compass-outline"
-              iconColor={PALETTE.dark}
-              discColor={PALETTE.primary}
-              haloColor={isDark ? 'rgba(188, 227, 170, 0.14)' : 'rgba(188, 227, 170, 0.4)'}
-              size={56}
-            />
-
-            <Text style={[styles.stepHeadline, { color: textColor }]}>Next recommendation</Text>
-            <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
-              {recommendation.stage === 'tour' ? 'Your placement tour roadmap' : "Targeted focus based on today's performance"}
-            </Text>
-
-            <View style={[styles.recommendationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <View style={[styles.recBadge, { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.16)' : PALETTE.primary }]}>
-                <Text style={[styles.recBadgeText, { color: isDark ? PALETTE.primary : PALETTE.dark }]}>
-                  {recommendation.badge}
-                </Text>
-              </View>
-
-              <Text style={[styles.recTitle, { color: textColor }]}>{recommendation.title}</Text>
-              <Text style={[styles.recDesc, { color: subtextColor }]}>{recommendation.desc}</Text>
+              )}
             </View>
-          </View>
-        )}
+          )}
+
+          {/* SCREEN 2: WHAT'S NEXT */}
+          {currentStep === 2 && (
+            <View style={styles.stepContainer}>
+              <IconStage icon="compass-outline" haloColor={accentSoft} animate={!reduceMotion} size={56} />
+
+              <Text style={[styles.stepHeadline, { color: textColor }]} maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}>
+                What's next
+              </Text>
+
+              {historyStatus === 'loading' && (
+                <View style={styles.loadingRow}>
+                  <ActivityIndicator color={subtextColor} />
+                  <Text style={[styles.stepSubtitle, { color: subtextColor, marginBottom: 0 }]}>
+                    Loading your next step…
+                  </Text>
+                </View>
+              )}
+
+              {feedback && (
+                <>
+                  <Text style={[styles.stepSubtitle, { color: subtextColor }]}>{feedback.subtitle}</Text>
+
+                  {celebrations.map((c) => (
+                    <View key={c.key} style={[styles.fullWidth, styles.celebrationGap]}>
+                      <CelebrationCard icon={c.icon} text={c.text} backgroundColor={accentSoft} textColor={textColor} />
+                    </View>
+                  ))}
+
+                  {coachLines.map((line) => (
+                    <Text key={line} style={[styles.coachLine, { color: textColor }]}>
+                      {line}
+                    </Text>
+                  ))}
+
+                  {asked?.graduation &&
+                    graduationAnswer === null &&
+                    renderQuestion(
+                      asked.graduation.text,
+                      handleGraduationAnswer,
+                      `Yes, add ${operationName(asked.graduation.operation)} to my plan`,
+                      `Not now, don't add ${operationName(asked.graduation.operation)}`,
+                      feedback.newlyMastered.includes(asked.graduation.mastered)
+                        ? null
+                        : COPY.masteredBefore(asked.graduation.mastered)
+                    )}
+
+                  {asked?.focusQuestion &&
+                    focusAnswer === null &&
+                    renderQuestion(
+                      asked.focusQuestion.text,
+                      handleFocusAnswer,
+                      `Yes, focus on ${operationName(asked.focusQuestion.operation)}`,
+                      'Not now, keep mixing'
+                    )}
+
+                  {asked?.levelSuggestion &&
+                    levelAnswer === null &&
+                    renderQuestion(
+                      asked.levelSuggestion.text,
+                      handleLevelAnswer,
+                      `Yes, change my level to ${comfortName(asked.levelSuggestion.level)}`,
+                      'Not now, keep my level'
+                    )}
+                </>
+              )}
+
+              {historyStatus === 'limited' && (
+                <Text style={[styles.stepSubtitle, { color: subtextColor }]}>
+                  You're offline, so here's the same round again. Your plan updates when you're back online.
+                </Text>
+              )}
+
+              {nextWorkout && (
+                <View style={[styles.recommendationCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
+                  <Text style={[styles.recDesc, { color: subtextColor }]}>Next up</Text>
+                  <Text style={[styles.recTitle, { color: textColor }]}>
+                    {feedback ? workoutTitle(nextWorkout, nextWorkout.questionCount) : 'Same again'}
+                  </Text>
+                  {!feedback && (
+                    <Text style={[styles.recDesc, { color: subtextColor }]}>
+                      {workoutTitle(nextWorkout, nextWorkout.questionCount)}
+                    </Text>
+                  )}
+                  <Text style={[styles.recDesc, { color: subtextColor }]}>
+                    {roundLength(nextWorkout.questionCount, coachData?.plan.sessionDurationMinutes)}
+                  </Text>
+                </View>
+              )}
+            </View>
+          )}
+        </ScrollView>
       </Animated.View>
 
-      {/* BOTTOM ACTION DOCK */}
+      {/* BOTTOM ACTIONS */}
       <View style={[styles.dockContainer, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
-        {currentStep === 3 ? (
-          <View style={styles.doubleActionWrap}>
+        <View style={styles.doubleActionWrap}>
+          {(currentStep === 1 || historyStatus === 'loading' || nextWorkout) && (
             <TouchableOpacity
-              style={[styles.primaryActionBtn, { backgroundColor: PALETTE.primary }]}
+              style={[
+                styles.primaryActionBtn,
+                { backgroundColor: PALETTE.primary },
+                currentStep === 2 && !nextWorkout && styles.disabledBtn,
+              ]}
               activeOpacity={0.85}
-              onPress={handleStartNextWorkout}
+              onPress={currentStep === 1 ? advanceStep : handleStartNextWorkout}
+              disabled={currentStep === 2 && !nextWorkout}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: currentStep === 2 && !nextWorkout }}
             >
-              <Text style={styles.primaryActionBtnText}>Start Next Workout</Text>
-              <Ionicons name="arrow-forward" size={18} color={PALETTE.dark} />
+              <Text style={styles.primaryActionBtnText}>{primaryLabel}</Text>
+              <Ionicons name="arrow-forward" size={18} color={PALETTE.onPrimary} />
             </TouchableOpacity>
+          )}
 
+          {currentStep === 2 && (
             <TouchableOpacity
               style={styles.ghostActionBtn}
               activeOpacity={0.7}
               onPress={handleGoHome}
+              accessibilityRole="button"
             >
-              <Text style={[styles.ghostActionBtnText, { color: subtextColor }]}>Done for today</Text>
+              <Text style={[styles.ghostActionBtnText, { color: subtextColor }]}>
+                {feedback?.next.goalDoneToday ? 'Done for today' : 'Back to home'}
+              </Text>
             </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity
-            style={[styles.primaryActionBtn, { backgroundColor: PALETTE.primary }]}
-            activeOpacity={0.85}
-            onPress={advanceStep}
-          >
-            <Text style={styles.primaryActionBtnText}>Continue</Text>
-            <Ionicons name="arrow-forward" size={18} color={PALETTE.dark} />
-          </TouchableOpacity>
-        )}
+          )}
+        </View>
       </View>
 
-      {/* MISTAKE REVIEW MODAL SHEET */}
+      {showConfetti && <ConfettiBurst key={roundKey} colors={confettiColors} />}
+
+      {/* QUESTIONS TO REVIEW */}
       <Modal
         visible={showMistakesModal}
         transparent
         animationType="slide"
         onRequestClose={() => setShowMistakesModal(false)}
       >
-        <View style={styles.modalBackdrop}>
+        <View style={[styles.modalBackdrop, { backgroundColor: PALETTE.scrim }]}>
           <TouchableOpacity
             style={styles.modalBackdropDismiss}
             activeOpacity={1}
             onPress={() => setShowMistakesModal(false)}
+            accessible={false}
           />
 
-          <View style={[styles.modalSheet, { backgroundColor: isDark ? '#141C15' : PALETTE.white }]}>
-            <View style={styles.modalHandle} />
+          <View style={[styles.modalSheet, { backgroundColor: cardBg, paddingBottom: Math.max(insets.bottom, 16) + 20 }]}>
+            <View style={[styles.modalHandle, { backgroundColor: subtextColor }]} />
 
             <View style={styles.modalHeaderRow}>
-              <Text style={[styles.modalTitle, { color: textColor }]}>Review Missed Questions</Text>
-              <TouchableOpacity onPress={() => setShowMistakesModal(false)} hitSlop={12}>
-                <Ionicons name="close-circle" size={24} color={subtextColor} />
+              <Text style={[styles.modalTitle, { color: textColor }]} accessibilityRole="header">
+                Questions to review
+              </Text>
+              <TouchableOpacity
+                style={styles.modalCloseBtn}
+                onPress={() => setShowMistakesModal(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close"
+              >
+                <Ionicons name="close-circle" size={28} color={subtextColor} />
               </TouchableOpacity>
             </View>
 
             <ScrollView contentContainerStyle={styles.modalScrollContent} showsVerticalScrollIndicator={false}>
-              {missedAttempts.map((item, index) => (
-                <View
-                  key={item.question?.id || `missed-${index}`}
-                  style={[styles.missedItemCard, { backgroundColor: isDark ? '#1B241C' : '#F8F6F4' }]}
-                >
-                  <Text style={[styles.missedEquationText, { color: textColor }]}>
-                    {item.question?.equation || 'Problem'}
-                  </Text>
-                  <View style={styles.missedAnswerSplit}>
-                    <Text style={styles.yourAnswerText}>
-                      Your Answer: <Text style={{ textDecorationLine: 'line-through' }}>{item.userAnswer}</Text>
+              {missedAttempts.map((item, index) => {
+                const said = item.userAnswer === undefined || item.userAnswer === null || `${item.userAnswer}` === ''
+                  ? '—'
+                  : `${item.userAnswer}`;
+                return (
+                  <View
+                    key={item.question?.id || `missed-${index}`}
+                    style={[styles.missedItemCard, { backgroundColor: fillColor }]}
+                    accessible
+                    accessibilityLabel={`${item.question?.equation || 'Problem'}. You said ${said}. Answer ${item.question?.answer}.`}
+                  >
+                    <Text style={[styles.missedEquationText, { color: textColor }]}>
+                      {item.question?.equation || 'Problem'}
                     </Text>
-                    <Text style={styles.correctAnswerText}>
-                      Correct: <Text style={{ fontWeight: '600' }}>{item.question?.answer}</Text>
+                    <Text style={[styles.missedAnswerText, { color: subtextColor }]}>
+                      You said <Text style={styles.strikeText}>{said}</Text>
+                    </Text>
+                    <Text style={[styles.missedAnswerText, { color: betterColor }]}>
+                      Answer <Text style={styles.boldText}>{item.question?.answer}</Text>
                     </Text>
                   </View>
-                </View>
-              ))}
+                );
+              })}
             </ScrollView>
           </View>
         </View>
@@ -768,10 +1057,12 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
+  fullWidth: {
+    width: '100%',
+  },
   topTimelineWrapper: {
     paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 4,
+    paddingTop: 4,
   },
   topTimelineRow: {
     flexDirection: 'row',
@@ -792,33 +1083,29 @@ const styles = StyleSheet.create({
     height: 4,
     borderRadius: 2,
   },
-  timelineActionWrap: {
-    width: 32,
-    alignItems: 'flex-end',
-  },
   closeIconBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.06,
     shadowRadius: 4,
     elevation: 1,
-  },
-  closeIconPlaceholder: {
-    width: 32,
-    height: 32,
   },
   contentWrapper: {
     flex: 1,
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
-    paddingHorizontal: 24,
+  },
+  scrollContent: {
+    flexGrow: 1,
     justifyContent: 'center',
+    paddingHorizontal: 24,
+    paddingVertical: 16,
   },
   stepContainer: {
     alignItems: 'center',
@@ -843,7 +1130,8 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#000',
+    backgroundColor: PALETTE.primary,
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.12,
     shadowRadius: 12,
@@ -856,7 +1144,8 @@ const styles = StyleSheet.create({
     width: 80,
     height: 20,
     borderRadius: 40,
-    backgroundColor: 'rgba(0, 0, 0, 0.12)',
+    backgroundColor: PALETTE.dark,
+    opacity: 0.12,
     transform: [{ scaleY: 0.4 }],
   },
   stepHeadline: {
@@ -869,6 +1158,12 @@ const styles = StyleSheet.create({
     ...typography.secondary,
     textAlign: 'center',
     marginBottom: 18,
+  },
+  loadingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginVertical: 18,
   },
   scoreRow: {
     flexDirection: 'row',
@@ -885,6 +1180,7 @@ const styles = StyleSheet.create({
   },
   metricSubtitle: {
     ...typography.button,
+    textAlign: 'center',
     marginTop: 2,
     marginBottom: 16,
   },
@@ -897,37 +1193,66 @@ const styles = StyleSheet.create({
   },
   interpretationTitle: {
     ...typography.button,
+    textAlign: 'center',
     marginBottom: 4,
   },
   interpretationDesc: {
     ...typography.secondary,
     textAlign: 'center',
   },
+  comparisonText: {
+    ...typography.body,
+    fontWeight: '600',
+    textAlign: 'center',
+    marginTop: 12,
+  },
+  celebrationSpacing: {
+    width: '100%',
+    marginTop: 14,
+  },
+  celebrationGap: {
+    marginBottom: 12,
+  },
+  celebrationCard: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    padding: 16,
+    borderRadius: 20,
+  },
+  celebrationIconDisc: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: PALETTE.primary,
+  },
+  celebrationText: {
+    ...typography.body,
+    fontWeight: '600',
+    flex: 1,
+  },
+  confettiPiece: {
+    position: 'absolute',
+    top: 0,
+    borderRadius: 2,
+  },
   mistakeReviewPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
+    gap: 8,
+    minHeight: 44,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    borderRadius: 22,
     marginTop: 14,
   },
   mistakeReviewPillText: {
-    ...typography.caption,
-    color: PALETTE.dangerText,
-  },
-  flawlessPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    borderRadius: 20,
-    marginTop: 14,
-  },
-  flawlessPillText: {
-    ...typography.caption,
-    color: PALETTE.dark,
+    ...typography.secondary,
+    fontWeight: '600',
+    flexShrink: 1,
   },
   syncNotice: {
     width: '100%',
@@ -935,87 +1260,72 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 8,
     marginTop: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 14,
+    paddingVertical: 6,
+    paddingLeft: 14,
+    paddingRight: 6,
     borderRadius: 16,
     borderWidth: 1,
   },
   syncNoticeText: {
-    ...typography.caption,
-    flex: 1,
-  },
-  syncNoticeAction: {
-    ...typography.caption,
-  },
-  comparisonCard: {
-    width: '100%',
-    borderRadius: 22,
-    borderWidth: 1,
-    paddingHorizontal: 18,
-    paddingVertical: 14,
-  },
-  tableRowHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingBottom: 8,
-  },
-  tableColHeader: {
-    ...typography.caption,
-    flex: 1,
-    textTransform: 'uppercase',
-    letterSpacing: 0.6,
-  },
-  tableDivider: {
-    height: 1,
-    marginBottom: 6,
-  },
-  tableRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingVertical: 10,
-  },
-  tableLabel: {
-    ...typography.button,
-    flex: 1,
-  },
-  tableValue: {
-    ...typography.button,
-    flex: 1,
-  },
-  deltaBadge: {
+    ...typography.secondary,
     flex: 1,
     paddingVertical: 4,
+  },
+  syncNoticeActionBtn: {
+    minWidth: 44,
+    minHeight: 44,
     paddingHorizontal: 8,
-    borderRadius: 10,
-    alignItems: 'flex-end',
-    alignSelf: 'center',
-  },
-  deltaText: {
-    ...typography.caption,
-  },
-  baselineCard: {
-    width: '100%',
-    padding: 20,
-    borderRadius: 22,
-    borderWidth: 1,
-    alignItems: 'center',
-  },
-  baselineIconWrap: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 12,
   },
-  baselineTitle: {
-    ...typography.sectionHeading,
-    marginBottom: 6,
-  },
-  baselineDesc: {
+  syncNoticeAction: {
     ...typography.secondary,
+    fontWeight: '600',
+  },
+  coachLine: {
+    ...typography.body,
     textAlign: 'center',
+    marginBottom: 10,
+    paddingHorizontal: 8,
+  },
+  questionCard: {
+    width: '100%',
+    borderWidth: 1,
+    borderRadius: 20,
+    padding: 18,
+    marginBottom: 12,
+    alignItems: 'center',
+  },
+  questionButtons: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 12,
+    marginTop: 14,
+  },
+  questionYes: {
+    minWidth: 96,
+    minHeight: 44,
+    borderRadius: 22,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  questionYesText: {
+    ...typography.button,
+    color: PALETTE.onPrimary,
+  },
+  questionNo: {
+    minWidth: 96,
+    minHeight: 44,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  questionNoText: {
+    ...typography.button,
   },
   recommendationCard: {
     width: '100%',
@@ -1023,16 +1333,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     borderWidth: 1,
     alignItems: 'center',
-  },
-  recBadge: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 10,
-    marginBottom: 12,
-  },
-  recBadgeText: {
-    ...typography.caption,
-    letterSpacing: 0.8,
   },
   recTitle: {
     ...typography.sectionHeading,
@@ -1048,25 +1348,33 @@ const styles = StyleSheet.create({
     maxWidth: 420,
     alignSelf: 'center',
     paddingHorizontal: 24,
+    paddingTop: 8,
   },
   primaryActionBtn: {
     width: '100%',
-    height: 58,
+    minHeight: 58,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
     borderRadius: 29,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 8,
-    shadowColor: '#000',
+    shadowColor: PALETTE.dark,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.08,
     shadowRadius: 10,
     elevation: 3,
   },
+  disabledBtn: {
+    opacity: 0.5,
+  },
   primaryActionBtnText: {
     ...typography.button,
-    color: PALETTE.dark,
+    color: PALETTE.onPrimary,
     letterSpacing: 0.6,
+    flexShrink: 1,
+    textAlign: 'center',
   },
   doubleActionWrap: {
     width: '100%',
@@ -1074,7 +1382,7 @@ const styles = StyleSheet.create({
   },
   ghostActionBtn: {
     width: '100%',
-    height: 42,
+    minHeight: 48,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1083,7 +1391,6 @@ const styles = StyleSheet.create({
   },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.65)',
     justifyContent: 'flex-end',
   },
   modalBackdropDismiss: {
@@ -1094,48 +1401,53 @@ const styles = StyleSheet.create({
     borderTopRightRadius: 28,
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 36,
-    maxHeight: '65%',
+    maxHeight: '75%',
   },
   modalHandle: {
     width: 38,
     height: 4,
     borderRadius: 2,
-    backgroundColor: 'rgba(0,0,0,0.15)',
+    opacity: 0.4,
     alignSelf: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   modalHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   modalTitle: {
     ...typography.sectionHeading,
+    flexShrink: 1,
+  },
+  modalCloseBtn: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: -8,
   },
   modalScrollContent: {
     gap: 10,
-    paddingBottom: 20,
+    paddingBottom: 8,
   },
   missedItemCard: {
-    padding: 14,
+    padding: 16,
     borderRadius: 16,
+    gap: 4,
   },
   missedEquationText: {
-    ...typography.button,
-    marginBottom: 6,
+    ...typography.sectionHeading,
+    marginBottom: 4,
   },
-  missedAnswerSplit: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
+  missedAnswerText: {
+    ...typography.body,
   },
-  yourAnswerText: {
-    ...typography.secondary,
-    color: PALETTE.dangerText,
+  strikeText: {
+    textDecorationLine: 'line-through',
   },
-  correctAnswerText: {
-    ...typography.secondary,
-    color: '#27AE60',
+  boldText: {
+    fontWeight: '700',
   },
 });

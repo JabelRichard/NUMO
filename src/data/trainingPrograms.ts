@@ -36,7 +36,7 @@ export const CORE_PROGRAMS: TrainingProgram[] = [
   },
   {
     id: 'mixed',
-    title: 'Mixed Challenge',
+    title: 'Mixing them up',
     iconName: 'shuffle',
     progress: 0,
     iconBgColor: PALETTE.accentLilac,

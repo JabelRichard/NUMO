@@ -32,7 +32,11 @@ export interface QuestionAttemptResult {
 
 export interface GeneratorConfig {
   operation: OperationType;
+  // Draw only from these operations (e.g. × and ÷). Overrides `operation` when not empty.
+  operations?: CoreOperation[];
   difficulty?: DifficultyLevel;
+  // A level per operation inside one session; falls back to `difficulty`.
+  difficultyByOperation?: Partial<Record<CoreOperation, DifficultyLevel>>;
   questionCount?: number;
 }
 

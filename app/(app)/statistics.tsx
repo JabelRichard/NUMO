@@ -16,7 +16,9 @@ import Svg, { Path, Circle } from 'react-native-svg';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { supabase } from '../../src/config/supabase';
-import { getNextFocus } from '../../src/services/workoutService';
+import { getQueuedWorkouts } from '../../src/services/workoutService';
+import { loadCoachPlanInput } from '../../src/services/coachService';
+import { CoachPlanInput, CoachWorkout, COPY, getCoachPlan, operationName, workoutTitle } from '../../src/lib/coach';
 import { getTrainingGoals } from '../../src/services/profileService';
 import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
@@ -109,6 +111,9 @@ export default function StatisticsScreen() {
   const [loading, setLoading] = useState(true);
   const [workouts, setWorkouts] = useState<any[]>([]);
   const [weeklyTarget, setWeeklyTarget] = useState<number>(5);
+  // For the "Next Focus" card: the same coach and plan as Home.
+  const [coachPlanInput, setCoachPlanInput] = useState<CoachPlanInput>({});
+  const [queuedWorkouts, setQueuedWorkouts] = useState<CoachWorkout[]>([]);
 
   const today = useMemo(() => new Date(), []);
   const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
@@ -140,12 +145,16 @@ export default function StatisticsScreen() {
     if (showLoading) setLoading(true);
 
     try {
-      const [workoutsResult, goalsResult] = await Promise.all([
+      const [workoutsResult, goalsResult, planInput, queued] = await Promise.all([
         fetchUserWorkouts(user.id),
         getTrainingGoals(user.id).catch(() => null),
+        loadCoachPlanInput(user.id),
+        getQueuedWorkouts(user.id).catch(() => [] as CoachWorkout[]),
       ]);
 
       setIsOffline(false);
+      setCoachPlanInput(planInput);
+      setQueuedWorkouts(queued);
 
       setWorkouts(Array.isArray(workoutsResult) ? workoutsResult : []);
 
@@ -200,7 +209,7 @@ export default function StatisticsScreen() {
   const screenBg = isDark ? PALETTE.dark : PALETTE.backgroundLight;
   const cardBg = isDark ? PALETTE.cardDark : PALETTE.cardLight;
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
-  const secondaryText = isDark ? PALETTE.textSubtleDark : PALETTE.textSubtleLight;
+  const secondaryText = theme.subtext;
   const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
   const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
   const accentGreen = PALETTE.primary;
@@ -287,12 +296,12 @@ export default function StatisticsScreen() {
         overallAcc: 0,
         overallAvgPace: 0,
         speedDeltaPct: 0,
-        speedDeltaStr: 'Baseline active',
+        speedDeltaStr: 'Not started yet',
         accDeltaStr: 'No trend yet',
         isSpeedFaster: false,
         isAccBetter: false,
-        headline: 'Complete workouts to reveal your growth curve.',
-        subtext: 'NUMO benchmarks your response times, calculation fluency, and identifies weak spots automatically.',
+        headline: 'Do a workout to see your progress.',
+        subtext: "We'll show how your speed and accuracy change over time.",
         trendPoints: [] as number[],
         fastestPace: 0,
         bestAcc: 0,
@@ -368,28 +377,28 @@ export default function StatisticsScreen() {
     let subtext = '';
 
     if (sorted.length < 2) {
-      headline = 'Baseline calibration active.';
-      subtext = 'Complete additional sessions to establish rolling trends and precision insights.';
+      headline = 'Great start!';
+      subtext = 'Do a few more workouts to see your progress here.';
     } else if (isSpeedFaster && !isAccWorse) {
       if (isAccBetter) {
         headline = "You're getting faster and more accurate.";
         subtext = `Average pace improved ${Math.abs(speedDeltaPct)}% with a +${accDeltaPct}% accuracy boost over your last ${windowSize} sessions.`;
       } else {
         headline = "You're solving faster while maintaining accuracy.";
-        subtext = `Average solving speed increased by ${Math.abs(speedDeltaPct)}% over your last ${windowSize} sessions without compromising precision.`;
+        subtext = `You got ${Math.abs(speedDeltaPct)}% faster over your last ${windowSize} workouts and stayed just as accurate.`;
       }
     } else if (isAccBetter && !isSpeedSlower) {
-      headline = 'Your accuracy is improving while pace remains steady.';
-      subtext = `Accuracy gained +${accDeltaPct}% across recent workouts while holding a solid ${recentStats.pace.toFixed(1)}s pace.`;
+      headline = 'Your accuracy is getting better.';
+      subtext = `+${accDeltaPct}% accuracy in recent workouts, at a steady ${recentStats.pace.toFixed(1)}s per question.`;
     } else if (isSpeedSlower && isAccBetter) {
       headline = 'Accuracy is improving. Keep practicing to bring pace up.';
-      subtext = `Precision gained +${accDeltaPct}%. Continue consistent drills to naturally recover top speed.`;
+      subtext = `+${accDeltaPct}% accuracy. Keep practicing and your speed will come back.`;
     } else if (isSpeedSlower && isAccWorse) {
-      headline = 'Focus on clean accuracy to lock in rhythm.';
-      subtext = `Recent sessions show variability. Slow down slightly to stabilize your fundamentals.`;
+      headline = 'Take your time on each question.';
+      subtext = 'Recent workouts were up and down. Slowing down a little helps you get more right.';
     } else {
-      headline = 'Consistent execution across sessions.';
-      subtext = `Maintaining steady cadence at ${recentStats.pace.toFixed(1)}s/Q with ${Math.round(recentStats.acc)}% accuracy over your last ${windowSize} sessions.`;
+      headline = 'Nice and steady.';
+      subtext = `About ${recentStats.pace.toFixed(1)}s per question with ${Math.round(recentStats.acc)}% right over your last ${windowSize} workouts.`;
     }
 
     const trendPoints = sorted.slice(-10).map((w) => {
@@ -405,10 +414,10 @@ export default function StatisticsScreen() {
       speedDeltaPct: Math.abs(speedDeltaPct),
       speedDeltaStr:
         sorted.length < 2
-          ? 'Baseline active'
+          ? 'First workout done'
           : speedDeltaPct >= 0
           ? `${speedDeltaPct}% faster recently`
-          : `${Math.abs(speedDeltaPct)}% pace adjustment`,
+          : `${Math.abs(speedDeltaPct)}% slower recently`,
       accDeltaStr:
         sorted.length < 2
           ? 'Tracking begun'
@@ -484,11 +493,11 @@ export default function StatisticsScreen() {
   // -------------------------------------------------------------
   const skillBreakdown = useMemo(() => {
     const categories: Record<string, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
-      addition: { label: 'Addition', totalQ: 0, correct: 0, totalTimeMs: 0 },
-      subtraction: { label: 'Subtraction', totalQ: 0, correct: 0, totalTimeMs: 0 },
-      multiplication: { label: 'Multiplication', totalQ: 0, correct: 0, totalTimeMs: 0 },
-      division: { label: 'Division', totalQ: 0, correct: 0, totalTimeMs: 0 },
-      mixed: { label: 'Mixed Challenge', totalQ: 0, correct: 0, totalTimeMs: 0 },
+      addition: { label: operationName('addition'), totalQ: 0, correct: 0, totalTimeMs: 0 },
+      subtraction: { label: operationName('subtraction'), totalQ: 0, correct: 0, totalTimeMs: 0 },
+      multiplication: { label: operationName('multiplication'), totalQ: 0, correct: 0, totalTimeMs: 0 },
+      division: { label: operationName('division'), totalQ: 0, correct: 0, totalTimeMs: 0 },
+      mixed: { label: operationName('mixed'), totalQ: 0, correct: 0, totalTimeMs: 0 },
     };
 
     workouts.forEach((w) => {
@@ -526,16 +535,18 @@ export default function StatisticsScreen() {
       strongest = sortedByMastery[0];
     }
 
-    // Call the single source of truth for Next Focus
-    const nextFocusRec = getNextFocus(workouts);
+    // Next Focus comes from the shared coach, so it matches Home.
+    const coach = getCoachPlan(coachPlanInput, [...workouts, ...queuedWorkouts]);
 
     return {
       skills: parsed,
       strongest,
-      nextFocusHeading: nextFocusRec.heading,
-      nextFocusSubheading: nextFocusRec.subheading,
+      nextFocusHeading: coach.isFirstWorkout
+        ? COPY.warmupHeading
+        : workoutTitle(coach.workout, coach.workout.questionCount),
+      nextFocusSubheading: coach.message.subheading,
     };
-  }, [workouts]);
+  }, [workouts, queuedWorkouts, coachPlanInput]);
 
   // Hook rules guarantee: Early returns happen strictly after all hooks have executed
   if (isOffline) {
@@ -812,7 +823,7 @@ export default function StatisticsScreen() {
                 </Text>
               </View>
 
-              {/* Next Focus (Synced directly with getNextFocus) */}
+              {/* Next Focus (from the shared coach) */}
               <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
                 <View style={[styles.directiveIconCircle, { backgroundColor: accentLilac }]}>
                   <Ionicons name="sparkles" size={17} color="#0A0F0B" />

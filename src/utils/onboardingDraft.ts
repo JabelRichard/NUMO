@@ -37,7 +37,8 @@ export function questionsForDuration(minutes: number): number {
 
 /**
  * Maps legacy onboarding ids onto the current ones:
- * 'career' became 'work', and 'speed' (now part of every goal) falls back to 'everyday'.
+ * 'career' became 'work', 'consistency' became 'memory', and the general ones
+ * ('speed', 'accuracy', 'mental_math', 'balanced') fall back to 'everyday'.
  */
 export function normalizePrimaryGoal(goal: UserGoal | string | null | undefined): OnboardingPrimaryGoal | undefined {
   switch (goal) {
@@ -48,7 +49,12 @@ export function normalizePrimaryGoal(goal: UserGoal | string | null | undefined)
       return goal;
     case 'career':
       return 'work';
+    case 'consistency':
+      return 'memory';
     case 'speed':
+    case 'accuracy':
+    case 'mental_math':
+    case 'balanced':
       return 'everyday';
     default:
       return undefined;

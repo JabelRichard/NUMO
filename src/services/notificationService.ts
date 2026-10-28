@@ -2,6 +2,9 @@ import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 
+export const REMINDERS_ENABLED_KEY = '@numo_reminders_enabled';
+export const REMINDER_TIME_KEY = '@numo_reminder_time';
+
 // Set notification behavior when the app is in the foreground (supports both newer and older SDKs)
 Notifications.setNotificationHandler({
   handleNotification: async () => ({

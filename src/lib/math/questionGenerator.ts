@@ -11,6 +11,19 @@ const getRandomInt = (min: number, max: number): number => {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
+const pickOne = <T>(items: readonly T[]): T => items[getRandomInt(0, items.length - 1)];
+
+const shuffle = <T>(items: T[]): T[] => {
+  const copy = [...items];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = getRandomInt(0, i);
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy;
+};
+
+export const CORE_OPERATIONS: CoreOperation[] = ['addition', 'subtraction', 'multiplication', 'division'];
+
 // Operator display symbols
 const OPERATOR_SYMBOLS: Record<CoreOperation, string> = {
   addition: '+',
@@ -19,24 +32,109 @@ const OPERATOR_SYMBOLS: Record<CoreOperation, string> = {
   division: '÷',
 };
 
-// Configurable Number Ranges by Difficulty for Medium and Hard
-const DIFFICULTY_RANGES: Record<
-  'medium' | 'hard',
-  Record<CoreOperation, { min1: number; max1: number; min2: number; max2: number }>
-> = {
-  medium: {
-    addition: { min1: 25, max1: 99, min2: 15, max2: 85 },
-    subtraction: { min1: 45, max1: 150, min2: 15, max2: 95 },
-    multiplication: { min1: 4, max1: 15, min2: 3, max2: 12 },
-    division: { min1: 3, max1: 15, min2: 3, max2: 12 },
-  },
-  hard: {
-    addition: { min1: 100, max1: 500, min2: 75, max2: 450 },
-    subtraction: { min1: 150, max1: 750, min2: 50, max2: 400 },
-    multiplication: { min1: 7, max1: 25, min2: 6, max2: 20 },
-    division: { min1: 5, max1: 25, min2: 4, max2: 20 },
-  },
-};
+// Easy times tables (×10 and ÷10 only appear here). Medium uses tables 2 to 9.
+const EASY_TABLES = [2, 3, 4, 5, 10] as const;
+// Hard numbers skip anything ending in 0: 11 or 12 times 6–12 (not 10), and 11–29 (not 20).
+const HARD_TABLE_PARTNERS = [6, 7, 8, 9, 11, 12] as const;
+const HARD_TWO_DIGIT = Array.from({ length: 19 }, (_, i) => 11 + i).filter((n) => n % 10 !== 0);
+
+/**
+ * A multiplication fact for each level, returned as [divisor, other].
+ * Division reuses these facts (dividing the product by the first number),
+ * so ÷ always mirrors × at the same level.
+ * Neither number is ever 1, so ×1 and ÷1 never appear.
+ */
+function pickMultiplicationFact(difficulty: DifficultyLevel): [number, number] {
+  if (difficulty === 'easy') {
+    return [pickOne(EASY_TABLES), getRandomInt(2, 10)];
+  }
+  if (difficulty === 'medium') {
+    return [getRandomInt(2, 9), getRandomInt(2, 9)];
+  }
+  // Hard: 11 or 12 times 6–12 (11 × 7, 84 ÷ 7, 132 ÷ 12),
+  // or a 2-digit number times 3–9 (23 × 4, 92 ÷ 4).
+  if (Math.random() < 0.5) {
+    const table = getRandomInt(11, 12);
+    const other = pickOne(HARD_TABLE_PARTNERS);
+    return Math.random() < 0.5 ? [table, other] : [other, table];
+  }
+  return [getRandomInt(3, 9), pickOne(HARD_TWO_DIGIT)];
+}
+
+interface GeneratedNumbers {
+  num1: number;
+  num2: number;
+  answer: number;
+  // Questions with the same key count as repeats (3 × 4 and 4 × 3 share one).
+  repeatKey: string;
+}
+
+function generateNumbers(op: CoreOperation, difficulty: DifficultyLevel): GeneratedNumbers {
+  if (op === 'addition') {
+    let num1: number;
+    let num2: number;
+    if (difficulty === 'easy') {
+      num1 = getRandomInt(2, 20);
+      num2 = getRandomInt(1, 9);
+    } else if (difficulty === 'medium') {
+      num1 = getRandomInt(10, 99);
+      num2 = getRandomInt(10, 99);
+    } else {
+      num1 = getRandomInt(100, 500);
+      num2 = getRandomInt(10, 99);
+    }
+    const [low, high] = num1 < num2 ? [num1, num2] : [num2, num1];
+    return { num1, num2, answer: num1 + num2, repeatKey: `add_${low}_${high}` };
+  }
+
+  if (op === 'subtraction') {
+    // The second number is always smaller, so answers are never negative or zero.
+    let num1: number;
+    let num2: number;
+    if (difficulty === 'easy') {
+      num1 = getRandomInt(2, 20);
+      num2 = getRandomInt(1, Math.min(9, num1 - 1));
+    } else if (difficulty === 'medium') {
+      num1 = getRandomInt(20, 99);
+      num2 = getRandomInt(2, num1 - 1);
+    } else {
+      num1 = getRandomInt(100, 500);
+      num2 = getRandomInt(10, 99);
+    }
+    return { num1, num2, answer: num1 - num2, repeatKey: `sub_${num1}_${num2}` };
+  }
+
+  const [table, other] = pickMultiplicationFact(difficulty);
+  const factKey = `${Math.min(table, other)}_${Math.max(table, other)}`;
+
+  if (op === 'multiplication') {
+    const [num1, num2] = Math.random() < 0.5 ? [table, other] : [other, table];
+    return { num1, num2, answer: table * other, repeatKey: `mul_${factKey}` };
+  }
+
+  // Division: divide the product by the first number (28 ÷ 4 = 7, 92 ÷ 4 = 23).
+  return { num1: table * other, num2: table, answer: other, repeatKey: `div_${factKey}` };
+}
+
+/** The operations a session draws from: an explicit list, all four for mixed, or one. */
+function resolveOperations(config: GeneratorConfig): CoreOperation[] {
+  const listed = (config.operations ?? []).filter((op) => CORE_OPERATIONS.includes(op));
+  if (listed.length > 0) return Array.from(new Set(listed));
+  return config.operation === 'mixed' ? CORE_OPERATIONS : [config.operation];
+}
+
+/**
+ * Spreads the questions evenly across the operations, then shuffles the order.
+ * 20 questions over 4 operations gives 5 of each; any remainder goes to random operations.
+ */
+export function planOperationOrder(operations: CoreOperation[], questionCount: number): CoreOperation[] {
+  const rotation = shuffle(operations);
+  const order: CoreOperation[] = [];
+  for (let i = 0; i < questionCount; i++) {
+    order.push(rotation[i % rotation.length]);
+  }
+  return shuffle(order);
+}
 
 export class QuestionGenerator {
   private history: Set<string> = new Set();
@@ -49,117 +147,41 @@ export class QuestionGenerator {
     op: OperationType,
     difficulty: DifficultyLevel = 'easy'
   ): MathQuestion {
-    let resolvedOp: CoreOperation;
+    const resolvedOp: CoreOperation = op === 'mixed' ? pickOne(CORE_OPERATIONS) : op;
+    return this.generateCoreQuestion(resolvedOp, difficulty);
+  }
 
-    if (op === 'mixed') {
-      const coreOps: CoreOperation[] = [
-        'addition',
-        'subtraction',
-        'multiplication',
-        'division',
-      ];
-      resolvedOp = coreOps[getRandomInt(0, coreOps.length - 1)];
-    } else {
-      resolvedOp = op;
+  private generateCoreQuestion(op: CoreOperation, difficulty: DifficultyLevel): MathQuestion {
+    let numbers = generateNumbers(op, difficulty);
+
+    // Retry a few times to avoid repeats; small fact sets can still run out.
+    for (let attempt = 0; attempt < 25 && this.history.has(numbers.repeatKey); attempt++) {
+      numbers = generateNumbers(op, difficulty);
     }
+    this.history.add(numbers.repeatKey);
 
-    let num1 = 0;
-    let num2 = 0;
-    let answer = 0;
-    let signature = '';
-    let maxAttempts = 25;
-
-    while (maxAttempts > 0) {
-      if (difficulty === 'easy') {
-        if (resolvedOp === 'addition') {
-          // 50% chance: 1-digit + 1-digit (e.g. 1+2)
-          // 50% chance: 2-digit + 1-digit (e.g. 12+3)
-          const isTwoDigit = Math.random() < 0.5;
-          num1 = isTwoDigit ? getRandomInt(10, 99) : getRandomInt(1, 9);
-          num2 = getRandomInt(1, 9);
-          answer = num1 + num2;
-        } else if (resolvedOp === 'subtraction') {
-          // 50% chance: 1-digit - 1-digit (e.g. 8-3)
-          // 50% chance: 2-digit - 1-digit (e.g. 15-4)
-          const isTwoDigit = Math.random() < 0.5;
-          num1 = isTwoDigit ? getRandomInt(10, 50) : getRandomInt(2, 9);
-          num2 = getRandomInt(1, Math.min(num1 - 1, 9)); // Keep result positive and single-digit subtrahend
-          answer = num1 - num2;
-        } else if (resolvedOp === 'multiplication') {
-          // Single-digit multiplication (e.g. 3 x 4, up to 9 x 9)
-          num1 = getRandomInt(1, 9);
-          num2 = getRandomInt(1, 9);
-          answer = num1 * num2;
-        } else if (resolvedOp === 'division') {
-          // Clean single-digit quotient & divisor (e.g. 12 ÷ 3 = 4)
-          const divisor = getRandomInt(2, 9);
-          const quotient = getRandomInt(1, 9);
-          num1 = divisor * quotient;
-          num2 = divisor;
-          answer = quotient;
-        }
-      } else {
-        // Medium and Hard ranges
-        const ranges = DIFFICULTY_RANGES[difficulty][resolvedOp];
-
-        if (resolvedOp === 'addition') {
-          num1 = getRandomInt(ranges.min1, ranges.max1);
-          num2 = getRandomInt(ranges.min2, ranges.max2);
-          answer = num1 + num2;
-        } else if (resolvedOp === 'subtraction') {
-          const valA = getRandomInt(ranges.min1, ranges.max1);
-          const valB = getRandomInt(ranges.min2, ranges.max2);
-          num1 = Math.max(valA, valB);
-          num2 = Math.min(valA, valB);
-          if (num1 === num2) num1 += getRandomInt(1, 10);
-          answer = num1 - num2;
-        } else if (resolvedOp === 'multiplication') {
-          num1 = getRandomInt(ranges.min1, ranges.max1);
-          num2 = getRandomInt(ranges.min2, ranges.max2);
-          answer = num1 * num2;
-        } else if (resolvedOp === 'division') {
-          const divisor = getRandomInt(ranges.min2, ranges.max2);
-          const quotient = getRandomInt(ranges.min1, ranges.max1);
-          num1 = divisor * quotient;
-          num2 = divisor;
-          answer = quotient;
-        }
-      }
-
-      signature = `${resolvedOp}_${num1}_${num2}`;
-
-      if (!this.history.has(signature)) {
-        this.history.add(signature);
-        break;
-      }
-
-      maxAttempts--;
-    }
-
-    const symbol = OPERATOR_SYMBOLS[resolvedOp];
+    const symbol = OPERATOR_SYMBOLS[op];
 
     return {
       id: `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`,
-      operation: resolvedOp,
-      num1,
-      num2,
+      operation: op,
+      num1: numbers.num1,
+      num2: numbers.num2,
       operatorSymbol: symbol,
-      equation: `${num1} ${symbol} ${num2}`,
-      answer,
+      equation: `${numbers.num1} ${symbol} ${numbers.num2}`,
+      answer: numbers.answer,
       difficulty,
     };
   }
 
   public generateSession(config: GeneratorConfig): MathQuestion[] {
-    const { operation, difficulty = 'easy', questionCount = 20 } = config;
+    const { difficulty = 'easy', difficultyByOperation, questionCount = 20 } = config;
     this.resetHistory();
 
-    const questions: MathQuestion[] = [];
-    for (let i = 0; i < questionCount; i++) {
-      questions.push(this.generateQuestion(operation, difficulty));
-    }
-
-    return questions;
+    const order = planOperationOrder(resolveOperations(config), questionCount);
+    return order.map((op) =>
+      this.generateCoreQuestion(op, difficultyByOperation?.[op] ?? difficulty)
+    );
   }
 }
 

@@ -193,7 +193,7 @@ export default function OnboardingScreen() {
   // Theme Constants
   const screenBg = isDark ? '#0A0F0B' : theme.background || '#F1ECE9';
   const textColor = theme.text;
-  const textSubtle = theme.muted;
+  const textSubtle = theme.subtext;
   const cardBg = theme.card;
   const borderColor = theme.border;
   // One accent for every selected state. Light mode uses the deep sage so the border stays visible.
