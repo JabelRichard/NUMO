@@ -1407,7 +1407,7 @@ export default function ProfileScreen() {
               onPress={() => {
                 closeSheet(() => {
                   setActivitySheetVisible(false);
-                  router.push("/(app)/statistics");
+                  router.push({ pathname: "/(app)/statistics", params: { from: "profile" } });
                 });
               }}
               accessibilityRole="button"

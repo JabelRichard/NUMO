@@ -11,7 +11,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
@@ -20,6 +20,7 @@ import { WEAK_SPOTS } from '@/src/constants/planOptions';
 import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 import { OfflineNote } from '@/src/components/OfflineNote';
+import { TodaysPickCard, useStartWorkout } from '@/src/components/TodaysPickCard';
 import { LoadedCoachData, loadCoachDataWithFallback } from '../../../src/services/coachService';
 import {
   CoachOperation,
@@ -31,7 +32,6 @@ import {
   mainDifficulty,
   operationName,
   operationSymbol,
-  toWorkoutParams,
   WorkoutRequest,
   workoutForOperation,
 } from '../../../src/lib/coach';
@@ -87,7 +87,6 @@ const defaultChoice = (coach: CoachPlan, op: CoachOperation): Choice =>
   coach.isFirstWorkout || op === 'mixed' ? 'yours' : coach.levels[op];
 
 export default function PracticeScreen() {
-  const router = useRouter();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { user } = useAuth();
@@ -151,16 +150,7 @@ export default function PracticeScreen() {
   const accentStrong = theme.primaryText;
   const accentSoft = theme.primarySoft;
 
-  const startWorkout = (request: WorkoutRequest) => {
-    router.push({
-      pathname: '/workout' as any,
-      params: {
-        ...toWorkoutParams(request),
-        reset: 'true',
-        sessionKey: Date.now().toString(),
-      },
-    });
-  };
+  const startWorkout = useStartWorkout();
 
   const openSheet = (op: CoachOperation) => {
     if (!coach) return;
@@ -192,37 +182,8 @@ export default function PracticeScreen() {
     </View>
   );
 
-  // Today's pick is Home's pick: the same title, line, button and workout.
   // Without any saved history (offline, nothing cached) the pick isn't known, so it's hidden.
   const showPick = coach && !coach.historyUnknown;
-  const pickTitle = coach
-    ? coach.message.kind === 'goal_done' || coach.message.kind === 'mix'
-      ? coach.message.heading
-      : coach.focusLabel
-    : '';
-
-  const renderPickCard = () => {
-    if (!coach || !showPick) return null;
-    return (
-      <View style={[styles.pickCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-        <Text style={[styles.pickEyebrow, { color: accentStrong }]}>Today's pick</Text>
-        <Text style={[styles.pickTitle, { color: primaryText }]} accessibilityRole="header">
-          {pickTitle}
-        </Text>
-        <Text style={[styles.pickLine, { color: secondaryText }]}>{coach.message.subheading}</Text>
-        <TouchableOpacity
-          style={[styles.primaryButton, { backgroundColor: accent }]}
-          activeOpacity={0.85}
-          onPress={() => startWorkout(coach.workout)}
-          accessibilityRole="button"
-          accessibilityLabel={`${coach.message.button}, ${pickTitle}`}
-        >
-          <Text style={[styles.primaryButtonText, { color: theme.onPrimary }]}>{coach.message.button}</Text>
-          <Ionicons name="arrow-forward" size={18} color={theme.onPrimary} />
-        </TouchableOpacity>
-      </View>
-    );
-  };
 
   const renderRow = (op: (typeof OPERATIONS)[number], index: number) => {
     if (!coach) return null;
@@ -311,7 +272,7 @@ export default function PracticeScreen() {
             <>
               {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
 
-              {renderPickCard()}
+              {coach && <TodaysPickCard coach={coach} style={styles.pickCard} />}
 
               <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
                 All operations
@@ -495,29 +456,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   pickCard: {
-    borderRadius: 22,
-    borderWidth: 1,
-    padding: 18,
     marginBottom: 24,
-    shadowColor: PALETTE.dark,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  pickEyebrow: {
-    ...typography.secondary,
-    fontWeight: '600',
-    marginBottom: 4,
-  },
-  pickTitle: {
-    ...typography.sectionHeading,
-    letterSpacing: -0.4,
-    marginBottom: 4,
-  },
-  pickLine: {
-    ...typography.secondary,
-    marginBottom: 16,
   },
   primaryButton: {
     minHeight: 54,

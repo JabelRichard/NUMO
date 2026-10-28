@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,202 +7,160 @@ import {
   TouchableOpacity,
   ActivityIndicator,
   StatusBar,
+  RefreshControl,
+  BackHandler,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams, useNavigation } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import Svg, { Path, Circle } from 'react-native-svg';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
-import { supabase } from '../../src/config/supabase';
-import { getQueuedWorkouts } from '../../src/services/workoutService';
-import { loadCoachPlanInput } from '../../src/services/coachService';
-import { CoachPlanInput, CoachWorkout, COPY, getCoachPlan, operationName, workoutTitle } from '../../src/lib/coach';
+import { PALETTE } from '@/src/constants/palette';
+import { WEAK_SPOTS } from '@/src/constants/planOptions';
+import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
+import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
+import { useToday } from '@/src/hooks/useToday';
+import { OfflineNote } from '@/src/components/OfflineNote';
+import { TodaysPickCard } from '@/src/components/TodaysPickCard';
+import {
+  COACH_LOAD_TIMEOUT_MS,
+  LoadedCoachData,
+  loadCoachDataWithFallback,
+} from '../../src/services/coachService';
 import { getTrainingGoals } from '../../src/services/profileService';
-import { OfflineNotice } from '../../src/components/OfflineNotice';
-import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
-import { PALETTE } from '../../src/constants/palette';
-import { typography, FONT_FAMILY } from '../../src/constants/typography';
-
+import {
+  CoachWorkout,
+  COPY,
+  getCoachPlan,
+  getProgressSummary,
+  LEVEL_NAMES,
+  LevelRow,
+  levelProgressText,
+  lifetimeTotals,
+  operationSymbol,
+  progressText,
+  STRONG_ACCURACY,
+  workoutDayLabel,
+} from '../../src/lib/coach';
+import { DEFAULT_TRAINING_GOALS } from '../../src/types/profile';
+import { countDayStreak, localDayKey, startOfLocalWeek } from '../../src/utils/localDates';
+import { withTimeout } from '../../src/utils/withTimeout';
 
 const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
 const MONTH_NAMES = [
-  'JANUARY', 'FEBRUARY', 'MARCH', 'APRIL', 'MAY', 'JUNE',
-  'JULY', 'AUGUST', 'SEPTEMBER', 'OCTOBER', 'NOVEMBER', 'DECEMBER',
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
 ];
-const WEEKDAY_ABBR = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+// Calendar card padding on each side; small so 7 day cells stay 44pt wide on a 360pt phone.
+const CALENDAR_PADDING = 8;
+const MAX_CONTENT_WIDTH = 480;
 
-async function fetchUserWorkouts(userId: string): Promise<any[]> {
-  const { data, error } = await supabase
-    .from('workout_sessions')
-    .select('*')
-    .eq('user_id', userId)
-    .order('completed_at', { ascending: true });
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
-  if (error) throw error;
-  return data || [];
+/** "Tuesday, October 28". */
+function dayTitle(key: string): string {
+  const [y, m, d] = key.split('-').map(Number);
+  return `${WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()]}, ${MONTH_NAMES[m - 1]} ${d}`;
 }
 
-function TrendSparkline({
-  data,
-  width,
-  height = 36,
-  strokeColor,
-}: {
-  data: number[];
-  width: number;
-  height?: number;
-  strokeColor: string;
-}) {
-  if (!data || data.length < 2) return null;
+interface DayCell {
+  day: number;
+  key: string;
+}
 
-  const min = Math.min(...data);
-  const max = Math.max(...data);
-  const range = max - min || 1;
-  const paddingX = 8;
-  const paddingY = 6;
-  const usableWidth = width - paddingX * 2;
-  const usableHeight = height - paddingY * 2;
-
-  const points = data.map((val, idx) => {
-    const x = paddingX + (idx / (data.length - 1)) * usableWidth;
-    const y = paddingY + ((val - min) / range) * usableHeight;
-    return { x, y };
-  });
-
-  const pathD = points.reduce((acc, curr, idx) => {
-    return `${acc} ${idx === 0 ? 'M' : 'L'} ${curr.x.toFixed(1)} ${curr.y.toFixed(1)}`;
-  }, '');
-
-  const lastPoint = points[points.length - 1];
-
-  return (
-    <Svg width={width} height={height}>
-      <Path
-        d={pathD}
-        fill="none"
-        stroke={strokeColor}
-        strokeWidth={2.4}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <Circle
-        cx={lastPoint.x}
-        cy={lastPoint.y}
-        r={3.8}
-        fill={strokeColor}
-      />
-    </Svg>
-  );
+/** Weeks of the month, Monday first; null pads the first and last week. */
+function monthGrid(year: number, month: number): (DayCell | null)[][] {
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const leading = (new Date(year, month, 1).getDay() + 6) % 7;
+  const cells: (DayCell | null)[] = Array(leading).fill(null);
+  for (let day = 1; day <= daysInMonth; day++) {
+    cells.push({ day, key: localDayKey(new Date(year, month, day, 12)) });
+  }
+  while (cells.length % 7 !== 0) cells.push(null);
+  const weeks: (DayCell | null)[][] = [];
+  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+  return weeks;
 }
 
 export default function StatisticsScreen() {
   const router = useRouter();
+  const navigation = useNavigation();
+  const { from } = useLocalSearchParams<{ from?: string }>();
+  // Opened from Profile's "View Full Statistics": back goes to Profile. As a tab: no back button.
+  const openedFromProfile = from === 'profile';
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { user } = useAuth();
   const { theme } = useTheme();
+  const { isOffline, recheck } = useOnlineStatus(() => loadScreenData());
+  const today = useToday();
+  const todayKey = localDayKey(today);
 
-  const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
+  const isDark = theme.isDark;
   const isNarrow = width < 360;
+  const gutter = isNarrow ? 16 : 20;
 
-  const { isOffline, setIsOffline, recheck } = useOnlineStatus();
-  const [loading, setLoading] = useState(true);
-  const [workouts, setWorkouts] = useState<any[]>([]);
-  const [weeklyTarget, setWeeklyTarget] = useState<number>(5);
-  // For the "Next Focus" card: the same coach and plan as Home.
-  const [coachPlanInput, setCoachPlanInput] = useState<CoachPlanInput>({});
-  const [queuedWorkouts, setQueuedWorkouts] = useState<CoachWorkout[]>([]);
+  const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
+  const [weeklyTarget, setWeeklyTarget] = useState(DEFAULT_TRAINING_GOALS.weeklyFrequencyDays);
+  const [refreshing, setRefreshing] = useState(false);
+  const [viewMonth, setViewMonth] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
+  const [selectedKey, setSelectedKey] = useState<string | null>(todayKey);
+  // Only the newest load may update the screen.
+  const loadIdRef = useRef(0);
 
-  const today = useMemo(() => new Date(), []);
-  const [currentCalendarDate, setCurrentCalendarDate] = useState(new Date());
-  const [selectedDay, setSelectedDay] = useState<number | null>(today.getDate());
+  // Same data as Home and Practice: live, else the cached copy, else the plan saved on this phone.
+  // The weekly target comes from the plan in Supabase, like Profile (the phone's copy offline).
+  const loadScreenData = useCallback(async () => {
+    const userId = user?.id;
+    if (!userId) return;
+    const loadId = ++loadIdRef.current;
+    const online = await recheck();
+    const [next, goals] = await Promise.all([
+      loadCoachDataWithFallback(userId, online),
+      (online ? withTimeout(getTrainingGoals(userId), COACH_LOAD_TIMEOUT_MS) : getTrainingGoals())
+        .catch(() => getTrainingGoals())
+        .catch(() => null),
+    ]);
+    if (loadId !== loadIdRef.current) return;
+    setLoaded(next);
+    if (goals?.weeklyFrequencyDays) setWeeklyTarget(goals.weeklyFrequencyDays);
+  }, [user?.id, recheck]);
 
-  const calYear = currentCalendarDate.getFullYear();
-  const calMonth = currentCalendarDate.getMonth();
-
-  const isCurrentViewingMonth =
-    calYear === today.getFullYear() && calMonth === today.getMonth();
-
-  const handleRetryConnection = async () => {
-    if (await recheck()) {
-      loadData(true);
-    }
-  };
-
-  const loadData = useCallback(async (showLoading = false) => {
-    if (!user?.id) {
-      setLoading(false);
-      return;
-    }
-
-    if (!(await recheck())) {
-      setLoading(false);
-      return;
-    }
-
-    if (showLoading) setLoading(true);
-
-    try {
-      const [workoutsResult, goalsResult, planInput, queued] = await Promise.all([
-        fetchUserWorkouts(user.id),
-        getTrainingGoals(user.id).catch(() => null),
-        loadCoachPlanInput(user.id),
-        getQueuedWorkouts(user.id).catch(() => [] as CoachWorkout[]),
-      ]);
-
-      setIsOffline(false);
-      setCoachPlanInput(planInput);
-      setQueuedWorkouts(queued);
-
-      setWorkouts(Array.isArray(workoutsResult) ? workoutsResult : []);
-
-      // getUserProfile only returns full_name/avatar_url, so the weekly target
-      // comes from the same training goals the Profile screen edits.
-      if (goalsResult?.weeklyFrequencyDays) {
-        setWeeklyTarget(Number(goalsResult.weeklyFrequencyDays) || 5);
-      }
-    } catch (err: any) {
-      const isNetworkError =
-        err?.message?.includes('offline') ||
-        err?.message?.includes('Network request failed') ||
-        err?.message?.includes('fetch failed') ||
-        err?.message?.includes('Internet connection');
-
-      if (isNetworkError) {
-        setIsOffline(true);
-      } else {
-        console.warn('Stats fetch warning:', err?.message || err);
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [user?.id, recheck, setIsOffline]);
+  const goBackToProfile = useCallback(() => router.navigate('/(app)/Profile'), [router]);
 
   useFocusEffect(
     useCallback(() => {
-      loadData(false);
-    }, [loadData])
+      loadScreenData();
+      // Android back follows the same rule as the back button.
+      const backHandler = openedFromProfile
+        ? BackHandler.addEventListener('hardwareBackPress', () => {
+            goBackToProfile();
+            return true;
+          })
+        : null;
+      return () => {
+        backHandler?.remove();
+        // Leaving the screen: opened again from the tab bar, it has no back button.
+        if (openedFromProfile) navigation.setParams({ from: undefined } as never);
+      };
+    }, [loadScreenData, openedFromProfile, goBackToProfile, navigation])
   );
 
-  const handlePrevMonth = () => {
-    const nextDate = new Date(calYear, calMonth - 1, 1);
-    setCurrentCalendarDate(nextDate);
-    if (nextDate.getFullYear() === today.getFullYear() && nextDate.getMonth() === today.getMonth()) {
-      setSelectedDay(today.getDate());
-    } else {
-      setSelectedDay(null);
-    }
-  };
+  // A new day (after midnight, or back in the app): jump to it.
+  useEffect(() => {
+    const now = new Date();
+    setViewMonth({ year: now.getFullYear(), month: now.getMonth() });
+    setSelectedKey(localDayKey(now));
+  }, [todayKey]);
 
-  const handleNextMonth = () => {
-    const nextDate = new Date(calYear, calMonth + 1, 1);
-    setCurrentCalendarDate(nextDate);
-    if (nextDate.getFullYear() === today.getFullYear() && nextDate.getMonth() === today.getMonth()) {
-      setSelectedDay(today.getDate());
-    } else {
-      setSelectedDay(null);
+  const handleRefresh = async () => {
+    setRefreshing(true);
+    try {
+      await loadScreenData();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -211,722 +169,349 @@ export default function StatisticsScreen() {
   const primaryText = isDark ? PALETTE.backgroundLight : PALETTE.dark;
   const secondaryText = theme.subtext;
   const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
-  const dividerColor = isDark ? 'rgba(255, 255, 255, 0.07)' : 'rgba(10, 15, 11, 0.06)';
-  const accentGreen = PALETTE.primary;
-  const accentLilac = PALETTE.accentLilac;
+  const fillBg = isDark ? PALETTE.fillDark : PALETTE.fillLight;
+  // One sage accent, same as Home, Practice, Profile and Results.
+  const accent = theme.primary;
+  const accentStrong = theme.primaryText;
+  const accentSoft = theme.primarySoft;
 
-  // -------------------------------------------------------------
-  // Consistency: Active Days This Month, Current Streak, Weekly Goal
-  // -------------------------------------------------------------
-  const consistencyStats = useMemo(() => {
-    if (workouts.length === 0) {
-      return {
-        activeDaysThisMonth: 0,
-        currentStreak: 0,
-        daysThisWeek: 0,
-      };
+  // Without the history (offline, nothing cached) there's nothing true to show yet.
+  const historyUnknown = loaded?.from === 'phone';
+  const workouts = useMemo(() => loaded?.data.workouts ?? [], [loaded]);
+
+  // Same coach as Home, Practice and Results, so Today's pick matches.
+  const coach = useMemo(
+    () => (loaded ? getCoachPlan(loaded.data.plan, workouts, today, { historyUnknown }) : null),
+    [loaded, workouts, today, historyUnknown]
+  );
+  const summary = useMemo(
+    () => (loaded && !historyUnknown ? getProgressSummary(loaded.data.plan, workouts, today) : null),
+    [loaded, workouts, today, historyUnknown]
+  );
+  const lifetime = useMemo(() => loaded?.data.lifetime ?? lifetimeTotals(workouts), [loaded, workouts]);
+
+  /** Workouts per local day, oldest first within a day. */
+  const workoutsByDay = useMemo(() => {
+    const map = new Map<string, CoachWorkout[]>();
+    const sorted = [...workouts]
+      .filter((w) => w.completed_at)
+      .sort((a, b) => new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime());
+    for (const w of sorted) {
+      const key = localDayKey(w.completed_at);
+      map.set(key, [...(map.get(key) ?? []), w]);
     }
-
-    const activeDatesSet = new Set<string>();
-    let activeDaysThisMonth = 0;
-
-    workouts.forEach((w) => {
-      if (!w.completed_at) return;
-      const d = new Date(w.completed_at);
-      const str = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-      
-      if (!activeDatesSet.has(str)) {
-        activeDatesSet.add(str);
-        if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
-          activeDaysThisMonth += 1;
-        }
-      }
-    });
-
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-
-    let currentStreak = 0;
-    let checkDay = new Date(now);
-    const todayKey = `${checkDay.getFullYear()}-${String(checkDay.getMonth() + 1).padStart(2, '0')}-${String(checkDay.getDate()).padStart(2, '0')}`;
-    
-    if (!activeDatesSet.has(todayKey)) {
-      checkDay.setDate(checkDay.getDate() - 1);
-    }
-
-    while (true) {
-      const key = `${checkDay.getFullYear()}-${String(checkDay.getMonth() + 1).padStart(2, '0')}-${String(checkDay.getDate()).padStart(2, '0')}`;
-      if (activeDatesSet.has(key)) {
-        currentStreak += 1;
-        checkDay.setDate(checkDay.getDate() - 1);
-      } else {
-        break;
-      }
-    }
-
-    const dayOfWeek = now.getDay();
-    const distToMonday = (dayOfWeek + 6) % 7;
-    const mondayThisWeek = new Date(now);
-    mondayThisWeek.setDate(now.getDate() - distToMonday);
-
-    let daysThisWeek = 0;
-    for (let i = 0; i <= distToMonday; i++) {
-      const dayToCheck = new Date(mondayThisWeek);
-      dayToCheck.setDate(mondayThisWeek.getDate() + i);
-      const key = `${dayToCheck.getFullYear()}-${String(dayToCheck.getMonth() + 1).padStart(2, '0')}-${String(dayToCheck.getDate()).padStart(2, '0')}`;
-      if (activeDatesSet.has(key)) {
-        daysThisWeek += 1;
-      }
-    }
-
-    return {
-      activeDaysThisMonth,
-      currentStreak,
-      daysThisWeek,
-    };
-  }, [workouts, calYear, calMonth]);
-
-  // -------------------------------------------------------------
-  // Growth Metrics Engine
-  // -------------------------------------------------------------
-  const growthMetrics = useMemo(() => {
-    if (workouts.length === 0) {
-      return {
-        hasData: false,
-        overallAcc: 0,
-        overallAvgPace: 0,
-        speedDeltaPct: 0,
-        speedDeltaStr: 'Not started yet',
-        accDeltaStr: 'No trend yet',
-        isSpeedFaster: false,
-        isAccBetter: false,
-        headline: 'Do a workout to see your progress.',
-        subtext: "We'll show how your speed and accuracy change over time.",
-        trendPoints: [] as number[],
-        fastestPace: 0,
-        bestAcc: 0,
-        totalWorkouts: 0,
-      };
-    }
-
-    const sorted = [...workouts].sort(
-      (a, b) => new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime()
-    );
-
-    let totalQ = 0;
-    let totalC = 0;
-    let totalTime = 0;
-    let fastestPace = Infinity;
-    let bestAcc = 0;
-
-    sorted.forEach((w) => {
-      const q = Number(w.total_questions) || 0;
-      const c = Number(w.correct_answers) || 0;
-      const t = Number(w.total_time) || 0;
-      const pace = q > 0 ? t / q / 1000 : 0;
-      const acc = Number(w.accuracy) || (q > 0 ? (c / q) * 100 : 0);
-
-      totalQ += q;
-      totalC += c;
-      totalTime += t;
-
-      if (pace > 0 && pace < fastestPace) fastestPace = pace;
-      if (acc > bestAcc) bestAcc = acc;
-    });
-
-    const overallAcc = totalQ > 0 ? Math.round((totalC / totalQ) * 100) : 0;
-    const overallAvgPace = totalQ > 0 ? parseFloat((totalTime / totalQ / 1000).toFixed(1)) : 0;
-
-    const windowSize = Math.min(10, Math.floor(sorted.length / 2) || 1);
-    const recentSlice = sorted.slice(-windowSize);
-    const baselineSlice = sorted.slice(
-      Math.max(0, sorted.length - windowSize * 2),
-      sorted.length - windowSize
-    );
-
-    const calcStats = (slice: any[]) => {
-      let q = 0, c = 0, t = 0;
-      slice.forEach((item) => {
-        q += Number(item.total_questions) || 0;
-        c += Number(item.correct_answers) || 0;
-        t += Number(item.total_time) || 0;
-      });
-      return {
-        pace: q > 0 ? t / q / 1000 : 0,
-        acc: q > 0 ? (c / q) * 100 : 0,
-      };
-    };
-
-    const recentStats = calcStats(recentSlice);
-    const baselineStats = baselineSlice.length > 0 ? calcStats(baselineSlice) : recentStats;
-
-    let speedDeltaPct = 0;
-    let accDeltaPct = 0;
-
-    if (baselineStats.pace > 0 && baselineSlice.length > 0) {
-      speedDeltaPct = Math.round(((baselineStats.pace - recentStats.pace) / baselineStats.pace) * 100);
-      accDeltaPct = Math.round(recentStats.acc - baselineStats.acc);
-    }
-
-    const isSpeedFaster = speedDeltaPct > 2;
-    const isSpeedSlower = speedDeltaPct < -2;
-    const isAccBetter = accDeltaPct > 2;
-    const isAccWorse = accDeltaPct < -2;
-
-    let headline = '';
-    let subtext = '';
-
-    if (sorted.length < 2) {
-      headline = 'Great start!';
-      subtext = 'Do a few more workouts to see your progress here.';
-    } else if (isSpeedFaster && !isAccWorse) {
-      if (isAccBetter) {
-        headline = "You're getting faster and more accurate.";
-        subtext = `Average pace improved ${Math.abs(speedDeltaPct)}% with a +${accDeltaPct}% accuracy boost over your last ${windowSize} sessions.`;
-      } else {
-        headline = "You're solving faster while maintaining accuracy.";
-        subtext = `You got ${Math.abs(speedDeltaPct)}% faster over your last ${windowSize} workouts and stayed just as accurate.`;
-      }
-    } else if (isAccBetter && !isSpeedSlower) {
-      headline = 'Your accuracy is getting better.';
-      subtext = `+${accDeltaPct}% accuracy in recent workouts, at a steady ${recentStats.pace.toFixed(1)}s per question.`;
-    } else if (isSpeedSlower && isAccBetter) {
-      headline = 'Accuracy is improving. Keep practicing to bring pace up.';
-      subtext = `+${accDeltaPct}% accuracy. Keep practicing and your speed will come back.`;
-    } else if (isSpeedSlower && isAccWorse) {
-      headline = 'Take your time on each question.';
-      subtext = 'Recent workouts were up and down. Slowing down a little helps you get more right.';
-    } else {
-      headline = 'Nice and steady.';
-      subtext = `About ${recentStats.pace.toFixed(1)}s per question with ${Math.round(recentStats.acc)}% right over your last ${windowSize} workouts.`;
-    }
-
-    const trendPoints = sorted.slice(-10).map((w) => {
-      const q = Number(w.total_questions) || 0;
-      const t = Number(w.total_time) || 0;
-      return q > 0 ? parseFloat((t / q / 1000).toFixed(2)) : overallAvgPace;
-    });
-
-    return {
-      hasData: true,
-      overallAcc,
-      overallAvgPace,
-      speedDeltaPct: Math.abs(speedDeltaPct),
-      speedDeltaStr:
-        sorted.length < 2
-          ? 'First workout done'
-          : speedDeltaPct >= 0
-          ? `${speedDeltaPct}% faster recently`
-          : `${Math.abs(speedDeltaPct)}% slower recently`,
-      accDeltaStr:
-        sorted.length < 2
-          ? 'Tracking begun'
-          : accDeltaPct >= 0
-          ? `+${accDeltaPct}% accuracy gain`
-          : `${accDeltaPct}% accuracy delta`,
-      isSpeedFaster,
-      isAccBetter,
-      headline,
-      subtext,
-      trendPoints,
-      fastestPace: fastestPace === Infinity ? overallAvgPace : parseFloat(fastestPace.toFixed(1)),
-      bestAcc: Math.round(bestAcc),
-      totalWorkouts: sorted.length,
-    };
+    return map;
   }, [workouts]);
 
-  // -------------------------------------------------------------
-  // Calendar Grid
-  // -------------------------------------------------------------
-  const { gridWeeks, dotSize } = useMemo(() => {
-    const totalDaysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
-    const firstDayIndex = (new Date(calYear, calMonth, 1).getDay() + 6) % 7;
+  const streak = useMemo(() => countDayStreak(workouts.map((w) => w.completed_at), today), [workouts, today]);
+  const daysThisWeek = useMemo(() => {
+    const weekStart = localDayKey(startOfLocalWeek(today));
+    return [...workoutsByDay.keys()].filter((key) => key >= weekStart && key <= todayKey).length;
+  }, [workoutsByDay, today, todayKey]);
 
-    const map: Record<number, boolean> = {};
+  // ---- Calendar ----
+  const { year: calYear, month: calMonth } = viewMonth;
+  const isCurrentMonth = calYear === today.getFullYear() && calMonth === today.getMonth();
+  const weeks = useMemo(() => monthGrid(calYear, calMonth), [calYear, calMonth]);
+  const calendarWidth = Math.min(width - gutter * 2, MAX_CONTENT_WIDTH) - CALENDAR_PADDING * 2;
+  const cellWidth = Math.floor(calendarWidth / 7);
+  const dotSize = Math.min(cellWidth - 4, 40);
 
-    workouts.forEach((w) => {
-      if (!w.completed_at) return;
-      const d = new Date(w.completed_at);
-      if (d.getFullYear() === calYear && d.getMonth() === calMonth) {
-        map[d.getDate()] = true;
-      }
-    });
+  const showMonth = (offset: number) => {
+    const next = new Date(calYear, calMonth + offset, 1);
+    setViewMonth({ year: next.getFullYear(), month: next.getMonth() });
+    const showsToday = next.getFullYear() === today.getFullYear() && next.getMonth() === today.getMonth();
+    setSelectedKey(showsToday ? todayKey : null);
+  };
 
-    const flatCells: { day: number; active: boolean; isRealToday: boolean }[] = [];
-    for (let i = 0; i < firstDayIndex; i++) {
-      flatCells.push({ day: 0, active: false, isRealToday: false });
-    }
-    for (let d = 1; d <= totalDaysInMonth; d++) {
-      const hasWorkouts = Boolean(map[d]);
-      const isRealToday = isCurrentViewingMonth && d === today.getDate();
-      flatCells.push({ day: d, active: hasWorkouts, isRealToday });
-    }
+  const selectedWorkouts = selectedKey ? workoutsByDay.get(selectedKey) ?? [] : [];
 
-    const remainder = flatCells.length % 7;
-    if (remainder !== 0) {
-      const trailingCount = 7 - remainder;
-      for (let j = 0; j < trailingCount; j++) {
-        flatCells.push({ day: 0, active: false, isRealToday: false });
-      }
-    }
+  // ---- Pieces ----
 
-    const weeks: { day: number; active: boolean; isRealToday: boolean }[][] = [];
-    for (let i = 0; i < flatCells.length; i += 7) {
-      weeks.push(flatCells.slice(i, i + 7));
-    }
+  const renderHeader = () => (
+    <View style={styles.header}>
+      {openedFromProfile && (
+        <TouchableOpacity
+          style={[styles.iconButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
+          onPress={goBackToProfile}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Back to Profile"
+        >
+          <Ionicons name="arrow-back" size={20} color={primaryText} />
+        </TouchableOpacity>
+      )}
+      <Text
+        style={[styles.screenTitle, { color: primaryText }]}
+        accessibilityRole="header"
+        maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}
+      >
+        Your progress
+      </Text>
+    </View>
+  );
 
-    const horizontalPadding = isNarrow ? 32 : 40;
-    const availableWidth = width - horizontalPadding - 32;
-    const calculatedSize = Math.floor(availableWidth / 7);
+  const card = [styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }];
 
-    return {
-      gridWeeks: weeks,
-      dotSize: Math.max(calculatedSize, 36),
-    };
-  }, [calYear, calMonth, workouts, width, isCurrentViewingMonth, today, isNarrow]);
+  const renderStatRow = (icon: React.ComponentProps<typeof Ionicons>['name'], value: string, label: string) => (
+    <View style={styles.statRow} accessible accessibilityLabel={`${label}: ${value}`}>
+      <View style={[styles.statIcon, { backgroundColor: accentSoft }]}>
+        <Ionicons name={icon} size={20} color={accentStrong} />
+      </View>
+      <View style={styles.statText}>
+        <Text style={[styles.statValue, { color: primaryText }]}>{value}</Text>
+        <Text style={[styles.statLabel, { color: secondaryText }]}>{label}</Text>
+      </View>
+    </View>
+  );
 
-  const displayDayNumber = selectedDay || (isCurrentViewingMonth ? today.getDate() : 1);
-  const selectedWeekday = WEEKDAY_ABBR[new Date(calYear, calMonth, displayDayNumber).getDay()];
+  const renderSummary = () => (
+    <View style={card}>
+      {renderStatRow('flame-outline', streak > 0 ? `${plural(streak, 'day')} in a row` : 'Practice today to start one', 'Current streak')}
+      <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
+      {renderStatRow('calendar-outline', `${daysThisWeek} of ${plural(weeklyTarget, 'day')}`, 'This week')}
+      <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
+      {renderStatRow('checkmark-done-outline', lifetime.questions.toLocaleString(), 'Questions answered')}
+    </View>
+  );
 
-  // -------------------------------------------------------------
-  // Skill Matrix Breakdown & Shared Focus Directive
-  // -------------------------------------------------------------
-  const skillBreakdown = useMemo(() => {
-    const categories: Record<string, { label: string; totalQ: number; correct: number; totalTimeMs: number }> = {
-      addition: { label: operationName('addition'), totalQ: 0, correct: 0, totalTimeMs: 0 },
-      subtraction: { label: operationName('subtraction'), totalQ: 0, correct: 0, totalTimeMs: 0 },
-      multiplication: { label: operationName('multiplication'), totalQ: 0, correct: 0, totalTimeMs: 0 },
-      division: { label: operationName('division'), totalQ: 0, correct: 0, totalTimeMs: 0 },
-      mixed: { label: operationName('mixed'), totalQ: 0, correct: 0, totalTimeMs: 0 },
-    };
+  const renderCalendar = () => (
+    <View style={[card, styles.calendarCard]}>
+      <View style={styles.monthRow}>
+        <TouchableOpacity
+          onPress={() => showMonth(-1)}
+          style={[styles.iconButton, { backgroundColor: fillBg, borderColor: 'transparent' }]}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Previous month"
+        >
+          <Ionicons name="chevron-back" size={20} color={primaryText} />
+        </TouchableOpacity>
+        <Text style={[styles.monthLabel, { color: primaryText }]} accessibilityRole="header">
+          {MONTH_NAMES[calMonth]} {calYear}
+        </Text>
+        <TouchableOpacity
+          onPress={() => showMonth(1)}
+          disabled={isCurrentMonth}
+          style={[
+            styles.iconButton,
+            { backgroundColor: fillBg, borderColor: 'transparent', opacity: isCurrentMonth ? 0.35 : 1 },
+          ]}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel="Next month"
+          accessibilityState={{ disabled: isCurrentMonth }}
+        >
+          <Ionicons name="chevron-forward" size={20} color={primaryText} />
+        </TouchableOpacity>
+      </View>
 
-    workouts.forEach((w) => {
-      let rawOp = (w.operation || 'mixed').toLowerCase();
-      if (rawOp === 'adaptive_mix') rawOp = 'mixed';
-      if (!categories[rawOp]) return;
+      <View style={styles.weekRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+        {WEEK_DAYS.map((label, i) => (
+          <Text key={i} style={[styles.weekDay, { width: cellWidth, color: secondaryText }]} maxFontSizeMultiplier={1.3}>
+            {label}
+          </Text>
+        ))}
+      </View>
 
-      categories[rawOp].totalQ += Number(w.total_questions) || 0;
-      categories[rawOp].correct += Number(w.correct_answers) || 0;
-      categories[rawOp].totalTimeMs += Number(w.total_time) || 0;
-    });
+      {weeks.map((week, w) => (
+        <View key={w} style={styles.weekRow}>
+          {week.map((cell, i) => {
+            if (!cell) return <View key={i} style={{ width: cellWidth, minHeight: 44 }} />;
+            const practiced = workoutsByDay.has(cell.key);
+            const isToday = cell.key === todayKey;
+            const isSelected = cell.key === selectedKey;
+            const label = `${MONTH_NAMES[calMonth]} ${cell.day}, ${practiced ? 'practiced' : 'not practiced'}${
+              isToday ? ', today' : ''
+            }`;
+            return (
+              <TouchableOpacity
+                key={i}
+                style={[styles.dayCell, { width: cellWidth }]}
+                onPress={() => setSelectedKey(cell.key)}
+                activeOpacity={0.7}
+                accessibilityRole="button"
+                accessibilityLabel={label}
+                accessibilityState={{ selected: isSelected }}
+              >
+                <View
+                  style={[
+                    styles.dayDot,
+                    {
+                      width: dotSize,
+                      height: dotSize,
+                      borderRadius: dotSize / 2,
+                      backgroundColor: isSelected ? primaryText : practiced ? accent : 'transparent',
+                      borderWidth: isToday && !isSelected ? 2 : 0,
+                      borderColor: accentStrong,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.dayNumber,
+                      {
+                        color: isSelected ? screenBg : practiced ? theme.onPrimary : primaryText,
+                        fontWeight: isSelected || practiced || isToday ? '600' : '400',
+                      },
+                    ]}
+                    maxFontSizeMultiplier={1.3}
+                  >
+                    {cell.day}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      ))}
 
-    const parsed = Object.entries(categories).map(([key, data]) => {
-      const acc = data.totalQ > 0 ? Math.round((data.correct / data.totalQ) * 100) : 0;
-      const avgPace = data.totalQ > 0 ? parseFloat((data.totalTimeMs / data.totalQ / 1000).toFixed(1)) : 0;
-      const masteryScore = data.totalQ > 0 ? acc * 0.7 + Math.max(0, 10 - avgPace) * 3 : 0;
-      const frictionScore = data.totalQ > 0 ? (100 - acc) * 1.4 + avgPace * 3.5 : -1;
+      <View style={[styles.dayDetails, { borderTopColor: borderSubtle }]} accessibilityLiveRegion="polite">
+        {selectedKey ? (
+          <>
+            <Text style={[styles.dayTitle, { color: primaryText }]}>{dayTitle(selectedKey)}</Text>
+            {selectedWorkouts.length === 0 ? (
+              <Text style={[styles.dayLine, { color: secondaryText }]}>No practice this day.</Text>
+            ) : (
+              selectedWorkouts.map((w, i) => (
+                <Text key={w.id ?? `${w.completed_at}-${i}`} style={[styles.dayLine, { color: secondaryText }]}>
+                  {workoutDayLabel(w)}
+                </Text>
+              ))
+            )}
+          </>
+        ) : (
+          <Text style={[styles.dayLine, { color: secondaryText }]}>Tap a day to see its workouts.</Text>
+        )}
+      </View>
+    </View>
+  );
 
-      return {
-        key,
-        name: data.label,
-        totalQ: data.totalQ,
-        accuracy: acc,
-        avgPace,
-        masteryScore,
-        frictionScore,
-      };
-    });
+  const renderLevelRow = (row: LevelRow, index: number) => {
+    const name = WEAK_SPOTS.find((s) => s.id === row.operation)?.title ?? row.operation;
+    const level = LEVEL_NAMES[row.level];
+    const accuracyLine = !row.tried
+      ? null
+      : row.accuracy === null
+        ? COPY.newLevel
+        : `${Math.round(row.accuracy)}% correct lately`;
+    const nextLine = levelProgressText(row);
+    const label = [name, `level ${level}`, row.mastered ? 'mastered' : null, accuracyLine, nextLine]
+      .filter(Boolean)
+      .join(', ');
 
-    const eligibleOperations = parsed.filter((p) => p.totalQ >= 20);
-
-    let strongest: any = null;
-    if (eligibleOperations.length > 0) {
-      const sortedByMastery = [...eligibleOperations].sort((a, b) => b.masteryScore - a.masteryScore);
-      strongest = sortedByMastery[0];
-    }
-
-    // Next Focus comes from the shared coach, so it matches Home.
-    const coach = getCoachPlan(coachPlanInput, [...workouts, ...queuedWorkouts]);
-
-    return {
-      skills: parsed,
-      strongest,
-      nextFocusHeading: coach.isFirstWorkout
-        ? COPY.warmupHeading
-        : workoutTitle(coach.workout, coach.workout.questionCount),
-      nextFocusSubheading: coach.message.subheading,
-    };
-  }, [workouts, queuedWorkouts, coachPlanInput]);
-
-  // Hook rules guarantee: Early returns happen strictly after all hooks have executed
-  if (isOffline) {
     return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-        <OfflineNotice onRetry={handleRetryConnection} />
-      </SafeAreaView>
+      <React.Fragment key={row.operation}>
+        {index > 0 && <View style={[styles.divider, { backgroundColor: borderSubtle }]} />}
+        <View style={styles.levelRow} accessible accessibilityLabel={label}>
+          <View style={[styles.badge, { backgroundColor: accentSoft }]}>
+            <Text style={[styles.badgeSymbol, { color: accentStrong }]} maxFontSizeMultiplier={1.3}>
+              {operationSymbol(row.operation)}
+            </Text>
+          </View>
+          <View style={styles.levelText}>
+            <View style={styles.levelTitleLine}>
+              <Text style={[styles.levelName, { color: primaryText }]}>{name}</Text>
+              <Text style={[styles.levelName, { color: primaryText }]}>{level}</Text>
+            </View>
+            {row.mastered && <Text style={[styles.levelMastered, { color: accentStrong }]}>✓ Mastered</Text>}
+            {accuracyLine && <Text style={[styles.levelLine, { color: secondaryText }]}>{accuracyLine}</Text>}
+            <Text style={[styles.levelLine, { color: secondaryText }]}>{nextLine}</Text>
+          </View>
+        </View>
+      </React.Fragment>
     );
-  }
+  };
+
+  const renderLevels = () =>
+    summary && (
+      <>
+        <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
+          Your levels
+        </Text>
+        <Text style={[styles.sectionNote, { color: secondaryText }]}>
+          A strong round is {STRONG_ACCURACY}% correct or more.
+        </Text>
+        <View style={card}>{summary.levels.map(renderLevelRow)}</View>
+      </>
+    );
+
+  const renderProgress = () => {
+    if (!summary) return null;
+    const { headline, detail } = progressText(summary.highlight);
+    return (
+      <View style={card} accessible>
+        <Text style={[styles.cardEyebrow, { color: accentStrong }]}>How you're doing</Text>
+        <Text style={[styles.progressHeadline, { color: primaryText }]}>{headline}</Text>
+        {detail && <Text style={[styles.dayLine, { color: secondaryText }]}>{detail}</Text>}
+      </View>
+    );
+  };
+
+  const renderRecords = () => (
+    <>
+      <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
+        Records
+      </Text>
+      <View style={card}>
+        {renderStatRow('trophy-outline', plural(lifetime.longestStreak, 'day'), 'Longest streak')}
+        <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
+        {renderStatRow('star-outline', lifetime.perfectRounds.toLocaleString(), 'Perfect rounds (all correct)')}
+        <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
+        {renderStatRow('barbell-outline', lifetime.workouts.toLocaleString(), 'Workouts done')}
+      </View>
+    </>
+  );
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Header Bar */}
-      <View style={styles.header}>
-        <View style={styles.headerInner}>
-          <TouchableOpacity
-            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
-            onPress={() => router.back()}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="arrow-back" size={20} color={primaryText} />
-          </TouchableOpacity>
-          <Text style={[styles.headerTitle, { color: primaryText }]}>Performance & Growth</Text>
-          <TouchableOpacity
-            style={[styles.backButton, { backgroundColor: cardBg, borderColor: borderSubtle }]}
-            onPress={() => loadData(true)}
-            activeOpacity={0.7}
-          >
-            <Ionicons name="refresh" size={18} color={primaryText} />
-          </TouchableOpacity>
-        </View>
-      </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scrollContent,
+          { paddingHorizontal: gutter, paddingBottom: Math.max(insets.bottom, 20) + 90 },
+        ]}
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            tintColor={accentStrong}
+            colors={[accentStrong]}
+            progressBackgroundColor={cardBg}
+          />
+        }
+      >
+        <View style={styles.responsiveWrapper}>
+          {renderHeader()}
 
-      {loading ? (
-        <View style={styles.loadingCenter}>
-          <ActivityIndicator size="large" color={accentGreen} />
-        </View>
-      ) : (
-        <ScrollView
-          contentContainerStyle={[
-            styles.scrollContent,
-            {
-              paddingHorizontal: isNarrow ? 16 : 20,
-              paddingBottom: Math.max(insets.bottom, 20) + 100,
-            },
-          ]}
-          showsVerticalScrollIndicator={false}
-        >
-          <View style={styles.responsiveWrapper}>
-            
-            {/* 1. CALENDAR HERO */}
-            <View style={styles.heroSection}>
-              <View style={styles.heroTopRow}>
-                <Text style={[styles.heroDayNumber, { color: accentGreen }]}>
-                  {displayDayNumber}
-                </Text>
-                <Text style={[styles.heroDayWeekday, { color: secondaryText }]}>
-                  {selectedWeekday}
-                </Text>
-              </View>
+          {!loaded || !coach ? (
+            <ActivityIndicator style={styles.loading} size="large" color={accentStrong} />
+          ) : (
+            <View style={styles.sections}>
+              <OfflineNote from={loaded.from} isOffline={isOffline} />
 
-              <View style={styles.monthSwitcherRow}>
-                <Text style={[styles.monthLabel, { color: primaryText }]}>
-                  {MONTH_NAMES[calMonth]} <Text style={{ fontFamily: FONT_FAMILY.text, fontWeight: '400', color: secondaryText }}>{calYear}</Text>
-                </Text>
-
-                <View style={styles.arrowsGroup}>
-                  <TouchableOpacity
-                    onPress={handlePrevMonth}
-                    style={[styles.arrowButton, { borderColor: borderSubtle, backgroundColor: cardBg }]}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="chevron-back" size={18} color={primaryText} />
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleNextMonth}
-                    style={[styles.arrowButton, { borderColor: borderSubtle, backgroundColor: cardBg }]}
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons name="chevron-forward" size={18} color={primaryText} />
-                  </TouchableOpacity>
-                </View>
-              </View>
-            </View>
-
-            {/* Calendar Heatmap */}
-            <View style={[styles.calendarCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <View style={styles.weekHeaderRow}>
-                {WEEK_DAYS.map((wd, i) => (
-                  <View key={i} style={[styles.cellColumn, { width: dotSize }]}>
-                    <Text style={[styles.weekDayText, { color: secondaryText }]}>
-                      {wd}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-
-              <View style={styles.weeksContainer}>
-                {gridWeeks.map((week, weekIndex) => (
-                  <View key={weekIndex} style={styles.weekRow}>
-                    {week.map((item, colIndex) => {
-                      if (item.day === 0) {
-                        return (
-                          <View
-                            key={colIndex}
-                            style={[styles.cellColumn, { width: dotSize, height: dotSize }]}
-                          />
-                        );
-                      }
-                      const isSelected = selectedDay === item.day;
-                      return (
-                        <View key={colIndex} style={[styles.cellColumn, { width: dotSize }]}>
-                          <TouchableOpacity
-                            onPress={() => setSelectedDay(item.day)}
-                            style={[
-                              styles.dotCell,
-                              {
-                                width: dotSize - 4,
-                                height: dotSize - 4,
-                                borderRadius: (dotSize - 4) / 2,
-                                backgroundColor: isSelected
-                                  ? primaryText
-                                  : item.active
-                                  ? accentGreen
-                                  : isDark
-                                  ? 'rgba(255,255,255,0.08)'
-                                  : 'rgba(10,15,11,0.06)',
-                                borderWidth: item.isRealToday && !isSelected ? 2 : 0,
-                                borderColor: accentGreen,
-                              },
-                            ]}
-                            activeOpacity={0.7}
-                          >
-                            <Text
-                              style={[
-                                styles.dotCellText,
-                                {
-                                  color: isSelected
-                                    ? isDark
-                                      ? PALETTE.dark
-                                      : '#FFFFFF'
-                                    : item.active
-                                    ? PALETTE.dark
-                                    : secondaryText,
-                                  fontWeight: isSelected || item.active || item.isRealToday ? '600' : '500',
-                                },
-                              ]}
-                            >
-                              {item.day}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-                      );
-                    })}
-                  </View>
-                ))}
-              </View>
-
-              {/* REFINED CONSISTENCY STATS */}
-              <View style={[styles.dayRecapRow, { borderTopColor: dividerColor }]}>
-                <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Active Days</Text>
-                  <Text style={[styles.recapValue, { color: accentGreen }]}>
-                    {consistencyStats.activeDaysThisMonth} {consistencyStats.activeDaysThisMonth === 1 ? 'day' : 'days'}
+              {historyUnknown ? (
+                <View style={card}>
+                  <Text style={[styles.progressHeadline, { color: primaryText }]}>
+                    Your progress will show here once you're back online.
                   </Text>
                 </View>
-
-                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
-
-                <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Current Streak</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>
-                    {consistencyStats.currentStreak} {consistencyStats.currentStreak === 1 ? 'day' : 'days'}
-                  </Text>
-                </View>
-
-                <View style={[styles.recapDivider, { backgroundColor: dividerColor }]} />
-
-                <View style={styles.recapItem}>
-                  <Text style={[styles.recapLabel, { color: secondaryText }]}>Weekly Goal</Text>
-                  <Text style={[styles.recapValue, { color: primaryText }]}>
-                    {consistencyStats.daysThisWeek} / {weeklyTarget} days
-                  </Text>
-                </View>
-              </View>
-            </View>
-
-            {/* 2. ROLLING GROWTH & IMPROVEMENT VERDICT WITH SPARKLINE */}
-            <View style={[styles.heroCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <View style={styles.heroBadgeRow}>
-                <View style={[styles.statusBadge, { backgroundColor: accentGreen }]}>
-                  <Text style={styles.statusBadgeText}>PROGRESS UPDATE</Text>
-                </View>
-              </View>
-
-              <Text style={[styles.heroHeadline, { color: primaryText }]}>
-                {growthMetrics.headline}
-              </Text>
-
-              <Text style={[styles.heroSubtext, { color: secondaryText }]}>
-                {growthMetrics.subtext}
-              </Text>
-
-              {/* Pace Trajectory Sparkline */}
-              {growthMetrics.trendPoints.length >= 2 && (
-                <View style={[styles.sparklineContainer, { borderTopColor: dividerColor }]}>
-                  <View style={styles.sparklineHeader}>
-                    <Text style={[styles.sparklineTitle, { color: secondaryText }]}>
-                      Pace Trend (Last {growthMetrics.trendPoints.length} sessions)
-                    </Text>
-                    <Text style={[styles.sparklineCurrent, { color: primaryText }]}>
-                      {growthMetrics.trendPoints[growthMetrics.trendPoints.length - 1]}s/Q
-                    </Text>
-                  </View>
-                  <View style={styles.sparklineChartWrapper}>
-                    <TrendSparkline
-                      data={growthMetrics.trendPoints}
-                      width={width - (isNarrow ? 72 : 80)}
-                      height={40}
-                      strokeColor={accentGreen}
-                    />
-                  </View>
-                </View>
+              ) : (
+                <>
+                  {renderSummary()}
+                  {renderCalendar()}
+                  {renderLevels()}
+                  {renderProgress()}
+                  <TodaysPickCard coach={coach} />
+                  {renderRecords()}
+                </>
               )}
-
-              <View style={[styles.growthPillsRow, { borderTopColor: dividerColor }]}>
-                <View style={styles.growthPillItem}>
-                  <Ionicons
-                    name={growthMetrics.isSpeedFaster ? 'trending-up' : 'timer-outline'}
-                    size={18}
-                    color={primaryText}
-                  />
-                  <Text style={[styles.growthPillText, { color: primaryText }]}>
-                    {growthMetrics.speedDeltaStr}
-                  </Text>
-                </View>
-
-                <View style={[styles.pillDivider, { backgroundColor: dividerColor }]} />
-
-                <View style={styles.growthPillItem}>
-                  <Ionicons
-                    name={growthMetrics.isAccBetter ? 'checkmark-circle' : 'alert-circle-outline'}
-                    size={18}
-                    color={primaryText}
-                  />
-                  <Text style={[styles.growthPillText, { color: primaryText }]}>
-                    {growthMetrics.accDeltaStr}
-                  </Text>
-                </View>
-              </View>
             </View>
-
-            {/* 3. DIRECTIVES */}
-            <View style={styles.directivesRow}>
-              
-              {/* Strongest Area */}
-              <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-                <View style={[styles.directiveIconCircle, { backgroundColor: accentGreen }]}>
-                  <Ionicons name="trophy" size={17} color="#0A0F0B" />
-                </View>
-                <Text style={[styles.directiveLabel, { color: secondaryText }]}>Strongest Area</Text>
-                <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
-                  {skillBreakdown.strongest
-                    ? skillBreakdown.strongest.name
-                    : 'Not enough data'}
-                </Text>
-                <Text style={[styles.directiveDetail, { color: secondaryText }]}>
-                  {skillBreakdown.strongest
-                    ? `${skillBreakdown.strongest.accuracy}% · ${skillBreakdown.strongest.avgPace}s/Q`
-                    : 'Needs 20 questions'}
-                </Text>
-              </View>
-
-              {/* Next Focus (from the shared coach) */}
-              <View style={[styles.directiveCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-                <View style={[styles.directiveIconCircle, { backgroundColor: accentLilac }]}>
-                  <Ionicons name="sparkles" size={17} color="#0A0F0B" />
-                </View>
-                <Text style={[styles.directiveLabel, { color: secondaryText }]}>Next Focus</Text>
-                <Text style={[styles.directiveValue, { color: primaryText }]} numberOfLines={1}>
-                  {skillBreakdown.nextFocusHeading}
-                </Text>
-                <Text style={[styles.directiveDetail, { color: secondaryText }]}>
-                  {skillBreakdown.nextFocusSubheading}
-                </Text>
-              </View>
-
-            </View>
-
-            {/* 4. SKILL PROFICIENCY */}
-            <View style={[styles.sectionCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={[styles.sectionTitle, { color: primaryText }]}>Skill Proficiency</Text>
-                <Text style={[styles.sectionSubtitle, { color: secondaryText }]}>Accuracy & Pace</Text>
-              </View>
-
-              <View style={styles.skillsList}>
-                {skillBreakdown.skills.map((skill) => {
-                  const hasLittleData = skill.totalQ < 10;
-
-                  return (
-                    <View key={skill.key} style={styles.skillRow}>
-                      <View style={styles.skillHeader}>
-                        <Text style={[styles.skillName, { color: primaryText }]}>{skill.name}</Text>
-                        <Text style={[styles.skillStat, { color: hasLittleData ? secondaryText : primaryText }]}>
-                          {hasLittleData
-                            ? 'Not enough data yet'
-                            : `${skill.accuracy}% · ${skill.avgPace}s (${skill.totalQ}Q)`}
-                        </Text>
-                      </View>
-
-                      <View
-                        style={[
-                          styles.skillTrack,
-                          {
-                            backgroundColor: isDark
-                              ? 'rgba(255,255,255,0.08)'
-                              : 'rgba(10,15,11,0.06)',
-                          },
-                        ]}
-                      >
-                        <View
-                          style={[
-                            styles.skillFill,
-                            {
-                              width: hasLittleData ? '0%' : `${Math.max(skill.accuracy, 6)}%`,
-                              backgroundColor: accentGreen,
-                            },
-                          ]}
-                        />
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* 5. PERSONAL RECORDS */}
-            <View style={[styles.sectionCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <Text style={[styles.sectionTitle, { color: primaryText, marginBottom: 16 }]}>
-                Personal Records
-              </Text>
-
-              <View style={styles.recordsGrid}>
-                <View style={styles.recordItem}>
-                  <Ionicons name="flash" size={24} color={accentGreen} />
-                  <Text style={[styles.recordValue, { color: primaryText }]}>
-                    {growthMetrics.fastestPace > 0 ? `${growthMetrics.fastestPace}s` : '—'}
-                  </Text>
-                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Fastest Pace</Text>
-                </View>
-
-                <View style={[styles.recordDivider, { backgroundColor: dividerColor }]} />
-
-                <View style={styles.recordItem}>
-                  <Ionicons name="ribbon" size={24} color={accentLilac} />
-                  <Text style={[styles.recordValue, { color: primaryText }]}>
-                    {growthMetrics.bestAcc > 0 ? `${growthMetrics.bestAcc}%` : '—'}
-                  </Text>
-                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Peak Accuracy</Text>
-                </View>
-
-                <View style={[styles.recordDivider, { backgroundColor: dividerColor }]} />
-
-                <View style={styles.recordItem}>
-                  <Ionicons name="bar-chart" size={24} color={primaryText} />
-                  <Text style={[styles.recordValue, { color: primaryText }]}>
-                    {growthMetrics.totalWorkouts}
-                  </Text>
-                  <Text style={[styles.recordLabel, { color: secondaryText }]}>Completed</Text>
-                </View>
-              </View>
-            </View>
-
-          </View>
-        </ScrollView>
-      )}
+          )}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -935,336 +520,181 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
-  header: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 12,
+  scrollContent: {
+    flexGrow: 1,
+    paddingTop: 16,
   },
-  headerInner: {
+  responsiveWrapper: {
     width: '100%',
-    maxWidth: 480,
+    maxWidth: MAX_CONTENT_WIDTH,
     alignSelf: 'center',
+  },
+  header: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 20,
   },
-  backButton: {
+  screenTitle: {
+    ...typography.screenTitle,
+    letterSpacing: -0.6,
+    flexShrink: 1,
+  },
+  iconButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  loading: {
+    marginTop: 48,
+  },
+  sections: {
+    gap: 16,
+  },
+  card: {
+    borderRadius: 22,
+    borderWidth: 1,
+    padding: 18,
+    shadowColor: PALETTE.dark,
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.04,
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  divider: {
+    height: 1,
+    marginVertical: 12,
+  },
+  statRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  statIcon: {
     width: 40,
     height: 40,
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    borderWidth: 1,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.05,
-    shadowRadius: 5,
-    elevation: 2,
   },
-  headerTitle: {
-    ...typography.sectionHeading,
-    letterSpacing: -0.4,
-  },
-  loadingCenter: {
+  statText: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
-  scrollContent: {
-    paddingTop: 8,
-  },
-  responsiveWrapper: {
-    width: '100%',
-    maxWidth: 480,
-    alignSelf: 'center',
-    gap: 16,
-  },
-
-  /* Calendar Hero */
-  heroSection: {
-    marginTop: 4,
-    marginBottom: 2,
-  },
-  heroTopRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    justifyContent: 'space-between',
-  },
-  heroDayNumber: {
-    ...typography.problem,
-    // Decorative hero number: keeps its original size, larger than any named role.
-    fontSize: 96,
-    lineHeight: 96,
-    letterSpacing: -3,
-  },
-  heroDayWeekday: {
+  statValue: {
     ...typography.button,
-    letterSpacing: 1.5,
-    marginTop: 10,
   },
-  monthSwitcherRow: {
+  statLabel: {
+    ...typography.secondary,
+  },
+  calendarCard: {
+    paddingHorizontal: CALENDAR_PADDING,
+  },
+  monthRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginTop: 4,
+    gap: 8,
+    marginBottom: 12,
   },
   monthLabel: {
     ...typography.sectionHeading,
-    letterSpacing: 0.5,
-  },
-  arrowsGroup: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  arrowButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  /* Calendar Card */
-  calendarCard: {
-    borderRadius: 24,
-    borderWidth: 1,
-    paddingVertical: 18,
-    paddingHorizontal: 12,
-  },
-  weekHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  cellColumn: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  weekDayText: {
-    ...typography.caption,
+    flexShrink: 1,
     textAlign: 'center',
-  },
-  weeksContainer: {
-    gap: 10,
   },
   weekRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
   },
-  dotCell: {
+  weekDay: {
+    ...typography.secondary,
+    textAlign: 'center',
+    marginBottom: 4,
+  },
+  dayCell: {
+    minHeight: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 2,
+  },
+  dayDot: {
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dotCellText: {
+  dayNumber: {
     ...typography.secondary,
+    textAlign: 'center',
   },
-  dayRecapRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-around',
-    marginTop: 18,
-    paddingTop: 16,
+  dayDetails: {
     borderTopWidth: 1,
+    marginTop: 12,
+    paddingTop: 12,
+    paddingHorizontal: 10,
+    gap: 4,
   },
-  recapItem: {
-    alignItems: 'center',
-  },
-  recapLabel: {
-    ...typography.caption,
-    textTransform: 'uppercase',
-    marginBottom: 4,
-    letterSpacing: 0.5,
-  },
-  recapValue: {
+  dayTitle: {
     ...typography.button,
   },
-  recapDivider: {
-    width: 1,
-    height: 28,
-  },
-
-  /* Growth Verdict Card */
-  heroCard: {
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 20,
-  },
-  heroBadgeRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  statusBadge: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-  },
-  statusBadgeText: {
-    ...typography.caption,
-    color: '#0A0F0B',
-    letterSpacing: 0.8,
-  },
-  heroHeadline: {
-    ...typography.sectionHeading,
-    letterSpacing: -0.5,
-    marginBottom: 8,
-  },
-  heroSubtext: {
-    ...typography.secondary,
-    marginBottom: 14,
-  },
-
-  /* Sparkline */
-  sparklineContainer: {
-    borderTopWidth: 1,
-    paddingTop: 12,
-    marginBottom: 14,
-  },
-  sparklineHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  sparklineTitle: {
-    ...typography.caption,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  },
-  sparklineCurrent: {
-    ...typography.caption,
-  },
-  sparklineChartWrapper: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-
-  growthPillsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    borderTopWidth: 1,
-    paddingTop: 14,
-  },
-  growthPillItem: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  growthPillText: {
+  dayLine: {
     ...typography.secondary,
   },
-  pillDivider: {
-    width: 1,
-    height: 22,
+  sectionHeading: {
+    ...typography.button,
+    marginTop: 8,
+    marginBottom: -8,
   },
-
-  /* Directives Row */
-  directivesRow: {
+  sectionNote: {
+    ...typography.secondary,
+    marginBottom: -4,
+  },
+  levelRow: {
     flexDirection: 'row',
+    alignItems: 'flex-start',
     gap: 12,
   },
-  directiveCard: {
-    flex: 1,
+  badge: {
+    width: 44,
+    height: 44,
     borderRadius: 22,
-    borderWidth: 1,
-    padding: 16,
-  },
-  directiveIconCircle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 10,
   },
-  directiveLabel: {
-    ...typography.caption,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+  // Inter Tight, like the symbols on Practice and onboarding.
+  badgeSymbol: {
+    ...typography.sectionHeading,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  levelText: {
+    flex: 1,
+    gap: 2,
+  },
+  levelTitleLine: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    columnGap: 8,
+  },
+  levelName: {
+    ...typography.button,
+  },
+  levelMastered: {
+    ...typography.secondary,
+    fontWeight: '600',
+  },
+  levelLine: {
+    ...typography.secondary,
+  },
+  cardEyebrow: {
+    ...typography.secondary,
+    fontWeight: '600',
     marginBottom: 4,
   },
-  directiveValue: {
-    ...typography.button,
-    marginBottom: 2,
-  },
-  directiveDetail: {
-    ...typography.caption,
-  },
-
-  /* Section Cards */
-  sectionCard: {
-    borderRadius: 24,
-    borderWidth: 1,
-    padding: 18,
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'baseline',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  sectionTitle: {
-    ...typography.sectionHeading,
-  },
-  sectionSubtitle: {
-    ...typography.caption,
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-
-  /* Skills */
-  skillsList: {
-    gap: 14,
-  },
-  skillRow: {
-    gap: 7,
-  },
-  skillHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  skillName: {
-    ...typography.button,
-  },
-  skillStat: {
-    ...typography.caption,
-  },
-  skillTrack: {
-    width: '100%',
-    height: 7,
-    borderRadius: 3.5,
-    overflow: 'hidden',
-  },
-  skillFill: {
-    height: '100%',
-    borderRadius: 3.5,
-  },
-
-  /* Personal Records */
-  recordsGrid: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  recordItem: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 6,
-  },
-  recordValue: {
-    ...typography.sectionHeading,
-  },
-  recordLabel: {
-    ...typography.caption,
-  },
-  recordDivider: {
-    width: 1,
-    height: 34,
+  progressHeadline: {
+    ...typography.body,
+    fontWeight: '600',
+    marginBottom: 4,
   },
 });
