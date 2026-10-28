@@ -28,6 +28,8 @@ export interface LevelState {
   levels: OperationLevels;
   /** Rounds that counted toward each operation's level, newest first. Pooled mix parts appear as one round. */
   counted: Record<CoreOperation, OperationEntry[]>;
+  /** Strong rounds in a row at the current level, toward the next move up (3 moves it). */
+  strongInARow: Record<CoreOperation, number>;
 }
 
 /**
@@ -61,6 +63,7 @@ export function getLevelState(workouts: CoachWorkout[], plan: CoachPlanInput): L
 
   const levels = {} as OperationLevels;
   const counted = {} as Record<CoreOperation, OperationEntry[]>;
+  const strongInARow = {} as Record<CoreOperation, number>;
 
   for (const op of CORE_OPERATIONS) {
     const entries = entriesByOp[op];
@@ -125,9 +128,10 @@ export function getLevelState(workouts: CoachWorkout[], plan: CoachPlanInput): L
 
     levels[op] = level;
     counted[op] = countedForOp.reverse();
+    strongInARow[op] = strong;
   }
 
-  return { levels, counted };
+  return { levels, counted, strongInARow };
 }
 
 export function getOperationLevels(workouts: CoachWorkout[], plan: CoachPlanInput): OperationLevels {

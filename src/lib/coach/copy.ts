@@ -150,4 +150,35 @@ export const COPY = {
     isConfident
       ? "You've mastered everything! 🏆 Keep mixing to stay sharp."
       : "You've mastered everything! 🏆 Try a higher level, or keep mixing.",
+
+  /** Statistics. Progress only ever compares rounds on one operation at one level. */
+  warmupLabel: 'Warm-up',
+  progressLevelUp: (op: CoreOperation, level: DifficultyLevel) =>
+    `You moved up to ${LEVEL_NAMES[level]} on ${operationName(op)}! 🎉`,
+  progressLevelUpDetail: 'The questions are harder now, so taking a bit longer is normal.',
+  progressFaster: (op: CoreOperation, level: DifficultyLevel) =>
+    `You're getting faster at ${operationName(op)} on ${LEVEL_NAMES[level]}.`,
+  progressFasterDetail: (now: number, before: number) =>
+    `About ${seconds(now)} per question in your last 5 rounds, down from ${seconds(before)}.`,
+  progressMoreAccurate: (op: CoreOperation, level: DifficultyLevel) =>
+    `You're getting more right on ${operationName(op)} on ${LEVEL_NAMES[level]}.`,
+  progressMoreAccurateDetail: (now: number, before: number) =>
+    `${Math.round(now)}% correct in your last 5 rounds, up from ${Math.round(before)}%.`,
+  progressSteady: (op: CoreOperation, level: DifficultyLevel) =>
+    `You're steady on ${operationName(op)} on ${LEVEL_NAMES[level]}. Keep it up!`,
+  progressSteadyDetail: (accuracy: number) => `${Math.round(accuracy)}% correct in your last 5 rounds.`,
+  progressNotEnough: 'Do a few more workouts to see your progress here.',
+  notTriedYet: 'Not tried yet',
+  newLevel: 'New level · keep going!',
+  masteredLine: 'Mastered! Keep it sharp in mixes.',
+  roundsToNextLevel: (rounds: number, next: DifficultyLevel) =>
+    `${plural(rounds, 'more strong round')} to reach ${LEVEL_NAMES[next]}`,
+  roundsToMastery: (rounds: number) => `${plural(rounds, 'more strong round')} on Hard to master it`,
+  masteryAnotherDay: '1 more strong round on another day to master it',
 };
+
+/** "3.2 seconds", "1 second". */
+function seconds(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return `${rounded} ${rounded === 1 ? 'second' : 'seconds'}`;
+}

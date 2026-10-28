@@ -39,3 +39,21 @@ export function countDayStreak(timestamps: string[], now: Date = new Date()): nu
   }
   return streak;
 }
+
+/** The most consecutive local days with at least one workout, ever. */
+export function longestDayStreak(timestamps: string[]): number {
+  const days = [...new Set(timestamps.filter(Boolean).map((t) => localDayKey(t)))].sort();
+  let longest = 0;
+  let run = 0;
+  let previous: Date | null = null;
+  for (const key of days) {
+    const [y, m, d] = key.split('-').map(Number);
+    const day = new Date(y, m - 1, d, 12); // midday so DST shifts never skip or repeat a day
+    const next: Date | null = previous ? new Date(previous) : null;
+    next?.setDate(next.getDate() + 1);
+    run = next && localDayKey(next) === key ? run + 1 : 1;
+    longest = Math.max(longest, run);
+    previous = day;
+  }
+  return longest;
+}

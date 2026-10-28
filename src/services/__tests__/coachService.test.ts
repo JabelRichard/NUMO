@@ -135,4 +135,26 @@ describe('loadCoachDataWithFallback', () => {
     expect(loaded.from).toBe('phone');
     expect(loaded.data.plan.comfortLevel).toBe('confident');
   });
+
+  it('lifetime records: saved from the full history online, used offline with queued workouts added', async () => {
+    const many = Array.from({ length: 350 }, (_, i) => workout(new Date(Date.UTC(2025, 0, 1) + i * 86400000).toISOString()));
+    (fetchAllWorkouts as jest.Mock).mockResolvedValueOnce(many);
+    const live = await loadCoachDataWithFallback(ME, true);
+    expect(live.data.lifetime).toEqual({ questions: 3500, workouts: 350, longestStreak: 350, perfectRounds: 0 });
+
+    const queued = { ...workout('2026-10-28T10:00:00.000Z'), correct_answers: 10 };
+    (getQueuedWorkouts as jest.Mock).mockResolvedValue([queued]);
+    const offline = await loadCoachDataWithFallback(ME, false);
+    expect(offline.from).toBe('cache');
+    // Only the newest 300 are cached, but the records still cover all 350, plus the queued one.
+    expect(offline.data.workouts).toHaveLength(301);
+    expect(offline.data.lifetime).toEqual({ questions: 3510, workouts: 351, longestStreak: 350, perfectRounds: 1 });
+    (getQueuedWorkouts as jest.Mock).mockResolvedValue([]);
+  });
+
+  it('an older cache without records counts what is cached', async () => {
+    await AsyncStorage.setItem(`numo_coach_cache_v1:${ME}`, JSON.stringify({ plan: {}, workouts: saved }));
+    const loaded = await loadCoachDataWithFallback(ME, false);
+    expect(loaded.data.lifetime).toMatchObject({ questions: 10, workouts: 1 });
+  });
 });

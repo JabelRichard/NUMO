@@ -1,8 +1,8 @@
 import { CORE_OPERATIONS } from '../math/questionGenerator';
-import { CoreOperation } from '../math/types';
+import { CoreOperation, DifficultyLevel } from '../math/types';
 import { FrictionArea } from '../../types/profile';
 import { localDayKey } from '../../utils/localDates';
-import { LevelState, STRONG_ACCURACY } from './difficulty';
+import { LevelState, STREAK_TO_MOVE, STRONG_ACCURACY } from './difficulty';
 import { accuracyOf } from './entries';
 import { OperationStats, pickWeakest } from './stats';
 import { CoachOperation } from './types';
@@ -29,6 +29,33 @@ export function isMastered(state: LevelState, op: CoreOperation): boolean {
 
 export const masteredOperations = (state: LevelState): CoreOperation[] =>
   CORE_OPERATIONS.filter((op) => isMastered(state, op));
+
+/** What's left before an operation's next step: the next level, or mastering Hard. */
+export type LevelProgress =
+  | { kind: 'mastered' }
+  | { kind: 'next_level'; next: DifficultyLevel; roundsLeft: number }
+  /** On Hard. `anotherDay`: 5 strong rounds are done, but all on one day. */
+  | { kind: 'mastery'; roundsLeft: number; anotherDay: boolean };
+
+const NEXT_LEVEL: Record<DifficultyLevel, DifficultyLevel> = { easy: 'medium', medium: 'hard', hard: 'hard' };
+
+export function levelProgress(state: LevelState, op: CoreOperation): LevelProgress {
+  const level = state.levels[op];
+  if (level !== 'hard') {
+    const roundsLeft = Math.max(1, STREAK_TO_MOVE - state.strongInARow[op]);
+    return { kind: 'next_level', next: NEXT_LEVEL[level], roundsLeft };
+  }
+  if (isMastered(state, op)) return { kind: 'mastered' };
+
+  // Same rounds isMastered looks at: the newest counted rounds on Hard.
+  const hard = state.counted[op].filter((e) => e.difficulty === 'hard');
+  const isStrong = (i: number) => hard[i] && accuracyOf(hard[i].correct, hard[i].questions) >= STRONG_ACCURACY;
+  let strongRun = 0;
+  while (strongRun < MASTERY_ROUNDS && isStrong(strongRun)) strongRun += 1;
+  return strongRun === MASTERY_ROUNDS
+    ? { kind: 'mastery', roundsLeft: 1, anotherDay: true }
+    : { kind: 'mastery', roundsLeft: MASTERY_ROUNDS - strongRun, anotherDay: false };
+}
 
 /**
  * The operation to add after a graduation: the weakest one not in the plan and not

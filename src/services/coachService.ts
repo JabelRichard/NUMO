@@ -3,7 +3,15 @@ import { supabase } from '../config/supabase';
 import { getUserSettings } from './settingsService';
 import { getTrainingGoals, saveTrainingGoals } from './profileService';
 import { fetchAllWorkouts, flushWorkoutOutbox, getQueuedWorkouts } from './workoutService';
-import { addToPlan, CoachPlanInput, CoachWorkout } from '../lib/coach';
+import {
+  addToLifetime,
+  addToPlan,
+  CoachPlanInput,
+  CoachWorkout,
+  isLifetimeTotals,
+  LifetimeTotals,
+  lifetimeTotals,
+} from '../lib/coach';
 import { CoreOperation } from '../lib/math/types';
 import { ComfortLevel } from '../types/profile';
 import { normalizePrimaryGoal } from '../utils/onboardingDraft';
@@ -23,6 +31,11 @@ export interface CoachData {
   plan: CoachPlanInput;
   /** Saved workouts plus workouts still waiting in the offline outbox. */
   workouts: CoachWorkout[];
+  /**
+   * Records over the whole history (Statistics). The cache keeps only the newest
+   * workouts, so these are saved with it. Missing when the history is unknown.
+   */
+  lifetime?: LifetimeTotals;
 }
 
 type SavedSettings = Awaited<ReturnType<typeof getUserSettings>>;
@@ -60,7 +73,8 @@ export async function loadCoachData(userId: string): Promise<CoachData> {
     getQueuedWorkouts(userId).catch(() => [] as CoachWorkout[]),
   ]);
   await saveCoachCache(userId, plan, saved);
-  return { plan, workouts: [...saved, ...queued] };
+  const workouts = [...saved, ...queued];
+  return { plan, workouts, lifetime: lifetimeTotals(workouts) };
 }
 
 /** Only the fields the coach reads, so the cached copy stays small. */
@@ -76,14 +90,15 @@ const toCached = (w: CoachWorkout): CoachWorkout => ({
   breakdown: w.breakdown ?? null,
 });
 
-/** Remembers the last plan and saved workouts read online, for when the phone is offline. */
+/** Remembers the last plan, saved workouts and lifetime records read online, for when the phone is offline. */
 async function saveCoachCache(userId: string, plan: CoachPlanInput, saved: CoachWorkout[]): Promise<void> {
   try {
     // A load that finishes after sign-out must not write this user's data back.
     const { data } = await supabase.auth.getSession();
     if (data.session?.user?.id !== userId) return;
     const workouts = saved.slice(-COACH_CACHE_MAX_WORKOUTS).map(toCached);
-    await AsyncStorage.setItem(COACH_CACHE_KEY_PREFIX + userId, JSON.stringify({ plan, workouts }));
+    const lifetime = lifetimeTotals(saved);
+    await AsyncStorage.setItem(COACH_CACHE_KEY_PREFIX + userId, JSON.stringify({ plan, workouts, lifetime }));
   } catch (e) {
     console.warn('Failed to cache coach data:', e);
   }
@@ -110,7 +125,10 @@ export async function loadCachedCoachData(userId: string): Promise<CoachData | n
   const savedTimes = new Set(cached.workouts.map(timeOf));
   const savedIds = new Set(cached.workouts.map((w) => w.id).filter(Boolean));
   const unsaved = queued.filter((w) => !(w.id && savedIds.has(w.id)) && !savedTimes.has(timeOf(w)));
-  return { plan: cached.plan ?? {}, workouts: [...cached.workouts, ...unsaved] };
+  const workouts = [...cached.workouts, ...unsaved];
+  // Caches from before the records were saved: count what's cached.
+  const savedLifetime = isLifetimeTotals(cached.lifetime) ? cached.lifetime : lifetimeTotals(cached.workouts);
+  return { plan: cached.plan ?? {}, workouts, lifetime: addToLifetime(savedLifetime, unsaved, workouts) };
 }
 
 /**

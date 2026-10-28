@@ -3,6 +3,7 @@ export * from './coach';
 export * from './difficulty';
 export * from './results';
 export * from './mastery';
+export * from './progress';
 export { buildBreakdown, normalizeOperation, normalizeDifficulty, toEntries } from './entries';
 export {
   operationName,
