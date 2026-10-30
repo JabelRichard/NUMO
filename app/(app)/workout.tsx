@@ -35,7 +35,12 @@ import {
 import { fromWorkoutParams, mainDifficulty, workoutTitle } from '../../src/lib/coach';
 import { useTheme } from '@/src/context/ThemeContext';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 import { PALETTE } from '../../src/constants/palette';
+
+const MAX_CONTENT_WIDTH = 480;
+const TOP_PADDING = 10;
 
 export default function MathWorkoutScreen() {
   const router = useRouter();
@@ -64,6 +69,10 @@ export default function MathWorkoutScreen() {
 
   const isCompact = height < 720;
   const isNarrow = width < 360;
+  // The header, progress bar and question: 480 on a phone, wider on a tablet. The keypad keeps its own cap.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(TOP_PADDING);
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
 
   const generatorRef = useRef(new QuestionGenerator());
@@ -387,8 +396,8 @@ export default function MathWorkoutScreen() {
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* Top Header Group */}
-      <View style={styles.topSection}>
-        <View style={[styles.header, isNarrow && styles.headerNarrow]}>
+      <View style={[styles.topSection, { maxWidth: contentWidth }]}>
+        <View style={[styles.header, isNarrow && styles.headerNarrow, { paddingTop: topPadding }]}>
           <TouchableOpacity
             style={[styles.closeButton, { backgroundColor: cardBg }, isFinishing && { opacity: 0.4 }]}
             onPress={handleQuitWorkout}
@@ -423,7 +432,7 @@ export default function MathWorkoutScreen() {
       </View>
 
       {/* Equation and Input Display Area */}
-      <View style={styles.displayArea}>
+      <View style={[styles.displayArea, { maxWidth: contentWidth }]}>
         <Animated.View style={[animatedDisplayStyle, styles.equationContainer]}>
           <Text
             style={[
@@ -493,13 +502,13 @@ const styles = StyleSheet.create({
   },
   topSection: {
     width: '100%',
+    alignSelf: 'center',
   },
   header: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: 10,
     paddingBottom: 4,
   },
   headerNarrow: {
@@ -564,6 +573,8 @@ const styles = StyleSheet.create({
   },
   displayArea: {
     flex: 1,
+    width: '100%',
+    alignSelf: 'center',
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 16,

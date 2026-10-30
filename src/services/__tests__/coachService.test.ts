@@ -4,6 +4,7 @@ import { getUserSettings } from '../settingsService';
 import { getTrainingGoals } from '../profileService';
 import { fetchAllWorkouts, getQueuedWorkouts } from '../workoutService';
 import { CoachWorkout } from '../../lib/coach';
+import { localDayKey } from '../../utils/localDates';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock')
@@ -140,7 +141,9 @@ describe('loadCoachDataWithFallback', () => {
     const many = Array.from({ length: 350 }, (_, i) => workout(new Date(Date.UTC(2025, 0, 1) + i * 86400000).toISOString()));
     (fetchAllWorkouts as jest.Mock).mockResolvedValueOnce(many);
     const live = await loadCoachDataWithFallback(ME, true);
-    expect(live.data.lifetime).toEqual({ questions: 3500, workouts: 350, longestStreak: 350, perfectRounds: 0 });
+    // Every day has 10 questions, so the best day is the first one (a tie keeps the earlier day).
+    const bestDay = { bestDayQuestions: 10, bestDayKey: localDayKey(many[0].completed_at) };
+    expect(live.data.lifetime).toEqual({ questions: 3500, workouts: 350, longestStreak: 350, perfectRounds: 0, ...bestDay, mixedRounds: 0 });
 
     const queued = { ...workout('2026-10-28T10:00:00.000Z'), correct_answers: 10 };
     (getQueuedWorkouts as jest.Mock).mockResolvedValue([queued]);
@@ -148,7 +151,7 @@ describe('loadCoachDataWithFallback', () => {
     expect(offline.from).toBe('cache');
     // Only the newest 300 are cached, but the records still cover all 350, plus the queued one.
     expect(offline.data.workouts).toHaveLength(301);
-    expect(offline.data.lifetime).toEqual({ questions: 3510, workouts: 351, longestStreak: 350, perfectRounds: 1 });
+    expect(offline.data.lifetime).toEqual({ questions: 3510, workouts: 351, longestStreak: 350, perfectRounds: 1, ...bestDay, mixedRounds: 0 });
     (getQueuedWorkouts as jest.Mock).mockResolvedValue([]);
   });
 

@@ -25,6 +25,8 @@ import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { FONT_FAMILY, MAX_FONT_SCALE, typography } from '@/src/constants/typography';
 import { PALETTE } from '@/src/constants/palette';
+import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 import { saveUserSettings } from '@/src/services/settingsService';
 import { saveTrainingGoals } from '@/src/services/profileService';
 import { ComfortLevel, FrictionArea } from '@/src/types/profile';
@@ -59,6 +61,9 @@ const OFFLINE_MESSAGE = "You're offline. Connect to the internet to save your pl
 const SAVE_FAILED_MESSAGE =
   "We couldn't save your plan just now. Your answers are kept on this device, so please try again.";
 
+// The same cap as the main screens: 480 on a phone, wider on a tablet.
+const MAX_CONTENT_WIDTH = 480;
+
 function daysPhrase(days: number): string {
   return days >= 7 ? 'every day' : `${days} days a week`;
 }
@@ -72,6 +77,11 @@ export default function OnboardingScreen() {
   const isDark = Boolean(theme.isDark ?? true);
 
   const isNarrow = width < 360;
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(Math.max(insets.top > 0 ? 0 : 8, 4));
+  // Header, body and footer each get the cap, so the space-between layout stays as it is.
+  const capped = { width: '100%', maxWidth: contentWidth, alignSelf: 'center' } as const;
 
   const [currentStep, setCurrentStep] = useState(1);
   const [isSaving, setIsSaving] = useState(false);
@@ -542,7 +552,7 @@ export default function OnboardingScreen() {
 
       <SafeAreaView style={styles.safeArea}>
         {/* HEADER */}
-        <View style={[styles.topHeader, { paddingTop: Math.max(insets.top > 0 ? 0 : 8, 4) }]}>
+        <View style={[styles.topHeader, capped, { paddingTop: topPadding }]}>
           <TouchableOpacity
             style={[styles.backButton, { backgroundColor: cardBg }]}
             onPress={handleBack}
@@ -575,10 +585,10 @@ export default function OnboardingScreen() {
         </View>
 
         {/* STEP CONTENT BODY */}
-        <View style={styles.contentBody}>{renderActiveStep()}</View>
+        <View style={[styles.contentBody, capped]}>{renderActiveStep()}</View>
 
         {/* BOTTOM ACTION AREA */}
-        <View style={[styles.footerContainer, { paddingBottom: Math.max(insets.bottom + 12, 22) }]}>
+        <View style={[styles.footerContainer, capped, { paddingBottom: Math.max(insets.bottom + 12, 22) }]}>
           {saveError && isLastStep ? (
             <View
               accessibilityRole="alert"

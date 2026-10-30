@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -17,12 +17,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '@/src/constants/palette';
-import { WEAK_SPOTS } from '@/src/constants/planOptions';
 import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
 import { useToday } from '@/src/hooks/useToday';
+import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 import { OfflineNote } from '@/src/components/OfflineNote';
-import { TodaysPickCard } from '@/src/components/TodaysPickCard';
 import {
   COACH_LOAD_TIMEOUT_MS,
   LoadedCoachData,
@@ -30,59 +30,57 @@ import {
 } from '../../src/services/coachService';
 import { getTrainingGoals } from '../../src/services/profileService';
 import {
-  CoachWorkout,
-  COPY,
-  getCoachPlan,
+  ActivityFilter,
+  ActivityRange,
+  formatTimeSpent,
+  getActivity,
   getProgressSummary,
   LEVEL_NAMES,
   LevelRow,
   levelProgressText,
   lifetimeTotals,
-  operationSymbol,
+  mayMissWorkouts,
+  operationName,
   progressText,
-  STRONG_ACCURACY,
-  workoutDayLabel,
 } from '../../src/lib/coach';
+import { CORE_OPERATIONS } from '../../src/lib/math/questionGenerator';
 import { DEFAULT_TRAINING_GOALS } from '../../src/types/profile';
 import { countDayStreak, localDayKey, startOfLocalWeek } from '../../src/utils/localDates';
 import { withTimeout } from '../../src/utils/withTimeout';
+import { peekSpacing } from '../../src/utils/chipPeek';
 
 const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const MAX_CONTENT_WIDTH = 480;
+const TOP_PADDING = 16;
+const TOUCH_HEIGHT = 46;
+const CHART_HEIGHT = 140;
+const DOT_SIZE = 32;
+
+const RANGES: { id: ActivityRange; title: string; phrase: string; current: string }[] = [
+  { id: 'week', title: 'Week', phrase: 'this week', current: 'Today' },
+  { id: 'month', title: 'Month', phrase: 'this month', current: 'This week' },
+  { id: 'year', title: 'Year', phrase: 'this year', current: 'This month' },
+];
+
 const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
-const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-// Calendar card padding on each side; small so 7 day cells stay 44pt wide on a 360pt phone.
-const CALENDAR_PADDING = 8;
-const MAX_CONTENT_WIDTH = 480;
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
 
-/** "Tuesday, October 28". */
-function dayTitle(key: string): string {
+/** "980", "1.2k", "14k": fits above a narrow bar. */
+const compact = (n: number) => (n < 1000 ? `${n}` : `${(n / 1000).toFixed(n < 10000 ? 1 : 0).replace(/\.0$/, '')}k`);
+
+/** "October 28"; another year adds it: "October 28, 2025". */
+function dayName(key: string, now: Date): string {
   const [y, m, d] = key.split('-').map(Number);
-  return `${WEEKDAY_NAMES[new Date(y, m - 1, d).getDay()]}, ${MONTH_NAMES[m - 1]} ${d}`;
+  return `${MONTH_NAMES[m - 1]} ${d}${y === now.getFullYear() ? '' : `, ${y}`}`;
 }
 
-interface DayCell {
-  day: number;
-  key: string;
-}
-
-/** Weeks of the month, Monday first; null pads the first and last week. */
-function monthGrid(year: number, month: number): (DayCell | null)[][] {
-  const daysInMonth = new Date(year, month + 1, 0).getDate();
-  const leading = (new Date(year, month, 1).getDay() + 6) % 7;
-  const cells: (DayCell | null)[] = Array(leading).fill(null);
-  for (let day = 1; day <= daysInMonth; day++) {
-    cells.push({ day, key: localDayKey(new Date(year, month, day, 12)) });
-  }
-  while (cells.length % 7 !== 0) cells.push(null);
-  const weeks: (DayCell | null)[][] = [];
-  for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
-  return weeks;
-}
+/** "Mastered", else the real coach level: "Easy", "Medium", "Hard". */
+const levelTag = (row: LevelRow) => (row.mastered ? 'Mastered' : LEVEL_NAMES[row.level]);
 
 export default function StatisticsScreen() {
   const router = useRouter();
@@ -101,12 +99,19 @@ export default function StatisticsScreen() {
   const isDark = theme.isDark;
   const isNarrow = width < 360;
   const gutter = isNarrow ? 16 : 20;
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(TOP_PADDING);
 
   const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
   const [weeklyTarget, setWeeklyTarget] = useState(DEFAULT_TRAINING_GOALS.weeklyFrequencyDays);
   const [refreshing, setRefreshing] = useState(false);
-  const [viewMonth, setViewMonth] = useState(() => ({ year: today.getFullYear(), month: today.getMonth() }));
-  const [selectedKey, setSelectedKey] = useState<string | null>(todayKey);
+  const [range, setRange] = useState<ActivityRange>('week');
+  const [filter, setFilter] = useState<ActivityFilter>('all');
+  // "All" plus one chip per operation; 0 until measured.
+  const [chipContents, setChipContents] = useState<number[]>(() => Array(CORE_OPERATIONS.length + 1).fill(0));
+  const [chipViewport, setChipViewport] = useState(0);
   // Only the newest load may update the screen.
   const loadIdRef = useRef(0);
 
@@ -148,13 +153,6 @@ export default function StatisticsScreen() {
     }, [loadScreenData, openedFromProfile, goBackToProfile, navigation])
   );
 
-  // A new day (after midnight, or back in the app): jump to it.
-  useEffect(() => {
-    const now = new Date();
-    setViewMonth({ year: now.getFullYear(), month: now.getMonth() });
-    setSelectedKey(localDayKey(now));
-  }, [todayKey]);
-
   const handleRefresh = async () => {
     setRefreshing(true);
     try {
@@ -170,61 +168,52 @@ export default function StatisticsScreen() {
   const secondaryText = theme.subtext;
   const borderSubtle = isDark ? PALETTE.borderDark : PALETTE.borderLight;
   const fillBg = isDark ? PALETTE.fillDark : PALETTE.fillLight;
-  // One sage accent, same as Home, Practice, Profile and Results.
+  // The sage accent, same as Home, Practice, Profile and Results, plus one highlight
+  // for the current day / week / month in the chart.
   const accent = theme.primary;
   const accentStrong = theme.primaryText;
   const accentSoft = theme.primarySoft;
+  const highlight = theme.accentPurple;
 
   // Without the history (offline, nothing cached) there's nothing true to show yet.
   const historyUnknown = loaded?.from === 'phone';
   const workouts = useMemo(() => loaded?.data.workouts ?? [], [loaded]);
 
-  // Same coach as Home, Practice and Results, so Today's pick matches.
-  const coach = useMemo(
-    () => (loaded ? getCoachPlan(loaded.data.plan, workouts, today, { historyUnknown }) : null),
-    [loaded, workouts, today, historyUnknown]
-  );
   const summary = useMemo(
     () => (loaded && !historyUnknown ? getProgressSummary(loaded.data.plan, workouts, today) : null),
     [loaded, workouts, today, historyUnknown]
   );
   const lifetime = useMemo(() => loaded?.data.lifetime ?? lifetimeTotals(workouts), [loaded, workouts]);
+  const levelByOp = useMemo(
+    () => new Map((summary?.levels ?? []).map((row) => [row.operation, row])),
+    [summary]
+  );
 
-  /** Workouts per local day, oldest first within a day. */
-  const workoutsByDay = useMemo(() => {
-    const map = new Map<string, CoachWorkout[]>();
-    const sorted = [...workouts]
-      .filter((w) => w.completed_at)
-      .sort((a, b) => new Date(a.completed_at).getTime() - new Date(b.completed_at).getTime());
-    for (const w of sorted) {
-      const key = localDayKey(w.completed_at);
-      map.set(key, [...(map.get(key) ?? []), w]);
-    }
-    return map;
-  }, [workouts]);
+  const activity = useMemo(() => getActivity(workouts, range, filter, today), [workouts, range, filter, today]);
+  // Offline, the phone has only the newest workouts; say so when this range may reach past them.
+  const missingOlder = useMemo(
+    () => loaded?.from !== 'live' && mayMissWorkouts(workouts, lifetime.workouts, activity.start),
+    [loaded, workouts, lifetime.workouts, activity.start]
+  );
 
+  const practicedDays = useMemo(
+    () => new Set(workouts.filter((w) => w.completed_at).map((w) => localDayKey(w.completed_at))),
+    [workouts]
+  );
   const streak = useMemo(() => countDayStreak(workouts.map((w) => w.completed_at), today), [workouts, today]);
-  const daysThisWeek = useMemo(() => {
-    const weekStart = localDayKey(startOfLocalWeek(today));
-    return [...workoutsByDay.keys()].filter((key) => key >= weekStart && key <= todayKey).length;
-  }, [workoutsByDay, today, todayKey]);
+  const weekKeys = useMemo(() => {
+    const monday = startOfLocalWeek(today);
+    return WEEK_DAYS.map((_, i) =>
+      localDayKey(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i, 12))
+    );
+  }, [today]);
+  const daysThisWeek = weekKeys.filter((key) => key <= todayKey && practicedDays.has(key)).length;
 
-  // ---- Calendar ----
-  const { year: calYear, month: calMonth } = viewMonth;
-  const isCurrentMonth = calYear === today.getFullYear() && calMonth === today.getMonth();
-  const weeks = useMemo(() => monthGrid(calYear, calMonth), [calYear, calMonth]);
-  const calendarWidth = Math.min(width - gutter * 2, MAX_CONTENT_WIDTH) - CALENDAR_PADDING * 2;
-  const cellWidth = Math.floor(calendarWidth / 7);
-  const dotSize = Math.min(cellWidth - 4, 40);
-
-  const showMonth = (offset: number) => {
-    const next = new Date(calYear, calMonth + offset, 1);
-    setViewMonth({ year: next.getFullYear(), month: next.getMonth() });
-    const showsToday = next.getFullYear() === today.getFullYear() && next.getMonth() === today.getMonth();
-    setSelectedKey(showsToday ? todayKey : null);
-  };
-
-  const selectedWorkouts = selectedKey ? workoutsByDay.get(selectedKey) ?? [] : [];
+  const rangeInfo = RANGES.find((r) => r.id === range)!;
+  const chipSpacing = useMemo(
+    () => peekSpacing(chipContents, chipViewport, gutter),
+    [chipContents, chipViewport, gutter]
+  );
 
   // ---- Pieces ----
 
@@ -253,215 +242,305 @@ export default function StatisticsScreen() {
 
   const card = [styles.card, { backgroundColor: cardBg, borderColor: borderSubtle }];
 
-  const renderStatRow = (icon: React.ComponentProps<typeof Ionicons>['name'], value: string, label: string) => (
-    <View style={styles.statRow} accessible accessibilityLabel={`${label}: ${value}`}>
-      <View style={[styles.statIcon, { backgroundColor: accentSoft }]}>
-        <Ionicons name={icon} size={20} color={accentStrong} />
-      </View>
-      <View style={styles.statText}>
-        <Text style={[styles.statValue, { color: primaryText }]}>{value}</Text>
-        <Text style={[styles.statLabel, { color: secondaryText }]}>{label}</Text>
-      </View>
-    </View>
-  );
-
-  const renderSummary = () => (
-    <View style={card}>
-      {renderStatRow('flame-outline', streak > 0 ? `${plural(streak, 'day')} in a row` : 'Practice today to start one', 'Current streak')}
-      <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
-      {renderStatRow('calendar-outline', `${daysThisWeek} of ${plural(weeklyTarget, 'day')}`, 'This week')}
-      <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
-      {renderStatRow('checkmark-done-outline', lifetime.questions.toLocaleString(), 'Questions answered')}
-    </View>
-  );
-
-  const renderCalendar = () => (
-    <View style={[card, styles.calendarCard]}>
-      <View style={styles.monthRow}>
-        <TouchableOpacity
-          onPress={() => showMonth(-1)}
-          style={[styles.iconButton, { backgroundColor: fillBg, borderColor: 'transparent' }]}
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel="Previous month"
-        >
-          <Ionicons name="chevron-back" size={20} color={primaryText} />
-        </TouchableOpacity>
-        <Text style={[styles.monthLabel, { color: primaryText }]} accessibilityRole="header">
-          {MONTH_NAMES[calMonth]} {calYear}
-        </Text>
-        <TouchableOpacity
-          onPress={() => showMonth(1)}
-          disabled={isCurrentMonth}
-          style={[
-            styles.iconButton,
-            { backgroundColor: fillBg, borderColor: 'transparent', opacity: isCurrentMonth ? 0.35 : 1 },
-          ]}
-          activeOpacity={0.7}
-          accessibilityRole="button"
-          accessibilityLabel="Next month"
-          accessibilityState={{ disabled: isCurrentMonth }}
-        >
-          <Ionicons name="chevron-forward" size={20} color={primaryText} />
-        </TouchableOpacity>
-      </View>
-
-      <View style={styles.weekRow} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
-        {WEEK_DAYS.map((label, i) => (
-          <Text key={i} style={[styles.weekDay, { width: cellWidth, color: secondaryText }]} maxFontSizeMultiplier={1.3}>
-            {label}
-          </Text>
-        ))}
-      </View>
-
-      {weeks.map((week, w) => (
-        <View key={w} style={styles.weekRow}>
-          {week.map((cell, i) => {
-            if (!cell) return <View key={i} style={{ width: cellWidth, minHeight: 44 }} />;
-            const practiced = workoutsByDay.has(cell.key);
-            const isToday = cell.key === todayKey;
-            const isSelected = cell.key === selectedKey;
-            const label = `${MONTH_NAMES[calMonth]} ${cell.day}, ${practiced ? 'practiced' : 'not practiced'}${
-              isToday ? ', today' : ''
-            }`;
-            return (
-              <TouchableOpacity
-                key={i}
-                style={[styles.dayCell, { width: cellWidth }]}
-                onPress={() => setSelectedKey(cell.key)}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityLabel={label}
-                accessibilityState={{ selected: isSelected }}
-              >
-                <View
-                  style={[
-                    styles.dayDot,
-                    {
-                      width: dotSize,
-                      height: dotSize,
-                      borderRadius: dotSize / 2,
-                      backgroundColor: isSelected ? primaryText : practiced ? accent : 'transparent',
-                      borderWidth: isToday && !isSelected ? 2 : 0,
-                      borderColor: accentStrong,
-                    },
-                  ]}
-                >
-                  <Text
-                    style={[
-                      styles.dayNumber,
-                      {
-                        color: isSelected ? screenBg : practiced ? theme.onPrimary : primaryText,
-                        fontWeight: isSelected || practiced || isToday ? '600' : '400',
-                      },
-                    ]}
-                    maxFontSizeMultiplier={1.3}
-                  >
-                    {cell.day}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      ))}
-
-      <View style={[styles.dayDetails, { borderTopColor: borderSubtle }]} accessibilityLiveRegion="polite">
-        {selectedKey ? (
-          <>
-            <Text style={[styles.dayTitle, { color: primaryText }]}>{dayTitle(selectedKey)}</Text>
-            {selectedWorkouts.length === 0 ? (
-              <Text style={[styles.dayLine, { color: secondaryText }]}>No practice this day.</Text>
-            ) : (
-              selectedWorkouts.map((w, i) => (
-                <Text key={w.id ?? `${w.completed_at}-${i}`} style={[styles.dayLine, { color: secondaryText }]}>
-                  {workoutDayLabel(w)}
-                </Text>
-              ))
-            )}
-          </>
-        ) : (
-          <Text style={[styles.dayLine, { color: secondaryText }]}>Tap a day to see its workouts.</Text>
-        )}
-      </View>
-    </View>
-  );
-
-  const renderLevelRow = (row: LevelRow, index: number) => {
-    const name = WEAK_SPOTS.find((s) => s.id === row.operation)?.title ?? row.operation;
-    const level = LEVEL_NAMES[row.level];
-    const accuracyLine = !row.tried
-      ? null
-      : row.accuracy === null
-        ? COPY.newLevel
-        : `${Math.round(row.accuracy)}% correct lately`;
-    const nextLine = levelProgressText(row);
-    const label = [name, `level ${level}`, row.mastered ? 'mastered' : null, accuracyLine, nextLine]
-      .filter(Boolean)
-      .join(', ');
-
-    return (
-      <React.Fragment key={row.operation}>
-        {index > 0 && <View style={[styles.divider, { backgroundColor: borderSubtle }]} />}
-        <View style={styles.levelRow} accessible accessibilityLabel={label}>
-          <View style={[styles.badge, { backgroundColor: accentSoft }]}>
-            <Text style={[styles.badgeSymbol, { color: accentStrong }]} maxFontSizeMultiplier={1.3}>
-              {operationSymbol(row.operation)}
-            </Text>
-          </View>
-          <View style={styles.levelText}>
-            <View style={styles.levelTitleLine}>
-              <Text style={[styles.levelName, { color: primaryText }]}>{name}</Text>
-              <Text style={[styles.levelName, { color: primaryText }]}>{level}</Text>
-            </View>
-            {row.mastered && <Text style={[styles.levelMastered, { color: accentStrong }]}>✓ Mastered</Text>}
-            {accuracyLine && <Text style={[styles.levelLine, { color: secondaryText }]}>{accuracyLine}</Text>}
-            <Text style={[styles.levelLine, { color: secondaryText }]}>{nextLine}</Text>
-          </View>
-        </View>
-      </React.Fragment>
-    );
-  };
-
-  const renderLevels = () =>
-    summary && (
-      <>
-        <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
-          Your levels
-        </Text>
-        <Text style={[styles.sectionNote, { color: secondaryText }]}>
-          A strong round is {STRONG_ACCURACY}% correct or more.
-        </Text>
-        <View style={card}>{summary.levels.map(renderLevelRow)}</View>
-      </>
-    );
-
+  // The line under the title: one plain sentence, compared within one operation and level.
   const renderProgress = () => {
     if (!summary) return null;
     const { headline, detail } = progressText(summary.highlight);
     return (
-      <View style={card} accessible>
-        <Text style={[styles.cardEyebrow, { color: accentStrong }]}>How you're doing</Text>
+      <View style={styles.progress} accessible>
         <Text style={[styles.progressHeadline, { color: primaryText }]}>{headline}</Text>
-        {detail && <Text style={[styles.dayLine, { color: secondaryText }]}>{detail}</Text>}
+        {detail && <Text style={[styles.progressDetail, { color: secondaryText }]}>{detail}</Text>}
       </View>
     );
   };
 
-  const renderRecords = () => (
-    <>
-      <Text style={[styles.sectionHeading, { color: primaryText }]} accessibilityRole="header">
-        Records
-      </Text>
-      <View style={card}>
-        {renderStatRow('trophy-outline', plural(lifetime.longestStreak, 'day'), 'Longest streak')}
-        <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
-        {renderStatRow('star-outline', lifetime.perfectRounds.toLocaleString(), 'Perfect rounds (all correct)')}
-        <View style={[styles.divider, { backgroundColor: borderSubtle }]} />
-        {renderStatRow('barbell-outline', lifetime.workouts.toLocaleString(), 'Workouts done')}
-      </View>
-    </>
+  const renderRangeTabs = () => (
+    <View style={[styles.segments, { backgroundColor: fillBg }]} accessibilityRole="tablist">
+      {RANGES.map((r) => {
+        const selected = r.id === range;
+        return (
+          <TouchableOpacity
+            key={r.id}
+            style={[styles.segment, selected && { backgroundColor: cardBg, borderColor: borderSubtle }]}
+            onPress={() => setRange(r.id)}
+            activeOpacity={0.7}
+            accessibilityRole="tab"
+            accessibilityState={{ selected }}
+          >
+            <Text
+              style={[styles.segmentText, { color: selected ? primaryText : secondaryText }]}
+              maxFontSizeMultiplier={1.4}
+            >
+              {r.title}
+            </Text>
+          </TouchableOpacity>
+        );
+      })}
+    </View>
   );
+
+  // Each chip's width without its padding, so the spacing can change without measuring again.
+  const measureChip = (index: number, width: number) => {
+    const content = Math.round(width - chipSpacing.padding * 2);
+    setChipContents((prev) => (prev[index] === content ? prev : prev.map((w, i) => (i === index ? content : w))));
+  };
+
+  const renderChip = (index: number, id: ActivityFilter, title: string, tag?: string) => {
+    const selected = id === filter;
+    return (
+      <TouchableOpacity
+        key={id}
+        onLayout={(e) => measureChip(index, e.nativeEvent.layout.width)}
+        style={[
+          styles.chip,
+          { paddingHorizontal: chipSpacing.padding },
+          selected
+            ? { backgroundColor: accent, borderColor: accent }
+            : { backgroundColor: 'transparent', borderColor: borderSubtle },
+        ]}
+        onPress={() => setFilter(id)}
+        activeOpacity={0.7}
+        accessibilityRole="button"
+        accessibilityLabel={[title, tag && `level ${tag}`].filter(Boolean).join(', ')}
+        accessibilityState={{ selected }}
+      >
+        {selected && <Ionicons name="checkmark" size={16} color={theme.onPrimary} />}
+        <Text style={[styles.chipText, { color: selected ? theme.onPrimary : primaryText }]} maxFontSizeMultiplier={1.4}>
+          {title}
+        </Text>
+        {tag && (
+          <Text style={[styles.chipTag, { color: selected ? theme.onPrimary : secondaryText }]} maxFontSizeMultiplier={1.4}>
+            · {tag}
+          </Text>
+        )}
+      </TouchableOpacity>
+    );
+  };
+
+  // Runs to the screen edges. When there's more to scroll to, the spacing leaves the
+  // last visible chip cut off at the edge, so the row never looks like it ends there.
+  const renderFilterChips = () => (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={[styles.chipRow, { paddingHorizontal: gutter, gap: chipSpacing.gap }]}
+      style={{ marginHorizontal: -gutter }}
+      onLayout={(e) => setChipViewport(Math.round(e.nativeEvent.layout.width))}
+    >
+      {renderChip(0, 'all', 'All')}
+      {CORE_OPERATIONS.map((op, i) => {
+        const row = levelByOp.get(op);
+        return renderChip(i + 1, op, operationName(op), row && levelTag(row));
+      })}
+    </ScrollView>
+  );
+
+  const renderStat = (value: string, label: string) => (
+    <View style={styles.statItem} accessible accessibilityLabel={`${label}: ${value}`}>
+      <Text style={[styles.statValue, { color: primaryText }]}>{value}</Text>
+      <Text style={[styles.statLabel, { color: secondaryText }]}>{label}</Text>
+    </View>
+  );
+
+  const renderStats = () => {
+    const { questions, correct, timeMs } = activity.totals;
+    return (
+      <View style={[card, styles.statRow]}>
+        {renderStat(questions.toLocaleString(), 'Questions')}
+        {renderStat(questions > 0 ? `${Math.round((correct / questions) * 100)}%` : '–', 'Accuracy')}
+        {renderStat(questions > 0 ? formatTimeSpent(timeMs) : '–', 'Time spent')}
+      </View>
+    );
+  };
+
+  const renderChart = () => {
+    const max = Math.max(1, ...activity.buckets.map((b) => b.questions));
+    const scope = filter === 'all' ? '' : `${operationName(filter)} `;
+    return (
+      <View style={card}>
+        <Text style={[styles.cardTitle, { color: primaryText }]} accessibilityRole="header">
+          {`${scope}Questions ${rangeInfo.phrase}`}
+        </Text>
+
+        <View style={[styles.chart, { borderBottomColor: borderSubtle }]}>
+          {activity.buckets.map((b) => {
+            const barHeight = b.questions > 0 ? Math.max(4, (b.questions / max) * CHART_HEIGHT) : 0;
+            const label = `${b.name}: ${b.isFuture ? 'not yet' : plural(b.questions, 'question')}${
+              b.isCurrent ? `, ${rangeInfo.current.toLowerCase()}` : ''
+            }`;
+            return (
+              <View key={b.start} style={styles.barColumn} accessible accessibilityLabel={label}>
+                {b.questions > 0 && (
+                  <Text
+                    style={[styles.barValue, { color: b.isCurrent ? primaryText : secondaryText }]}
+                    numberOfLines={1}
+                    maxFontSizeMultiplier={1.2}
+                  >
+                    {compact(b.questions)}
+                  </Text>
+                )}
+                <View
+                  style={[
+                    styles.bar,
+                    b.questions > 0
+                      ? { height: barHeight, backgroundColor: b.isCurrent ? highlight : accent }
+                      : { height: 2, backgroundColor: fillBg },
+                  ]}
+                />
+              </View>
+            );
+          })}
+        </View>
+        <View style={styles.axis} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          {activity.buckets.map((b) => (
+            <Text
+              key={b.start}
+              style={[
+                styles.axisLabel,
+                { color: b.isCurrent ? primaryText : secondaryText, fontWeight: b.isCurrent ? '700' : '500' },
+              ]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={1.2}
+            >
+              {b.label}
+            </Text>
+          ))}
+        </View>
+
+        <View style={styles.legend} accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+          <View style={[styles.swatch, { backgroundColor: highlight }]} />
+          <Text style={[styles.legendText, { color: secondaryText }]}>{rangeInfo.current}</Text>
+        </View>
+
+        {renderBreakdown()}
+      </View>
+    );
+  };
+
+  // "All": each operation's share of the range. One operation: its coach level and what's next.
+  const renderBreakdown = () => {
+    if (filter === 'all') {
+      const parts = CORE_OPERATIONS.map((op) => `${operationName(op)} ${activity.byOperation[op].toLocaleString()}`);
+      if (activity.unsplitMixed > 0) parts.push(`Older mixes ${activity.unsplitMixed.toLocaleString()}`);
+      return (
+        <View style={[styles.breakdown, { borderTopColor: borderSubtle }]}>
+          <Text style={[styles.breakdownText, { color: secondaryText }]}>{parts.join(' · ')}</Text>
+        </View>
+      );
+    }
+    const row = levelByOp.get(filter);
+    if (!row) return null;
+    return (
+      <View style={[styles.breakdown, { borderTopColor: borderSubtle }]} accessible>
+        <Text style={[styles.breakdownTitle, { color: primaryText }]}>
+          {`${operationName(filter)} · ${levelTag(row)}`}
+        </Text>
+        <Text style={[styles.breakdownText, { color: secondaryText }]}>{levelProgressText(row)}</Text>
+      </View>
+    );
+  };
+
+  const renderMissingNote = () =>
+    missingOlder && (
+      <View style={[styles.note, { backgroundColor: fillBg }]} accessibilityRole="text">
+        <Ionicons name="cloud-offline-outline" size={18} color={secondaryText} />
+        <Text style={[styles.noteText, { color: secondaryText }]}>
+          {`This phone only keeps your newest workouts, so ${rangeInfo.phrase} may be missing some until you're back online.`}
+        </Text>
+      </View>
+    );
+
+  // Streak and this week as dots, Monday first. A check marks a practiced day; today has a ring.
+  const renderStreak = () => {
+    const practicedNames = weekKeys.flatMap((key, i) => (practicedDays.has(key) ? [WEEKDAY_NAMES[i]] : []));
+    const label = [
+      streak > 0 ? `${plural(streak, 'day')} in a row` : 'No streak yet',
+      `${daysThisWeek} of ${plural(weeklyTarget, 'day')} this week`,
+      practicedNames.length > 0 ? `Practiced ${practicedNames.join(', ')}` : null,
+    ]
+      .filter(Boolean)
+      .join('. ');
+    return (
+      <View style={card} accessible accessibilityLabel={label}>
+        <View style={styles.statRow}>
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: primaryText }]}>{plural(streak, 'day')}</Text>
+            <Text style={[styles.statLabel, { color: secondaryText }]}>In a row</Text>
+          </View>
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: primaryText }]}>{`${daysThisWeek} of ${weeklyTarget}`}</Text>
+            <Text style={[styles.statLabel, { color: secondaryText }]}>Days this week</Text>
+          </View>
+        </View>
+        <View style={styles.dotRow}>
+          {weekKeys.map((key, i) => {
+            const practiced = practicedDays.has(key);
+            const isToday = key === todayKey;
+            return (
+              <View key={key} style={styles.dotColumn}>
+                <View
+                  style={[
+                    styles.dot,
+                    {
+                      backgroundColor: practiced ? accent : fillBg,
+                      borderWidth: isToday ? 2 : 0,
+                      borderColor: accentStrong,
+                    },
+                  ]}
+                >
+                  {practiced && <Ionicons name="checkmark" size={16} color={theme.onPrimary} />}
+                </View>
+                <Text
+                  style={[styles.axisLabel, { color: isToday ? primaryText : secondaryText, fontWeight: isToday ? '700' : '500' }]}
+                  maxFontSizeMultiplier={1.2}
+                >
+                  {WEEK_DAYS[i]}
+                </Text>
+              </View>
+            );
+          })}
+        </View>
+      </View>
+    );
+  };
+
+  // Personal bests: the longest run of days in a row, and the most questions in one day.
+  const renderPersonalBest = () => {
+    const best = Math.max(lifetime.longestStreak, streak);
+    const bestDay =
+      lifetime.bestDayKey && lifetime.bestDayQuestions > 0
+        ? `Best day: ${plural(lifetime.bestDayQuestions, 'question')}, ${dayName(lifetime.bestDayKey, today)}`
+        : null;
+    // The only place mixes show as mixes; everywhere else their questions count under each operation.
+    const mixedLine = `${plural(lifetime.mixedRounds, 'mixed round')} played`;
+    return (
+      <View
+        style={[card, styles.bestCard]}
+        accessible
+        accessibilityLabel={[
+          `Personal best: longest streak, ${plural(best, 'day')}`,
+          bestDay,
+          `${plural(lifetime.questions, 'question')} answered in all`,
+          mixedLine,
+        ]
+          .filter(Boolean)
+          .join('. ')}
+      >
+        <View style={[styles.badge, { backgroundColor: accentSoft }]}>
+          <Ionicons name="trophy-outline" size={22} color={accentStrong} />
+        </View>
+        <View style={styles.bestText}>
+          <Text style={[styles.statLabel, { color: secondaryText }]}>Personal best · Longest streak</Text>
+          <Text style={[styles.statValue, { color: primaryText }]}>{plural(best, 'day')}</Text>
+          {bestDay && <Text style={[styles.bestDayText, { color: primaryText }]}>{bestDay}</Text>}
+          <Text style={[styles.statLabel, { color: secondaryText }]}>
+            {`${plural(lifetime.questions, 'question')} answered in all`}
+          </Text>
+          <Text style={[styles.statLabel, { color: secondaryText }]}>{mixedLine}</Text>
+        </View>
+      </View>
+    );
+  };
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top']}>
@@ -470,7 +549,7 @@ export default function StatisticsScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.scrollContent,
-          { paddingHorizontal: gutter, paddingBottom: Math.max(insets.bottom, 20) + 90 },
+          { paddingTop: topPadding, paddingHorizontal: gutter, paddingBottom: Math.max(insets.bottom, 20) + 90 },
         ]}
         showsVerticalScrollIndicator={false}
         refreshControl={
@@ -483,29 +562,29 @@ export default function StatisticsScreen() {
           />
         }
       >
-        <View style={styles.responsiveWrapper}>
+        <View style={[styles.responsiveWrapper, { maxWidth: contentWidth }]}>
           {renderHeader()}
 
-          {!loaded || !coach ? (
+          {!loaded ? (
             <ActivityIndicator style={styles.loading} size="large" color={accentStrong} />
           ) : (
             <View style={styles.sections}>
               <OfflineNote from={loaded.from} isOffline={isOffline} />
 
               {historyUnknown ? (
-                <View style={card}>
-                  <Text style={[styles.progressHeadline, { color: primaryText }]}>
-                    Your progress will show here once you're back online.
-                  </Text>
-                </View>
+                <Text style={[styles.progressDetail, { color: secondaryText }]}>
+                  Your progress will show here once you're back online.
+                </Text>
               ) : (
                 <>
-                  {renderSummary()}
-                  {renderCalendar()}
-                  {renderLevels()}
                   {renderProgress()}
-                  <TodaysPickCard coach={coach} />
-                  {renderRecords()}
+                  {renderRangeTabs()}
+                  {renderFilterChips()}
+                  {renderMissingNote()}
+                  {renderStats()}
+                  {renderChart()}
+                  {renderStreak()}
+                  {renderPersonalBest()}
                 </>
               )}
             </View>
@@ -522,11 +601,9 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingTop: 16,
   },
   responsiveWrapper: {
     width: '100%',
-    maxWidth: MAX_CONTENT_WIDTH,
     alignSelf: 'center',
   },
   header: {
@@ -564,95 +641,155 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 2,
   },
-  divider: {
-    height: 1,
-    marginVertical: 12,
+  cardTitle: {
+    ...typography.button,
+    marginBottom: 12,
+  },
+  segments: {
+    flexDirection: 'row',
+    borderRadius: 16,
+    padding: 4,
+    gap: 4,
+  },
+  segment: {
+    flex: 1,
+    minHeight: TOUCH_HEIGHT,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  segmentText: {
+    ...typography.button,
+  },
+  chipRow: {
+    gap: 8,
+    alignItems: 'center',
+  },
+  chip: {
+    minHeight: TOUCH_HEIGHT,
+    borderRadius: TOUCH_HEIGHT / 2,
+    borderWidth: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  chipText: {
+    ...typography.button,
+  },
+  chipTag: {
+    ...typography.secondary,
   },
   statRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
+    flexWrap: 'wrap',
+    rowGap: 12,
+    columnGap: 16,
   },
-  statIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  statText: {
-    flex: 1,
+  statItem: {
+    flexGrow: 1,
+    flexBasis: 88,
   },
   statValue: {
-    ...typography.button,
+    ...typography.sectionHeading,
   },
   statLabel: {
     ...typography.secondary,
   },
-  calendarCard: {
-    paddingHorizontal: CALENDAR_PADDING,
+  chart: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    // Room for the value above the tallest bar.
+    height: CHART_HEIGHT + 28,
+    gap: 4,
+    borderBottomWidth: 1,
   },
-  monthRow: {
+  barColumn: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 4,
+  },
+  bar: {
+    width: '100%',
+    maxWidth: 32,
+    borderTopLeftRadius: 6,
+    borderTopRightRadius: 6,
+  },
+  barValue: {
+    ...typography.caption,
+    textAlign: 'center',
+  },
+  axis: {
+    flexDirection: 'row',
+    gap: 4,
+    marginTop: 6,
+  },
+  axisLabel: {
+    ...typography.caption,
+    flex: 1,
+    textAlign: 'center',
+  },
+  legend: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-    marginBottom: 12,
+    gap: 6,
+    marginTop: 12,
   },
-  monthLabel: {
-    ...typography.sectionHeading,
-    flexShrink: 1,
-    textAlign: 'center',
+  swatch: {
+    width: 12,
+    height: 12,
+    borderRadius: 3,
   },
-  weekRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
+  legendText: {
+    ...typography.caption,
   },
-  weekDay: {
-    ...typography.secondary,
-    textAlign: 'center',
-    marginBottom: 4,
-  },
-  dayCell: {
-    minHeight: 44,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 2,
-  },
-  dayDot: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  dayNumber: {
-    ...typography.secondary,
-    textAlign: 'center',
-  },
-  dayDetails: {
+  breakdown: {
     borderTopWidth: 1,
     marginTop: 12,
     paddingTop: 12,
-    paddingHorizontal: 10,
-    gap: 4,
+    gap: 2,
   },
-  dayTitle: {
+  breakdownTitle: {
     ...typography.button,
   },
-  dayLine: {
+  breakdownText: {
     ...typography.secondary,
   },
-  sectionHeading: {
-    ...typography.button,
-    marginTop: 8,
-    marginBottom: -8,
-  },
-  sectionNote: {
-    ...typography.secondary,
-    marginBottom: -4,
-  },
-  levelRow: {
+  note: {
     flexDirection: 'row',
     alignItems: 'flex-start',
-    gap: 12,
+    gap: 10,
+    borderRadius: 14,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  noteText: {
+    ...typography.secondary,
+    flex: 1,
+  },
+  dotRow: {
+    flexDirection: 'row',
+    marginTop: 16,
+  },
+  dotColumn: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  dot: {
+    width: DOT_SIZE,
+    height: DOT_SIZE,
+    borderRadius: DOT_SIZE / 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  bestCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
   },
   badge: {
     width: 44,
@@ -661,40 +798,22 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  // Inter Tight, like the symbols on Practice and onboarding.
-  badgeSymbol: {
-    ...typography.sectionHeading,
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  levelText: {
+  bestText: {
     flex: 1,
     gap: 2,
   },
-  levelTitleLine: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
-    columnGap: 8,
-  },
-  levelName: {
+  bestDayText: {
     ...typography.button,
+    marginTop: 4,
   },
-  levelMastered: {
-    ...typography.secondary,
-    fontWeight: '600',
-  },
-  levelLine: {
-    ...typography.secondary,
-  },
-  cardEyebrow: {
-    ...typography.secondary,
-    fontWeight: '600',
-    marginBottom: 4,
+  progress: {
+    gap: 4,
   },
   progressHeadline: {
-    ...typography.body,
-    fontWeight: '600',
-    marginBottom: 4,
+    ...typography.sectionHeading,
+    letterSpacing: -0.4,
+  },
+  progressDetail: {
+    ...typography.secondary,
   },
 });

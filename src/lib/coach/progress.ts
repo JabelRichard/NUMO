@@ -1,6 +1,6 @@
 import { CORE_OPERATIONS } from '../math/questionGenerator';
 import { CoreOperation, DifficultyLevel } from '../math/types';
-import { longestDayStreak } from '../../utils/localDates';
+import { localDayKey, longestDayStreak } from '../../utils/localDates';
 import { COPY, focusLabel } from './copy';
 import { getLevelState, LevelState } from './difficulty';
 import { accuracyOf, normalizeDifficulty, normalizeOperation, OperationEntry, sortNewestFirst, toEntries } from './entries';
@@ -23,12 +23,35 @@ export interface LifetimeTotals {
   longestStreak: number;
   /** Rounds with every answer right. */
   perfectRounds: number;
+  /** Most questions in one local day, all of that day's workouts added up. */
+  bestDayQuestions: number;
+  /** That day, "YYYY-MM-DD"; null before the first question. */
+  bestDayKey: string | null;
+  /** Rounds saved as a mix, warm-ups left out (the same rule as "Mixing them up" practice). */
+  mixedRounds: number;
 }
+
+const isMixedRound = (w: CoachWorkout) => normalizeOperation(w.operation) === 'mixed' && w.source !== 'warmup';
 
 const isPerfect = (w: CoachWorkout) => {
   const questions = Number(w.total_questions) || 0;
   return questions > 0 && (Number(w.correct_answers) || 0) >= questions;
 };
+
+/** The local day with the most questions; on a tie, the earlier day (when the record was set). */
+export function bestQuestionDay(workouts: CoachWorkout[]): Pick<LifetimeTotals, 'bestDayQuestions' | 'bestDayKey'> {
+  const byDay = new Map<string, number>();
+  for (const w of workouts) {
+    if (!w.completed_at) continue;
+    const key = localDayKey(w.completed_at);
+    byDay.set(key, (byDay.get(key) ?? 0) + (Number(w.total_questions) || 0));
+  }
+  let best = { bestDayQuestions: 0, bestDayKey: null as string | null };
+  for (const [key, questions] of [...byDay].sort(([a], [b]) => a.localeCompare(b))) {
+    if (questions > best.bestDayQuestions) best = { bestDayQuestions: questions, bestDayKey: key };
+  }
+  return best;
+}
 
 /** Counts whole workouts, so a mix is one workout and its questions count once. */
 export function lifetimeTotals(workouts: CoachWorkout[]): LifetimeTotals {
@@ -37,9 +60,12 @@ export function lifetimeTotals(workouts: CoachWorkout[]): LifetimeTotals {
     workouts: workouts.length,
     longestStreak: longestDayStreak(workouts.map((w) => w.completed_at)),
     perfectRounds: workouts.filter(isPerfect).length,
+    ...bestQuestionDay(workouts),
+    mixedRounds: workouts.filter(isMixedRound).length,
   };
 }
 
+/** Caches saved before the best day and mixed rounds existed still count: addToLifetime fills them in. */
 export function isLifetimeTotals(value: unknown): value is LifetimeTotals {
   const v = value as LifetimeTotals | null;
   return (
@@ -50,15 +76,23 @@ export function isLifetimeTotals(value: unknown): value is LifetimeTotals {
 
 /**
  * Offline: totals saved from the full history, plus workouts that aren't in it yet.
- * `all` is everything on the phone (cached + extra), for a streak that runs into them.
+ * `all` is everything on the phone (cached + extra), for a streak or a best day that
+ * runs into them: a day with both saved and queued workouts is added up as one day.
  */
 export function addToLifetime(base: LifetimeTotals, extra: CoachWorkout[], all: CoachWorkout[]): LifetimeTotals {
   const more = lifetimeTotals(extra);
+  const onPhone = bestQuestionDay(all);
+  // Older caches have no best day or mixed rounds saved; until the next online load,
+  // those come from what's on the phone.
+  const savedBest = { bestDayQuestions: base.bestDayQuestions ?? 0, bestDayKey: base.bestDayKey ?? null };
   return {
     questions: base.questions + more.questions,
     workouts: base.workouts + more.workouts,
     longestStreak: Math.max(base.longestStreak, longestDayStreak(all.map((w) => w.completed_at))),
     perfectRounds: base.perfectRounds + more.perfectRounds,
+    ...(onPhone.bestDayQuestions > savedBest.bestDayQuestions ? onPhone : savedBest),
+    mixedRounds:
+      base.mixedRounds === undefined ? all.filter(isMixedRound).length : base.mixedRounds + more.mixedRounds,
   };
 }
 

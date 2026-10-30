@@ -35,6 +35,8 @@ import { useTheme } from '@/src/context/ThemeContext';
 import { typography } from '@/src/constants/typography';
 import { OfflineNote } from '../../src/components/OfflineNote';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 import { getInitials } from '../../src/utils/getInitials';
 
 type OperationType = CoachOperation;
@@ -102,6 +104,8 @@ function OperationBubble({ type, isFocalCenter = false, themeColors }: Operation
   );
 }
 
+const MAX_CONTENT_WIDTH = 480;
+
 export default function DashboardScreen() {
   const router = useRouter();
   const { session } = useAuth();
@@ -110,6 +114,10 @@ export default function DashboardScreen() {
   const { theme } = useTheme();
 
   const isNarrow = width < 360;
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(Math.max(insets.top > 0 ? 6 : 14, 10));
 
   const isInitialMount = useRef(true);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -305,8 +313,9 @@ export default function DashboardScreen() {
         style={[
           styles.headerRow,
           {
+            maxWidth: contentWidth,
             paddingHorizontal: isNarrow ? 18 : 24,
-            paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
+            paddingTop: topPadding,
           },
         ]}
       >
@@ -328,7 +337,7 @@ export default function DashboardScreen() {
       </View>
 
       {isLoading ? (
-        <Animated.View style={[styles.mainContainer, skeletonAnimatedStyle]}>
+        <Animated.View style={[styles.mainContainer, { maxWidth: contentWidth }, skeletonAnimatedStyle]}>
           <View style={styles.upperStage}>
             <View style={[styles.skeletonBadge, { backgroundColor: skeletonBoneColor }]} />
             <View style={[styles.skeletonHeadingLine, { backgroundColor: skeletonBoneColor }]} />
@@ -357,7 +366,7 @@ export default function DashboardScreen() {
           </View>
         </Animated.View>
       ) : (
-        <Animated.View style={[styles.mainContainer, containerAnimatedStyle]}>
+        <Animated.View style={[styles.mainContainer, { maxWidth: contentWidth }, containerAnimatedStyle]}>
           {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
 
           {/* Upper Text Stage */}
@@ -516,7 +525,6 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     width: '100%',
-    maxWidth: 440,
     alignSelf: 'center',
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -557,7 +565,6 @@ const styles = StyleSheet.create({
   mainContainer: {
     flex: 1,
     width: '100%',
-    maxWidth: 440,
     alignSelf: 'center',
     paddingHorizontal: 24,
     justifyContent: 'space-between',

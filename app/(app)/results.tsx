@@ -68,11 +68,15 @@ import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '../../src/constants/palette';
 import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
 import { withTimeout } from '../../src/utils/withTimeout';
+import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 
 type IconName = keyof typeof Ionicons.glyphMap;
 
 const TOTAL_STEPS = 2;
 const CONFETTI_PIECES = 26;
+const MAX_CONTENT_WIDTH = 480;
+const TOP_PADDING = 4;
 
 /** History for one finished round. `data` is null when there is nothing to plan from (offline, nothing cached). */
 type LoadedHistory = {
@@ -285,6 +289,10 @@ export default function ResultsScreen() {
   const { theme } = useTheme();
   const { session } = useAuth();
   const reduceMotion = useReducedMotion();
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(TOP_PADDING);
 
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
 
@@ -721,8 +729,8 @@ export default function ResultsScreen() {
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
       {/* TOP PROGRESS + CLOSE */}
-      <View style={styles.topTimelineWrapper}>
-        <View style={styles.topTimelineRow}>
+      <View style={[styles.topTimelineWrapper, { paddingTop: topPadding }]}>
+        <View style={[styles.topTimelineRow, { maxWidth: contentWidth }]}>
           <View
             style={styles.timelineSegmentsRow}
             accessible
@@ -751,7 +759,7 @@ export default function ResultsScreen() {
       </View>
 
       {/* BODY */}
-      <Animated.View style={[styles.contentWrapper, stepAnimatedStyle]}>
+      <Animated.View style={[styles.contentWrapper, { maxWidth: contentWidth }, stepAnimatedStyle]}>
         <ScrollView
           key={currentStep}
           contentContainerStyle={styles.scrollContent}
@@ -952,7 +960,7 @@ export default function ResultsScreen() {
       </Animated.View>
 
       {/* BOTTOM ACTIONS */}
-      <View style={[styles.dockContainer, { paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
+      <View style={[styles.dockContainer, { maxWidth: contentWidth, paddingBottom: Math.max(insets.bottom, 16) + 12 }]}>
         <View style={styles.doubleActionWrap}>
           {(currentStep === 1 || historyStatus === 'loading' || nextWorkout) && (
             <TouchableOpacity
@@ -1062,13 +1070,11 @@ const styles = StyleSheet.create({
   },
   topTimelineWrapper: {
     paddingHorizontal: 20,
-    paddingTop: 4,
   },
   topTimelineRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 14,
-    maxWidth: 420,
     alignSelf: 'center',
     width: '100%',
   },
@@ -1098,7 +1104,6 @@ const styles = StyleSheet.create({
   contentWrapper: {
     flex: 1,
     width: '100%',
-    maxWidth: 420,
     alignSelf: 'center',
   },
   scrollContent: {
@@ -1345,7 +1350,6 @@ const styles = StyleSheet.create({
   },
   dockContainer: {
     width: '100%',
-    maxWidth: 420,
     alignSelf: 'center',
     paddingHorizontal: 24,
     paddingTop: 8,

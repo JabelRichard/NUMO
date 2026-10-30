@@ -1,19 +1,22 @@
 import { CoreOperation, DifficultyLevel } from '../../math/types';
 import {
   addToLifetime,
+  bestQuestionDay,
   CoachPlanInput,
   CoachWorkout,
   getLevelState,
   getProgressSummary,
   levelProgress,
+  isLifetimeTotals,
   levelProgressText,
+  LifetimeTotals,
   lifetimeTotals,
   progressHighlight,
   progressText,
   WorkoutBreakdown,
   workoutDayLabel,
 } from '..';
-import { longestDayStreak } from '../../../utils/localDates';
+import { localDayKey, longestDayStreak } from '../../../utils/localDates';
 
 const NOW = new Date(2026, 9, 28, 18, 0, 0);
 const HOUR = 60 * 60 * 1000;
@@ -74,19 +77,52 @@ describe('lifetime records', () => {
       round('multiplication', 90, 'easy', ago(8)),
       mix({ addition: [5, 5], division: [5, 5] }, ago(2)),
     ];
-    expect(lifetimeTotals(workouts)).toEqual({ questions: 40, workouts: 4, longestStreak: 3, perfectRounds: 2 });
+    expect(lifetimeTotals(workouts)).toEqual({
+      questions: 40,
+      workouts: 4,
+      longestStreak: 3,
+      perfectRounds: 2,
+      bestDayQuestions: 10,
+      bestDayKey: localDayKey(ago(10)),
+      mixedRounds: 1,
+    });
   });
 
   it('offline: adds queued workouts to the totals saved from the full history', () => {
-    const base = { questions: 5000, workouts: 400, longestStreak: 12, perfectRounds: 30 };
+    const base = {
+      questions: 5000,
+      workouts: 400,
+      longestStreak: 12,
+      perfectRounds: 30,
+      bestDayQuestions: 80,
+      bestDayKey: '2026-03-01',
+      mixedRounds: 14,
+    };
     const cached = [round('addition', 90, 'easy', ago(1))];
-    const queued = [round('addition', 100, 'easy', ago(0))];
+    const queued = [round('addition', 100, 'easy', ago(0)), mix({ addition: [4, 5], division: [5, 5] }, ago(0, 1))];
     expect(addToLifetime(base, queued, [...cached, ...queued])).toEqual({
-      questions: 5010,
-      workouts: 401,
+      questions: 5020,
+      workouts: 402,
       longestStreak: 12,
       perfectRounds: 31,
+      bestDayQuestions: 80,
+      bestDayKey: '2026-03-01',
+      mixedRounds: 15,
     });
+  });
+
+  it('mixed rounds: mixes only, not warm-ups or single-operation rounds', () => {
+    const warmup = { ...mix({ addition: [5, 5], subtraction: [5, 5] }, ago(5)), source: 'warmup' as const };
+    const legacyMix = { ...mix({}, ago(4)), total_questions: 20, breakdown: null, source: null };
+    const workouts = [warmup, legacyMix, mix({ addition: [5, 5], division: [5, 5] }, ago(2)), round('addition', 90, 'easy', ago(1))];
+    expect(lifetimeTotals(workouts).mixedRounds).toBe(2);
+  });
+
+  it('mixed rounds: an older cache without them counts the mixes on the phone', () => {
+    const oldCache = { questions: 5000, workouts: 400, longestStreak: 12, perfectRounds: 30 } as LifetimeTotals;
+    const cached = [mix({ addition: [5, 5], division: [5, 5] }, ago(2))];
+    const queued = [mix({ addition: [5, 5], division: [5, 5] }, ago(0))];
+    expect(addToLifetime(oldCache, queued, [...cached, ...queued]).mixedRounds).toBe(2);
   });
 
   it('longest streak uses local days and survives a gap', () => {
@@ -94,6 +130,51 @@ describe('lifetime records', () => {
     expect(longestDayStreak([at(9, 1), at(9, 2, 0), at(9, 2, 23), at(9, 5), at(9, 6), at(9, 7), at(9, 8)])).toBe(4);
     expect(longestDayStreak([at(9, 31), at(10, 1)])).toBe(2);
     expect(longestDayStreak([])).toBe(0);
+  });
+});
+
+describe('best day', () => {
+  const at = (m: number, d: number, h = 12) => new Date(2026, m, d, h).toISOString();
+  const on = (questions: number, completedAt: string) => round('addition', 100, 'easy', completedAt, 3, questions);
+
+  it("adds up every workout on a local day, a mix's questions counted once", () => {
+    const workouts = [
+      on(10, at(9, 1, 0)),
+      on(10, at(9, 1, 23)),
+      mix({ addition: [5, 5], division: [5, 5] }, at(9, 1, 12)),
+      on(25, at(9, 2)),
+    ];
+    expect(bestQuestionDay(workouts)).toEqual({ bestDayQuestions: 30, bestDayKey: '2026-10-01' });
+  });
+
+  it('a tie keeps the earlier day, when the record was set', () => {
+    expect(bestQuestionDay([on(20, at(9, 5)), on(20, at(9, 3))]).bestDayKey).toBe('2026-10-03');
+  });
+
+  it('no questions yet: no best day', () => {
+    expect(bestQuestionDay([])).toEqual({ bestDayQuestions: 0, bestDayKey: null });
+  });
+
+  it('offline: a day split between cached and queued workouts counts as one day', () => {
+    const base = { ...lifetimeTotals([on(25, at(8, 1))]), questions: 5000, workouts: 400 };
+    const cached = [on(15, at(9, 28, 9))];
+    const queued = [on(15, at(9, 28, 20))];
+    // Alone, each half (15) loses to the saved 25; together they're 30.
+    expect(addToLifetime(base, queued, [...cached, ...queued])).toMatchObject({
+      bestDayQuestions: 30,
+      bestDayKey: '2026-10-28',
+    });
+  });
+
+  it('a cache saved before the best day existed still counts, and fills it in from the phone', () => {
+    const oldCache = { questions: 5000, workouts: 400, longestStreak: 12, perfectRounds: 30 };
+    expect(isLifetimeTotals(oldCache)).toBe(true);
+    const cached = [on(15, at(9, 27))];
+    expect(addToLifetime(oldCache as LifetimeTotals, [], cached)).toMatchObject({
+      questions: 5000,
+      bestDayQuestions: 15,
+      bestDayKey: '2026-10-27',
+    });
   });
 });
 

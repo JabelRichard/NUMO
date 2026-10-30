@@ -17,6 +17,8 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { typography } from '@/src/constants/typography';
 import { PALETTE } from '@/src/constants/palette';
+import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 
 const ORIGINAL_SLIDES = [
   { id: '1', image: require('../../assets/images/homescreen.png') },
@@ -25,6 +27,10 @@ const ORIGINAL_SLIDES = [
   { id: '4', image: require('../../assets/images/resultsscreen.png') },
   { id: '5', image: require('../../assets/images/statisticsscreen.png') },
 ];
+
+// The headline, button and links, at the same cap as the main screens: 480 on a phone, wider
+// on a tablet. The slides stay full width: they page by the window width.
+const MAX_CONTENT_WIDTH = 480;
 
 export default function WelcomeScreen() {
   const router = useRouter();
@@ -50,6 +56,10 @@ export default function WelcomeScreen() {
 
   const isNarrow = width < 360;
   const isCompactHeight = height < 740;
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  const capped = { width: '100%', maxWidth: contentWidth, alignSelf: 'center' } as const;
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(Math.max(insets.top > 0 ? 0 : 12, 4));
 
   useEffect(() => {
     activeIndexRef.current = activeGlobalIndex;
@@ -129,7 +139,7 @@ export default function WelcomeScreen() {
 
       <SafeAreaView style={styles.safeArea}>
         {/* TOP BRAND BAR */}
-        <View style={[styles.topBar, { paddingTop: Math.max(insets.top > 0 ? 0 : 12, 4) }]}>
+        <View style={[styles.topBar, capped, { paddingTop: topPadding }]}>
           <View style={styles.brandRow}>
             <View style={styles.brandLogoDot} />
             <Text style={styles.brandLogoText}>NUMO</Text>
@@ -214,6 +224,7 @@ export default function WelcomeScreen() {
         <View
           style={[
             styles.bottomContent,
+            capped,
             { paddingBottom: Math.max(insets.bottom + 8, 20) },
           ]}
         >

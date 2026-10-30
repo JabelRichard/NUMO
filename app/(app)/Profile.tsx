@@ -15,7 +15,6 @@ import {
   ActivityIndicator,
   Alert,
   Animated,
-  Dimensions,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -27,6 +26,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from "react-native";
 import {
   SafeAreaView,
@@ -47,10 +47,11 @@ import {
   typography,
 } from "../../src/constants/typography";
 import { useOnlineStatus } from "../../src/hooks/useOnlineStatus";
+import { useResponsiveContentWidth } from "../../src/hooks/useResponsiveContentWidth";
+import { useResponsiveTopPadding } from "../../src/hooks/useResponsiveTopPadding";
 import { getInitials } from "../../src/utils/getInitials";
 import { useAuth } from "../../src/context/AuthContext";
 import {
-  calculateActivitySummary,
   calculateProfileOverview,
   getTrainingGoals,
   saveTrainingGoals,
@@ -76,11 +77,8 @@ import { LEVEL_NAMES } from "../../src/lib/coach";
 import {
   formatDurationGoal,
   formatFrequencyGoal,
-  formatOperationName,
-  formatRelativeSessionDate,
 } from "../../src/utils/goalFormatters";
 import {
-  countDayStreak,
   localDayKey,
   startOfLocalWeek,
 } from "../../src/utils/localDates";
@@ -91,7 +89,9 @@ import {
   questionsForDuration,
 } from "../../src/utils/onboardingDraft";
 
-const { height: SCREEN_HEIGHT } = Dimensions.get("window");
+const MAX_CONTENT_WIDTH = 480;
+// Same as Practice's sheet.
+const MAX_SHEET_WIDTH = 500;
 
 const NAME_MAX_LENGTH = 40;
 const NOT_SET = "Not set";
@@ -143,6 +143,13 @@ export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const { session } = useAuth();
   const { theme } = useTheme();
+  // Live, so the sheet and the content width follow iPad Split View resizing.
+  const { height: screenHeight } = useWindowDimensions();
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  const sheetWidth = useResponsiveContentWidth(MAX_SHEET_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(Math.max(insets.top > 0 ? 6 : 14, 10));
 
   const isDark = theme.isDark;
   const userId = session?.user?.id;
@@ -182,14 +189,12 @@ export default function ProfileScreen() {
   const [allWorkouts, setAllWorkouts] = useState<WorkoutSessionRecord[]>([]);
 
   // Bottom Sheets
-  const [activitySheetVisible, setActivitySheetVisible] =
-    useState<boolean>(false);
   const [sheetType, setSheetType] = useState<SheetType | null>(null);
   // Unsaved picks in the multi-select "Working on" sheet.
   const [draftAreas, setDraftAreas] = useState<FrictionArea[]>([]);
   const [draftUnsure, setDraftUnsure] = useState<boolean>(false);
 
-  const sheetAnim = useRef(new Animated.Value(SCREEN_HEIGHT)).current;
+  const sheetAnim = useRef(new Animated.Value(screenHeight)).current;
   const editNameVisibleRef = useRef(false);
   editNameVisibleRef.current = editNameVisible;
 
@@ -207,7 +212,7 @@ export default function ProfileScreen() {
 
   const openSheet = useCallback(() => {
     triggerHaptic();
-    sheetAnim.setValue(SCREEN_HEIGHT);
+    sheetAnim.setValue(screenHeight);
     Animated.spring(sheetAnim, {
       toValue: 0,
       damping: 26,
@@ -215,19 +220,19 @@ export default function ProfileScreen() {
       stiffness: 240,
       useNativeDriver: true,
     }).start();
-  }, [sheetAnim]);
+  }, [sheetAnim, screenHeight]);
 
   const closeSheet = useCallback(
     (onFinished?: () => void) => {
       Animated.timing(sheetAnim, {
-        toValue: SCREEN_HEIGHT,
+        toValue: screenHeight,
         duration: 200,
         useNativeDriver: true,
       }).start(() => {
         if (onFinished) onFinished();
       });
     },
-    [sheetAnim],
+    [sheetAnim, screenHeight],
   );
 
   const loadData = useCallback(async () => {
@@ -291,10 +296,6 @@ export default function ProfileScreen() {
     return calculateProfileOverview(allWorkouts);
   }, [allWorkouts]);
 
-  const activitySummary = useMemo(() => {
-    return calculateActivitySummary(allWorkouts, "30D");
-  }, [allWorkouts]);
-
   // Mental Math Fluency Rank and progress to the next one
   const rankInfo = useMemo(() => {
     const total = overview.lifetimeQuestions || 0;
@@ -317,7 +318,6 @@ export default function ProfileScreen() {
     const todayKey = localDayKey(new Date());
     const weekStart = startOfLocalWeek();
     let questionsToday = 0;
-    let practicedToday = false;
     const weekDays = new Set<string>();
 
     for (const w of allWorkouts) {
@@ -325,7 +325,6 @@ export default function ProfileScreen() {
       const completed = new Date(w.completed_at);
       const dayKey = localDayKey(completed);
       if (dayKey === todayKey) {
-        practicedToday = true;
         questionsToday += Number(w.total_questions) || 0;
       }
       if (completed >= weekStart) weekDays.add(dayKey);
@@ -333,9 +332,7 @@ export default function ProfileScreen() {
 
     return {
       questionsToday,
-      practicedToday,
       daysTrainedThisWeek: weekDays.size,
-      streak: countDayStreak(allWorkouts.map((w) => w.completed_at)),
     };
   }, [allWorkouts]);
 
@@ -879,14 +876,6 @@ export default function ProfileScreen() {
     );
   }
 
-  const { streak, practicedToday } = todayProgress;
-  const streakHint =
-    streak === 0
-      ? "Do a workout today to start a streak."
-      : practicedToday
-        ? "You practiced today. Nice work!"
-        : "Practice today to keep it going.";
-  const latestWorkout = overview.latestWorkout;
   const rankProgressText = rankInfo.next
     ? `${rankInfo.remaining.toLocaleString()} questions to ${rankInfo.next.title}`
     : "Top rank reached";
@@ -903,8 +892,9 @@ export default function ProfileScreen() {
         style={[
           styles.headerBar,
           {
+            maxWidth: contentWidth,
             paddingHorizontal: 24,
-            paddingTop: Math.max(insets.top > 0 ? 6 : 14, 10),
+            paddingTop: topPadding,
           },
         ]}
       >
@@ -930,7 +920,7 @@ export default function ProfileScreen() {
 
       {/* Offline banner: data loaded earlier stays on screen */}
       {isOffline && hasLoaded && (
-        <View style={styles.offlineBannerWrap}>
+        <View style={[styles.offlineBannerWrap, { maxWidth: contentWidth }]}>
           <View
             style={[
               styles.offlineBanner,
@@ -978,7 +968,7 @@ export default function ProfileScreen() {
           ]}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.contentWrapper}>
+          <View style={[styles.contentWrapper, { maxWidth: contentWidth }]}>
             {/* 1. Athlete Hero Card */}
             <View
               style={[
@@ -1110,126 +1100,31 @@ export default function ProfileScreen() {
                   {rankProgressText}
                 </Text>
               </View>
-
-              {/* Sub-card Highlight Strip */}
-              <View
-                style={[styles.cardDivider, { backgroundColor: borderSubtle }]}
-              />
-              <View style={styles.heroHighlightsRow}>
-                <View
-                  style={styles.heroStatItem}
-                  accessible
-                  accessibilityLabel={`Lifetime questions: ${overview.lifetimeQuestions.toLocaleString()}`}
-                >
-                  <Text
-                    style={[styles.heroStatLabel, { color: secondaryText }]}
-                  >
-                    LIFETIME QUESTIONS
-                  </Text>
-                  <Text
-                    style={[styles.heroStatValue, { color: primaryText }]}
-                  >
-                    {overview.lifetimeQuestions.toLocaleString()}
-                  </Text>
-                </View>
-
-                <View
-                  style={[
-                    styles.heroStatSeparator,
-                    { backgroundColor: borderSubtle },
-                  ]}
-                />
-
-                <View
-                  style={styles.heroStatItem}
-                  accessible
-                  accessibilityLabel={`Workouts completed: ${overview.lifetimeSessions}`}
-                >
-                  <Text
-                    style={[styles.heroStatLabel, { color: secondaryText }]}
-                  >
-                    WORKOUTS COMPLETED
-                  </Text>
-                  <Text
-                    style={[styles.heroStatValue, { color: primaryText }]}
-                  >
-                    {overview.lifetimeSessions}
-                  </Text>
-                </View>
-              </View>
             </View>
 
-            {/* 2. Training Activity Card */}
-            <View
+            {/* 2. Streak, levels and calendar live on Statistics */}
+            <TouchableOpacity
               style={[
-                styles.activityOverviewCard,
+                styles.goalItemCard,
+                styles.progressLinkCard,
                 { backgroundColor: cardBg, borderColor: borderSubtle },
               ]}
+              activeOpacity={0.7}
+              onPress={() =>
+                router.push({ pathname: "/(app)/statistics", params: { from: "profile" } })
+              }
+              accessibilityRole="button"
+              accessibilityLabel="Your progress"
+              accessibilityHint="Opens your streak, levels and calendar"
             >
-              <View style={styles.activityCardHeader}>
-                <Text
-                  style={[styles.activityCardHeading, { color: primaryText }]}
-                  accessibilityRole="header"
-                >
-                  Training activity
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    setActivitySheetVisible(true);
-                    openSheet();
-                  }}
-                  activeOpacity={0.7}
-                  style={styles.seeActivityBtn}
-                  accessibilityRole="button"
-                  accessibilityLabel="See activity"
-                >
-                  <Text style={[styles.seeActivityLink, { color: accentStrong }]}>
-                    See activity →
-                  </Text>
-                </TouchableOpacity>
+              <View style={[styles.goalIconBadge, { backgroundColor: accentSoft }]}>
+                {renderCardIcon("stats-chart-outline")}
               </View>
-
-              <View
-                style={styles.streakRow}
-                accessible
-                accessibilityLabel={`${streak} ${streak === 1 ? "day" : "days"} in a row. ${streakHint}`}
-              >
-                <View
-                  style={[styles.goalIconBadge, { backgroundColor: accentSoft }]}
-                >
-                  <Ionicons name="flame-outline" size={20} color={accentStrong} />
-                </View>
-                <View style={styles.goalTextStack}>
-                  <Text style={[styles.streakValue, { color: primaryText }]}>
-                    {streak} {streak === 1 ? "day" : "days"} in a row
-                  </Text>
-                  <Text style={[styles.streakHint, { color: secondaryText }]}>
-                    {streakHint}
-                  </Text>
-                </View>
-              </View>
-
-              {latestWorkout && (
-                <View
-                  style={[styles.lastSessionNote, { borderTopColor: borderSubtle }]}
-                >
-                  <Ionicons
-                    name="time-outline"
-                    size={18}
-                    color={secondaryText}
-                  />
-                  <Text style={[styles.lastSessionText, { color: secondaryText }]}>
-                    Last session:{" "}
-                    <Text style={{ fontWeight: "600", color: primaryText }}>
-                      {formatOperationName(latestWorkout.operation)}
-                    </Text>
-                    {" · "}
-                    {latestWorkout.totalQuestions} questions{" · "}
-                    {formatRelativeSessionDate(latestWorkout.completedAt)}
-                  </Text>
-                </View>
-              )}
-            </View>
+              <Text style={[styles.progressLinkText, { color: primaryText }]}>
+                Your progress
+              </Text>
+              <Ionicons name="chevron-forward" size={20} color={secondaryText} />
+            </TouchableOpacity>
 
             {/* 3. Your Plan Section (choices from onboarding) */}
             <Text
@@ -1297,130 +1192,6 @@ export default function ProfileScreen() {
         </ScrollView>
       )}
 
-      {/* Activity Bottom Sheet: last 30 days */}
-      <Modal
-        visible={activitySheetVisible}
-        transparent
-        animationType="none"
-        onRequestClose={() => closeSheet(() => setActivitySheetVisible(false))}
-      >
-        <View style={styles.sheetBackdrop}>
-          <TouchableOpacity
-            style={styles.sheetDismissArea}
-            activeOpacity={1}
-            onPress={() => closeSheet(() => setActivitySheetVisible(false))}
-            accessible={false}
-          />
-
-          <Animated.View
-            style={[
-              styles.activitySheetContainer,
-              {
-                backgroundColor: cardBg,
-                borderColor: borderSubtle,
-                transform: [{ translateY: sheetAnim }],
-                paddingBottom: Math.max(insets.bottom, 20) + 12,
-              },
-            ]}
-          >
-            <View style={styles.handleContainer}>
-              <View
-                style={[styles.grabHandle, { backgroundColor: secondaryText }]}
-              />
-            </View>
-
-            {renderSheetHeader("Training activity", () =>
-              closeSheet(() => setActivitySheetVisible(false)),
-            )}
-
-            <View style={styles.scrollWrapper}>
-              <ScrollView
-                style={styles.activityScrollArea}
-                contentContainerStyle={styles.activityScrollContent}
-                showsVerticalScrollIndicator={true}
-                nestedScrollEnabled={true}
-                bounces={true}
-              >
-                <Text
-                  style={[styles.recentSessionsHeader, { color: secondaryText }]}
-                  accessibilityRole="header"
-                >
-                  LAST 30 DAYS ({activitySummary.recentSessions.length})
-                </Text>
-
-                {activitySummary.recentSessions.length === 0 ? (
-                  <View style={styles.emptySessionBox}>
-                    <Text
-                      style={[styles.emptySessionText, { color: secondaryText }]}
-                    >
-                      No workouts in the last 30 days.
-                    </Text>
-                  </View>
-                ) : (
-                  activitySummary.recentSessions.map((item) => {
-                    const name = formatOperationName(item.operation);
-                    const when = formatRelativeSessionDate(item.completedAt);
-                    return (
-                      <View
-                        key={item.id}
-                        style={[
-                          styles.sessionItemRow,
-                          { borderBottomColor: borderSubtle },
-                        ]}
-                        accessible
-                        accessibilityLabel={`${name}, ${item.totalQuestions} questions, ${when}, ${item.accuracy} percent correct`}
-                      >
-                        <View style={styles.sessionLeftStack}>
-                          <Text
-                            style={[styles.sessionOpTitle, { color: primaryText }]}
-                          >
-                            {name}
-                          </Text>
-                          <Text
-                            style={[
-                              styles.sessionDetailSub,
-                              { color: secondaryText },
-                            ]}
-                          >
-                            {item.totalQuestions} questions · {when}
-                          </Text>
-                        </View>
-                        <View style={styles.sessionRightPill}>
-                          <Text
-                            style={[
-                              styles.sessionAccuracyText,
-                              { color: accentStrong },
-                            ]}
-                          >
-                            {item.accuracy}%
-                          </Text>
-                        </View>
-                      </View>
-                    );
-                  })
-                )}
-              </ScrollView>
-            </View>
-
-            <TouchableOpacity
-              style={[styles.viewStatsCtaBtn, { backgroundColor: accent }]}
-              onPress={() => {
-                closeSheet(() => {
-                  setActivitySheetVisible(false);
-                  router.push({ pathname: "/(app)/statistics", params: { from: "profile" } });
-                });
-              }}
-              accessibilityRole="button"
-              accessibilityLabel="View full statistics"
-            >
-              <Text style={[styles.viewStatsCtaText, { color: onAccent }]}>
-                View Full Statistics →
-              </Text>
-            </TouchableOpacity>
-          </Animated.View>
-        </View>
-      </Modal>
-
       {/* Plan & Goal Selector Bottom Sheet */}
       <Modal
         visible={sheetType !== null}
@@ -1440,6 +1211,8 @@ export default function ProfileScreen() {
             style={[
               styles.goalSheetContainer,
               {
+                maxHeight: screenHeight * 0.88,
+                maxWidth: sheetWidth,
                 backgroundColor: cardBg,
                 borderColor: borderSubtle,
                 transform: [{ translateY: sheetAnim }],
@@ -1584,6 +1357,13 @@ export default function ProfileScreen() {
 const MIN_TAP = 44;
 
 const styles = StyleSheet.create({
+  progressLinkCard: {
+    marginBottom: 8,
+  },
+  progressLinkText: {
+    ...typography.button,
+    flex: 1,
+  },
   safeArea: {
     flex: 1,
   },
@@ -1594,7 +1374,6 @@ const styles = StyleSheet.create({
   },
   headerBar: {
     width: "100%",
-    maxWidth: 440,
     alignSelf: "center",
     flexDirection: "row",
     alignItems: "center",
@@ -1622,7 +1401,6 @@ const styles = StyleSheet.create({
   // Offline banner
   offlineBannerWrap: {
     width: "100%",
-    maxWidth: 440,
     alignSelf: "center",
     paddingHorizontal: 20,
     paddingBottom: 8,
@@ -1657,7 +1435,6 @@ const styles = StyleSheet.create({
   },
   contentWrapper: {
     width: "100%",
-    maxWidth: 440,
     alignSelf: "center",
     paddingHorizontal: 20,
     gap: 16,
@@ -1756,87 +1533,6 @@ const styles = StyleSheet.create({
   rankProgressText: {
     ...typography.secondary,
   },
-  cardDivider: {
-    height: 1,
-    marginVertical: 14,
-  },
-  heroHighlightsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-around",
-  },
-  heroStatItem: {
-    flex: 1,
-    alignItems: "center",
-    paddingHorizontal: 4,
-  },
-  heroStatLabel: {
-    ...typography.secondary,
-    letterSpacing: 0.4,
-    textAlign: "center",
-    marginBottom: 3,
-  },
-  heroStatValue: {
-    ...typography.sectionHeading,
-  },
-  heroStatSeparator: {
-    width: 1,
-    alignSelf: "stretch",
-  },
-  // Training Activity Card
-  activityOverviewCard: {
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    shadowColor: PALETTE.dark,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-  },
-  activityCardHeader: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    alignItems: "center",
-    justifyContent: "space-between",
-    marginBottom: 8,
-  },
-  activityCardHeading: {
-    ...typography.button,
-    fontSize: 17,
-  },
-  seeActivityBtn: {
-    minHeight: MIN_TAP,
-    justifyContent: "center",
-    paddingLeft: 8,
-  },
-  seeActivityLink: {
-    ...typography.secondary,
-    fontWeight: "600",
-  },
-  streakRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    marginBottom: 12,
-  },
-  streakValue: {
-    ...typography.sectionHeading,
-  },
-  streakHint: {
-    ...typography.secondary,
-    marginTop: 2,
-  },
-  lastSessionNote: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: 8,
-    borderTopWidth: 1,
-    paddingTop: 12,
-  },
-  lastSessionText: {
-    ...typography.secondary,
-    flex: 1,
-  },
   // Plan & Goals Sections
   sectionHeading: {
     ...typography.secondary,
@@ -1910,21 +1606,14 @@ const styles = StyleSheet.create({
   sheetDismissArea: {
     flex: 1,
   },
-  activitySheetContainer: {
-    borderTopLeftRadius: 28,
-    borderTopRightRadius: 28,
-    borderWidth: 1,
-    borderBottomWidth: 0,
-    paddingHorizontal: 20,
-    height: SCREEN_HEIGHT * 0.78,
-  },
   goalSheetContainer: {
+    width: "100%",
+    alignSelf: "center",
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,
     borderWidth: 1,
     borderBottomWidth: 0,
     paddingHorizontal: 20,
-    maxHeight: SCREEN_HEIGHT * 0.88,
   },
   handleContainer: {
     alignItems: "center",
@@ -1955,65 +1644,6 @@ const styles = StyleSheet.create({
     width: MIN_TAP,
     height: MIN_TAP,
     borderRadius: MIN_TAP / 2,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  recentSessionsHeader: {
-    ...typography.secondary,
-    fontWeight: "600",
-    letterSpacing: 0.8,
-    marginBottom: 8,
-    marginTop: 4,
-  },
-  // Scrollable container for activity sheet
-  scrollWrapper: {
-    flex: 1,
-    marginBottom: 12,
-  },
-  activityScrollArea: {
-    flex: 1,
-  },
-  activityScrollContent: {
-    paddingBottom: 16,
-  },
-  sessionItemRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-  },
-  sessionLeftStack: {
-    flex: 1,
-  },
-  sessionOpTitle: {
-    ...typography.button,
-  },
-  sessionDetailSub: {
-    ...typography.secondary,
-    marginTop: 2,
-  },
-  sessionRightPill: {
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 10,
-  },
-  sessionAccuracyText: {
-    ...typography.button,
-  },
-  emptySessionBox: {
-    paddingVertical: 40,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  emptySessionText: {
-    ...typography.body,
-    textAlign: "center",
-  },
-  viewStatsCtaBtn: {
-    minHeight: 52,
-    paddingVertical: 14,
-    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
   },

@@ -19,6 +19,8 @@ import { PALETTE } from '@/src/constants/palette';
 import { WEAK_SPOTS } from '@/src/constants/planOptions';
 import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
 import { useOnlineStatus } from '@/src/hooks/useOnlineStatus';
+import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 import { OfflineNote } from '@/src/components/OfflineNote';
 import { TodaysPickCard, useStartWorkout } from '@/src/components/TodaysPickCard';
 import { LoadedCoachData, loadCoachDataWithFallback } from '../../../src/services/coachService';
@@ -86,6 +88,10 @@ function sheetOptions(coach: CoachPlan, op: CoachOperation): SheetOption[] {
 const defaultChoice = (coach: CoachPlan, op: CoachOperation): Choice =>
   coach.isFirstWorkout || op === 'mixed' ? 'yours' : coach.levels[op];
 
+const MAX_CONTENT_WIDTH = 480;
+const MAX_SHEET_WIDTH = 500;
+const TOP_PADDING = 16;
+
 export default function PracticeScreen() {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -95,6 +101,12 @@ export default function PracticeScreen() {
 
   const isDark = theme.isDark;
   const isNarrow = width < 360;
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // The sheet grows with the screen behind it.
+  const sheetWidth = useResponsiveContentWidth(MAX_SHEET_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(TOP_PADDING);
 
   const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
   const [sheetOp, setSheetOp] = useState<CoachOperation | null>(null);
@@ -248,13 +260,14 @@ export default function PracticeScreen() {
         contentContainerStyle={[
           styles.scrollContent,
           {
+            paddingTop: topPadding,
             paddingHorizontal: isNarrow ? 16 : 20,
             paddingBottom: Math.max(insets.bottom, 20) + 90,
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.responsiveWrapper}>
+        <View style={[styles.responsiveWrapper, { maxWidth: contentWidth }]}>
           <View style={styles.titleSection}>
             <Text
               style={[styles.screenTitle, { color: primaryText }]}
@@ -305,6 +318,7 @@ export default function PracticeScreen() {
             style={[
               styles.sheetContainer,
               {
+                maxWidth: sheetWidth,
                 backgroundColor: cardBg,
                 borderTopColor: borderSubtle,
                 paddingBottom: Math.max(insets.bottom, 20) + 12,
@@ -418,11 +432,9 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
-    paddingTop: 16,
   },
   responsiveWrapper: {
     width: '100%',
-    maxWidth: 480,
     alignSelf: 'center',
   },
   titleSection: {
@@ -561,7 +573,6 @@ const styles = StyleSheet.create({
   },
   sheetContainer: {
     width: '100%',
-    maxWidth: 500,
     alignSelf: 'center',
     borderTopLeftRadius: 28,
     borderTopRightRadius: 28,

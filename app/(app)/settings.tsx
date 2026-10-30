@@ -22,6 +22,8 @@ import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography, inputTypography } from '@/src/constants/typography';
 import { supabase } from '../../src/config/supabase';
+import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
+import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 import { syncBeforeSignOut } from '../../src/services/localDataService';
 import {
   scheduleDailyReminder,
@@ -51,11 +53,17 @@ const TIME_OPTIONS = [
   '09:00 PM',
 ];
 
+const MAX_CONTENT_WIDTH = 480;
+
 export default function SettingsScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { session, signOut } = useAuth();
   const { theme, setThemeMode } = useTheme();
+  // 480 on a phone, wider on a tablet.
+  const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
+  // Under the safe area; more on a tablet.
+  const topPadding = useResponsiveTopPadding(Math.max(insets.top > 0 ? 4 : 12, 8));
 
   const isDark = Boolean(theme?.isDark || (theme as any)?.mode === 'dark');
   const userId = session?.user?.id;
@@ -310,7 +318,7 @@ export default function SettingsScreen() {
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      <View style={[styles.headerRow, { paddingTop: Math.max(insets.top > 0 ? 4 : 12, 8) }]}>
+      <View style={[styles.headerRow, { maxWidth: contentWidth, paddingTop: topPadding }]}>
         <TouchableOpacity
           style={[styles.backBtn, { borderColor: borderSubtle }]}
           onPress={() => router.back()}
@@ -331,7 +339,7 @@ export default function SettingsScreen() {
           contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 40 }]}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.contentWrapper}>
+          <View style={[styles.contentWrapper, { maxWidth: contentWidth }]}>
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
               INTERFACE & APPEARANCE
             </Text>
@@ -761,7 +769,6 @@ const styles = StyleSheet.create({
   },
   headerRow: {
     width: '100%',
-    maxWidth: 440,
     alignSelf: 'center',
     flexDirection: 'row',
     alignItems: 'center',
@@ -794,7 +801,6 @@ const styles = StyleSheet.create({
   },
   contentWrapper: {
     width: '100%',
-    maxWidth: 440,
     alignSelf: 'center',
     paddingHorizontal: 20,
     gap: 12,
