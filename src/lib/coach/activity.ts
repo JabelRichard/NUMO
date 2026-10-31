@@ -12,11 +12,11 @@ import { CoachWorkout } from './types';
 export type ActivityRange = 'week' | 'month' | 'year';
 export type ActivityFilter = CoreOperation | 'all';
 
-const MONTH_NAMES = [
+export const MONTH_NAMES = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December',
 ];
-const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+export const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
 export interface ActivityBucket {
   /** Under the bar: "M", "6–12", "J". */

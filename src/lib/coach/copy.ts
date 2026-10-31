@@ -150,6 +150,7 @@ export const COPY = {
   dayStreak: (days: number) => `${days}-day streak`,
   ofGoalToday: (goal: number) => `of ${goal} today`,
   questionsTodayLabel: (done: number, goal: number) => `${done} of ${goal} questions done today`,
+  daysThisWeek: (done: number, target: number) => `${done} of ${plural(target, 'day')} this week`,
   weekDayLabel: (day: string, practiced: boolean, isToday: boolean) =>
     `${day}${isToday ? ', today' : ''}: ${practiced ? 'practised' : 'not practised'}`,
   /** Home hero card. */

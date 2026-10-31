@@ -24,12 +24,8 @@ import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth
 import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 import { OfflineNote } from '@/src/components/OfflineNote';
 import { PopIcon } from '@/src/components/PopIcon';
-import {
-  COACH_LOAD_TIMEOUT_MS,
-  LoadedCoachData,
-  loadCoachDataWithFallback,
-} from '../../src/services/coachService';
-import { getTrainingGoals } from '../../src/services/profileService';
+import { MonthCalendar } from '@/src/components/MonthCalendar';
+import { LoadedCoachData, loadCoachDataWithFallback } from '../../src/services/coachService';
 import {
   ActivityFilter,
   ActivityRange,
@@ -41,32 +37,23 @@ import {
   levelProgressText,
   lifetimeTotals,
   mayMissWorkouts,
+  MONTH_NAMES,
   operationName,
   progressText,
 } from '../../src/lib/coach';
 import { CORE_OPERATIONS } from '../../src/lib/math/questionGenerator';
-import { DEFAULT_TRAINING_GOALS } from '../../src/types/profile';
-import { countDayStreak, localDayKey, startOfLocalWeek } from '../../src/utils/localDates';
-import { withTimeout } from '../../src/utils/withTimeout';
+import { countDayStreak, localDayKey } from '../../src/utils/localDates';
 import { peekSpacing } from '../../src/utils/chipPeek';
 
-const WEEK_DAYS = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-const WEEKDAY_NAMES = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 const MAX_CONTENT_WIDTH = 480;
 const TOP_PADDING = 16;
 const TOUCH_HEIGHT = 46;
 const CHART_HEIGHT = 140;
-const DOT_SIZE = 32;
 
 const RANGES: { id: ActivityRange; title: string; phrase: string; current: string }[] = [
   { id: 'week', title: 'Week', phrase: 'this week', current: 'Today' },
   { id: 'month', title: 'Month', phrase: 'this month', current: 'This week' },
   { id: 'year', title: 'Year', phrase: 'this year', current: 'This month' },
-];
-
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
 ];
 
 const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
@@ -95,7 +82,6 @@ export default function StatisticsScreen() {
   const { theme } = useTheme();
   const { isOffline, recheck } = useOnlineStatus(() => loadScreenData());
   const today = useToday();
-  const todayKey = localDayKey(today);
 
   const isDark = theme.isDark;
   const isNarrow = width < 360;
@@ -106,10 +92,11 @@ export default function StatisticsScreen() {
   const topPadding = useResponsiveTopPadding(TOP_PADDING);
 
   const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
-  const [weeklyTarget, setWeeklyTarget] = useState(DEFAULT_TRAINING_GOALS.weeklyFrequencyDays);
   const [refreshing, setRefreshing] = useState(false);
   const [range, setRange] = useState<ActivityRange>('week');
   const [filter, setFilter] = useState<ActivityFilter>('all');
+  // The calendar's month, counted back from this one, so it stays on "this month" past midnight.
+  const [monthsBack, setMonthsBack] = useState(0);
   // "All" plus one chip per operation; 0 until measured.
   const [chipContents, setChipContents] = useState<number[]>(() => Array(CORE_OPERATIONS.length + 1).fill(0));
   const [chipViewport, setChipViewport] = useState(0);
@@ -117,21 +104,14 @@ export default function StatisticsScreen() {
   const loadIdRef = useRef(0);
 
   // Same data as Home and Practice: live, else the cached copy, else the plan saved on this phone.
-  // The weekly target comes from the plan in Supabase, like Profile (the phone's copy offline).
   const loadScreenData = useCallback(async () => {
     const userId = user?.id;
     if (!userId) return;
     const loadId = ++loadIdRef.current;
     const online = await recheck();
-    const [next, goals] = await Promise.all([
-      loadCoachDataWithFallback(userId, online),
-      (online ? withTimeout(getTrainingGoals(userId), COACH_LOAD_TIMEOUT_MS) : getTrainingGoals())
-        .catch(() => getTrainingGoals())
-        .catch(() => null),
-    ]);
+    const next = await loadCoachDataWithFallback(userId, online);
     if (loadId !== loadIdRef.current) return;
     setLoaded(next);
-    if (goals?.weeklyFrequencyDays) setWeeklyTarget(goals.weeklyFrequencyDays);
   }, [user?.id, recheck]);
 
   const goBackToProfile = useCallback(() => router.navigate('/(app)/Profile'), [router]);
@@ -202,13 +182,22 @@ export default function StatisticsScreen() {
     [workouts]
   );
   const streak = useMemo(() => countDayStreak(workouts.map((w) => w.completed_at), today), [workouts, today]);
-  const weekKeys = useMemo(() => {
-    const monday = startOfLocalWeek(today);
-    return WEEK_DAYS.map((_, i) =>
-      localDayKey(new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i, 12))
-    );
-  }, [today]);
-  const daysThisWeek = weekKeys.filter((key) => key <= todayKey && practicedDays.has(key)).length;
+
+  // Back as far as the first practised day on hand; never past this month.
+  const oldestMonthsBack = useMemo(() => {
+    const first = [...practicedDays].sort()[0];
+    if (!first) return 0;
+    const [y, m] = first.split('-').map(Number);
+    return Math.max(0, (today.getFullYear() - y) * 12 + today.getMonth() - (m - 1));
+  }, [practicedDays, today]);
+  const shownMonth = new Date(today.getFullYear(), today.getMonth() - Math.min(monthsBack, oldestMonthsBack), 1);
+  const shownMonthStart = shownMonth.getTime();
+  // "October"; another year adds it: "October 2025".
+  const shownMonthName = `${MONTH_NAMES[shownMonth.getMonth()]}${
+    shownMonth.getFullYear() === today.getFullYear() ? '' : ` ${shownMonth.getFullYear()}`
+  }`;
+  // Offline, like the chart: say so when this month may reach past the workouts on the phone.
+  const monthMayMiss = loaded?.from !== 'live' && mayMissWorkouts(workouts, lifetime.workouts, shownMonthStart);
 
   const rangeInfo = RANGES.find((r) => r.id === range)!;
   const chipSpacing = useMemo(
@@ -444,69 +433,38 @@ export default function StatisticsScreen() {
     );
   };
 
-  const renderMissingNote = () =>
-    missingOlder && (
+  // `phrase`: "this week", "October".
+  const renderMissingNote = (show: boolean, phrase: string) =>
+    show && (
       <View style={[styles.note, { backgroundColor: fillBg }]} accessibilityRole="text">
         <Ionicons name="cloud-offline-outline" size={18} color={secondaryText} />
         <Text style={[styles.noteText, { color: secondaryText }]}>
-          {`This phone only keeps your newest workouts, so ${rangeInfo.phrase} may be missing some until you're back online.`}
+          {`This phone only keeps your newest workouts, so ${phrase} may be missing some until you're back online.`}
         </Text>
       </View>
     );
 
-  // Streak and this week as dots, Monday first. A check marks a practiced day; today has a ring.
-  const renderStreak = () => {
-    const practicedNames = weekKeys.flatMap((key, i) => (practicedDays.has(key) ? [WEEKDAY_NAMES[i]] : []));
-    const label = [
-      streak > 0 ? `${plural(streak, 'day')} in a row` : 'No streak yet',
-      `${daysThisWeek} of ${plural(weeklyTarget, 'day')} this week`,
-      practicedNames.length > 0 ? `Practiced ${practicedNames.join(', ')}` : null,
-    ]
-      .filter(Boolean)
-      .join('. ');
-    return (
-      <View style={card} accessible accessibilityLabel={label}>
-        <View style={styles.statRow}>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: primaryText }]}>{plural(streak, 'day')}</Text>
-            <Text style={[styles.statLabel, { color: secondaryText }]}>In a row</Text>
-          </View>
-          <View style={styles.statItem}>
-            <Text style={[styles.statValue, { color: primaryText }]}>{`${daysThisWeek} of ${weeklyTarget}`}</Text>
-            <Text style={[styles.statLabel, { color: secondaryText }]}>Days this week</Text>
-          </View>
-        </View>
-        <View style={styles.dotRow}>
-          {weekKeys.map((key, i) => {
-            const practiced = practicedDays.has(key);
-            const isToday = key === todayKey;
-            return (
-              <View key={key} style={styles.dotColumn}>
-                <View
-                  style={[
-                    styles.dot,
-                    {
-                      backgroundColor: practiced ? accent : fillBg,
-                      borderWidth: isToday ? 2 : 0,
-                      borderColor: accentStrong,
-                    },
-                  ]}
-                >
-                  {practiced && <Ionicons name="checkmark" size={16} color={theme.onPrimary} />}
-                </View>
-                <Text
-                  style={[styles.axisLabel, { color: isToday ? primaryText : secondaryText, fontWeight: isToday ? '700' : '500' }]}
-                  maxFontSizeMultiplier={1.2}
-                >
-                  {WEEK_DAYS[i]}
-                </Text>
-              </View>
-            );
-          })}
-        </View>
-      </View>
-    );
-  };
+  // Days practised, a month at a time. Practice is practice: the filter chips don't apply.
+  const renderCalendar = () => (
+    <MonthCalendar
+      year={shownMonth.getFullYear()}
+      month={shownMonth.getMonth()}
+      today={today}
+      practicedDays={practicedDays}
+      canGoBack={monthsBack < oldestMonthsBack}
+      canGoForward={monthsBack > 0}
+      onBack={() => setMonthsBack(Math.min(monthsBack, oldestMonthsBack) + 1)}
+      onForward={() => setMonthsBack(Math.min(monthsBack, oldestMonthsBack) - 1)}
+      colors={{
+        text: primaryText,
+        subtle: secondaryText,
+        accent,
+        accentStrong,
+        onAccent: theme.onPrimary,
+      }}
+      style={card}
+    />
+  );
 
   // Personal bests: the longest run of days in a row, and the most questions in one day.
   const renderPersonalBest = () => {
@@ -517,6 +475,8 @@ export default function StatisticsScreen() {
         : null;
     // The only place mixes show as mixes; everywhere else their questions count under each operation.
     const mixedLine = `${plural(lifetime.mixedRounds, 'mixed round')} played`;
+    // Rounds with every answer right.
+    const perfectLine = plural(lifetime.perfectRounds, 'perfect round');
     return (
       <View
         style={[card, styles.bestCard]}
@@ -525,6 +485,7 @@ export default function StatisticsScreen() {
           `Personal best: longest streak, ${plural(best, 'day')}`,
           bestDay,
           `${plural(lifetime.questions, 'question')} answered in all`,
+          perfectLine,
           mixedLine,
         ]
           .filter(Boolean)
@@ -540,6 +501,7 @@ export default function StatisticsScreen() {
           <Text style={[styles.statLabel, { color: secondaryText }]}>
             {`${plural(lifetime.questions, 'question')} answered in all`}
           </Text>
+          <Text style={[styles.statLabel, { color: secondaryText }]}>{perfectLine}</Text>
           <Text style={[styles.statLabel, { color: secondaryText }]}>{mixedLine}</Text>
         </View>
       </View>
@@ -584,10 +546,11 @@ export default function StatisticsScreen() {
                   {renderProgress()}
                   {renderRangeTabs()}
                   {renderFilterChips()}
-                  {renderMissingNote()}
+                  {renderMissingNote(missingOlder, rangeInfo.phrase)}
                   {renderStats()}
                   {renderChart()}
-                  {renderStreak()}
+                  {renderMissingNote(monthMayMiss, shownMonthName)}
+                  {renderCalendar()}
                   {renderPersonalBest()}
                 </>
               )}
@@ -773,22 +736,6 @@ const styles = StyleSheet.create({
   noteText: {
     ...typography.secondary,
     flex: 1,
-  },
-  dotRow: {
-    flexDirection: 'row',
-    marginTop: 16,
-  },
-  dotColumn: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 4,
-  },
-  dot: {
-    width: DOT_SIZE,
-    height: DOT_SIZE,
-    borderRadius: DOT_SIZE / 2,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   bestCard: {
     flexDirection: 'row',

@@ -19,18 +19,21 @@ interface StreakCardProps {
   questionsToday: number;
   dailyGoal: number;
   week: WeekDay[];
+  /** Days a week from the user's plan. */
+  weeklyTarget: number;
   isDark: boolean;
   cardColor: string;
   textColor: string;
   subtleColor: string;
 }
 
-/** Streak, today's count against the goal, and this week's practised days (Mon–Sun). */
+/** Streak, today's count against the goal, this week's practised days (Mon–Sun) and the weekly target. */
 export function StreakCard({
   streak,
   questionsToday,
   dailyGoal,
   week,
+  weeklyTarget,
   isDark,
   cardColor,
   textColor,
@@ -74,6 +77,10 @@ export function StreakCard({
           </View>
         ))}
       </View>
+
+      <Text style={[styles.weekTarget, { color: subtleColor }]}>
+        {COPY.daysThisWeek(week.filter((day) => day.practiced).length, weeklyTarget)}
+      </Text>
     </View>
   );
 }
@@ -124,6 +131,10 @@ const styles = StyleSheet.create({
   dayLetter: {
     ...typography.caption,
     fontWeight: '600',
+  },
+  weekTarget: {
+    ...typography.secondary,
+    marginTop: 10,
   },
   dot: {
     width: 26,

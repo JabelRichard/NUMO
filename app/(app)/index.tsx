@@ -22,7 +22,14 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { getUserProfile } from '../../src/services/settingsService';
-import { CoachData, LoadedCoachData, loadCoachDataWithFallback } from '../../src/services/coachService';
+import {
+  COACH_LOAD_TIMEOUT_MS,
+  CoachData,
+  LoadedCoachData,
+  loadCoachDataWithFallback,
+} from '../../src/services/coachService';
+import { getTrainingGoals } from '../../src/services/profileService';
+import { DEFAULT_TRAINING_GOALS } from '../../src/types/profile';
 import {
   activityBuckets,
   CoachOperation,
@@ -49,6 +56,7 @@ import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding
 import { getInitials } from '../../src/utils/getInitials';
 import { haptics } from '../../src/utils/haptics';
 import { countDayStreak, localDayKey } from '../../src/utils/localDates';
+import { withTimeout } from '../../src/utils/withTimeout';
 
 type OperationType = CoachOperation;
 
@@ -79,6 +87,7 @@ export default function DashboardScreen() {
   const { isOffline, recheck } = useOnlineStatus(() => loadDashboardState());
   const [profile, setProfile] = useState<{ full_name?: string; avatar_url?: string }>({});
   const [loaded, setLoaded] = useState<LoadedCoachData | null>(null);
+  const [weeklyTarget, setWeeklyTarget] = useState(DEFAULT_TRAINING_GOALS.weeklyFrequencyDays);
   // Only the newest load may update the screen.
   const loadIdRef = useRef(0);
 
@@ -115,6 +124,15 @@ export default function DashboardScreen() {
         })
         .catch(() => {});
     }
+
+    // The weekly target comes from the plan in Supabase, like Profile (the phone's copy offline).
+    // An extra, so it never holds up the screen.
+    (online ? withTimeout(getTrainingGoals(userId), COACH_LOAD_TIMEOUT_MS) : getTrainingGoals())
+      .catch(() => getTrainingGoals())
+      .then((goals) => {
+        if (loadId === loadIdRef.current && goals.weeklyFrequencyDays) setWeeklyTarget(goals.weeklyFrequencyDays);
+      })
+      .catch(() => {});
 
     // Also pushes any workouts that failed to save offline.
     const next = await loadCoachDataWithFallback(userId, online);
@@ -351,6 +369,7 @@ export default function DashboardScreen() {
               questionsToday={coach.questionsToday}
               dailyGoal={dailyGoal}
               week={week}
+              weeklyTarget={weeklyTarget}
               isDark={isDark}
               cardColor={cardBg}
               textColor={textColor}

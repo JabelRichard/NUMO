@@ -18,6 +18,32 @@ export function startOfLocalWeek(now: Date = new Date()): Date {
   return start;
 }
 
+export interface MonthGridDay {
+  /** "YYYY-MM-DD". */
+  key: string;
+  /** Day of the month, 1–31. */
+  date: number;
+}
+
+/**
+ * A month as Monday-first weeks of seven; days of the next or previous month are null.
+ * `month` is 0–11; anything else rolls over like Date does (-1 is last December).
+ */
+export function monthGrid(year: number, month: number): (MonthGridDay | null)[][] {
+  const first = new Date(year, month, 1, 12);
+  const monday = startOfLocalWeek(first);
+  const weeks: (MonthGridDay | null)[][] = [];
+  for (let offset = 0; ; offset += 7) {
+    const week = Array.from({ length: 7 }, (_, i) => {
+      // midday so DST shifts never skip or repeat a day
+      const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + offset + i, 12);
+      return d.getMonth() === first.getMonth() ? { key: localDayKey(d), date: d.getDate() } : null;
+    });
+    if (week.every((d) => d === null)) return weeks;
+    weeks.push(week);
+  }
+}
+
 /**
  * Consecutive local days with at least one workout, ending today or yesterday.
  * 0 if there was no workout on either of those days.
