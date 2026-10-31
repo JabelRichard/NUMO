@@ -324,7 +324,7 @@ describe('difficulty per operation', () => {
 
     const feedback = getResultsFeedback({ plan, history, current: third, now: NOW });
     expect(feedback.levelChanges).toEqual([
-      expect.objectContaining({ operation: 'multiplication', from: 'medium', to: 'hard', text: 'Great job! × moves up to Hard next time 🎉' }),
+      expect.objectContaining({ operation: 'multiplication', from: 'medium', to: 'hard', text: 'Great job! × moves up to Hard next time' }),
     ]);
     expect(feedback.next.levels.multiplication).toBe('hard');
     expect(feedback.next.levels.division).toBe('medium');
@@ -458,7 +458,7 @@ describe('Home messages', () => {
     expect(plan.goalDoneToday).toBe(true);
     expect(plan.message).toMatchObject({
       kind: 'goal_done',
-      heading: 'Goal done for today! 🎉',
+      heading: 'Goal done for today!',
       subheading: 'Come back tomorrow, or do a bonus round.',
       button: 'Bonus round',
     });

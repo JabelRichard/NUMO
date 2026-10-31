@@ -66,7 +66,7 @@ export async function scheduleDailyReminder(timeString: string): Promise<boolean
   if (modifier === 'AM' && hour === 12) hour = 0;
 
   const content: any = {
-    title: 'Time for your daily drill 🧠',
+    title: 'Time for your daily drill',
     body: 'Keep your momentum going. Complete a quick 10-question workout today!',
     sound: true,
   };

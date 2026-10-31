@@ -279,7 +279,7 @@ describe('progress sentence', () => {
     expect(state.levels.multiplication).toBe('medium');
     const highlight = progressHighlight(state, NOW);
     expect(highlight).toEqual({ kind: 'level_up', operation: 'multiplication', level: 'medium' });
-    expect(progressText(highlight).headline).toBe('You moved up to Medium on × Multiplying! 🎉');
+    expect(progressText(highlight).headline).toBe('You moved up to Medium on × Multiplying!');
   });
 
   it('compares the last 5 rounds with the 5 before, at the same level only', () => {

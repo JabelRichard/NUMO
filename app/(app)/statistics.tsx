@@ -23,6 +23,7 @@ import { useToday } from '@/src/hooks/useToday';
 import { useResponsiveContentWidth } from '@/src/hooks/useResponsiveContentWidth';
 import { useResponsiveTopPadding } from '@/src/hooks/useResponsiveTopPadding';
 import { OfflineNote } from '@/src/components/OfflineNote';
+import { PopIcon } from '@/src/components/PopIcon';
 import {
   COACH_LOAD_TIMEOUT_MS,
   LoadedCoachData,
@@ -247,9 +248,12 @@ export default function StatisticsScreen() {
     if (!summary) return null;
     const { headline, detail } = progressText(summary.highlight);
     return (
-      <View style={styles.progress} accessible>
-        <Text style={[styles.progressHeadline, { color: primaryText }]}>{headline}</Text>
-        {detail && <Text style={[styles.progressDetail, { color: secondaryText }]}>{detail}</Text>}
+      <View style={styles.progressRow} accessible>
+        {summary.highlight.kind === 'level_up' && <PopIcon name="trending-up" size={44} delay={300} />}
+        <View style={styles.progress}>
+          <Text style={[styles.progressHeadline, { color: primaryText }]}>{headline}</Text>
+          {detail && <Text style={[styles.progressDetail, { color: secondaryText }]}>{detail}</Text>}
+        </View>
       </View>
     );
   };
@@ -569,7 +573,7 @@ export default function StatisticsScreen() {
             <ActivityIndicator style={styles.loading} size="large" color={accentStrong} />
           ) : (
             <View style={styles.sections}>
-              <OfflineNote from={loaded.from} isOffline={isOffline} />
+              <OfflineNote from={loaded.from} isOffline={isOffline} pendingSync={loaded.data.pendingSync} />
 
               {historyUnknown ? (
                 <Text style={[styles.progressDetail, { color: secondaryText }]}>
@@ -806,7 +810,13 @@ const styles = StyleSheet.create({
     ...typography.button,
     marginTop: 4,
   },
+  progressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
   progress: {
+    flex: 1,
     gap: 4,
   },
   progressHeadline: {

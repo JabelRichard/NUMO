@@ -5,6 +5,7 @@ import { FONT_DEFINITIONS } from '../src/constants/typography';
 import { AuthProvider, useAuth } from '../src/context/AuthContext';
 import { ThemeProvider, useTheme } from '../src/context/ThemeContext';
 import { useProtectedRoute } from '../src/hooks/useProtectedRoute';
+import { useRecoveryLinks } from '../src/hooks/useRecoveryLinks';
 import { AppSplashScreen } from '../src/components/AppSplashScreen';
 
 // Import math engine test runner
@@ -45,9 +46,13 @@ function RootLayoutNav() {
   // Run protected route evaluation
   useProtectedRoute(isSplashDone);
 
+  const showSplash = (isLoading || !minSplashDone || !fontsReady) && !forceDismiss;
+  // Password-reset links; handled once the Stack below is mounted.
+  useRecoveryLinks(!showSplash && !isLoading);
+
   // CRITICAL FIX: Return ONLY the splash screen when loading.
   // This prevents the screen from splitting 50/50 with the Stack!
-  if ((isLoading || !minSplashDone || !fontsReady) && !forceDismiss) {
+  if (showSplash) {
     return <AppSplashScreen />;
   }
 

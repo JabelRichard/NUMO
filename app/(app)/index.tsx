@@ -34,6 +34,7 @@ import {
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography } from '@/src/constants/typography';
 import { OfflineNote } from '../../src/components/OfflineNote';
+import { PopIcon } from '../../src/components/PopIcon';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
 import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
@@ -367,7 +368,14 @@ export default function DashboardScreen() {
         </Animated.View>
       ) : (
         <Animated.View style={[styles.mainContainer, { maxWidth: contentWidth }, containerAnimatedStyle]}>
-          {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
+          {loaded && (
+            <OfflineNote
+              from={loaded.from}
+              isOffline={isOffline}
+              pendingSync={loaded.data.pendingSync}
+              style={styles.offlineNote}
+            />
+          )}
 
           {/* Upper Text Stage */}
           <View style={styles.upperStage}>
@@ -393,6 +401,10 @@ export default function DashboardScreen() {
               </View>
             )}
 
+            {coach.message.kind === 'goal_done' && !selectedOverrideOp && (
+              <PopIcon name="checkmark-done" size={52} delay={300} style={styles.goalDoneIcon} />
+            )}
+
             <Text style={[styles.clarityHeading, { color: textColor }]}>
               {headingText}
             </Text>
@@ -405,7 +417,7 @@ export default function DashboardScreen() {
           {/* Center Stage: Interactive Operation Bubbles */}
           <View style={styles.centerStageWrapper}>
             <View style={styles.circlesCluster}>
-              
+
               {/* Top Row: Interactive Outer Bubbles */}
               <View style={styles.circlesRow}>
                 <TouchableOpacity
@@ -586,6 +598,9 @@ const styles = StyleSheet.create({
   },
   tagBadgeText: {
     ...typography.caption,
+  },
+  goalDoneIcon: {
+    marginBottom: 14,
   },
   clarityHeading: {
     ...typography.display,

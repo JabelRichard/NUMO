@@ -195,7 +195,7 @@ describe('everything mastered', () => {
 
   it('celebrates once and asks nothing', () => {
     const feedback = getResultsFeedback({ plan, history, current, now: NOW });
-    expect(feedback.allMastered).toBe("You've mastered everything! 🏆 Keep mixing to stay sharp.");
+    expect(feedback.allMastered).toBe("You've mastered everything! Keep mixing to stay sharp.");
     expect(feedback.graduation).toBeNull();
     expect(feedback.levelSuggestion).toBeNull();
 
@@ -209,7 +209,7 @@ describe('everything mastered', () => {
     const gettingThere = { ...plan, comfortLevel: 'getting_there' as const };
     const climb = ops.flatMap((op, i) => [12, 11, 10].map((d) => round(op, 95, 'medium', ago(d, i + 1))));
     const feedback = getResultsFeedback({ plan: gettingThere, history: [...climb, ...history], current, now: NOW });
-    expect(feedback.allMastered).toBe("You've mastered everything! 🏆 Try a higher level, or keep mixing.");
+    expect(feedback.allMastered).toBe("You've mastered everything! Try a higher level, or keep mixing.");
     expect(feedback.levelSuggestion?.level).toBe('confident');
   });
 });

@@ -11,13 +11,46 @@ import {
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
+import { supabase } from '@/src/config/supabase';
 import { PALETTE } from '@/src/constants/palette';
 import { typography, inputTypography } from '@/src/constants/typography';
 
+/** Supabase errors in plain words. */
+function resetErrorText(error: { code?: string; message?: string }): string {
+  switch (error.code) {
+    case 'otp_expired':
+      return "That code has expired or isn't right. Check the newest email, or send a new code.";
+    case 'same_password':
+      return 'Choose a password that is different from your old one.';
+    case 'weak_password':
+      return error.message || 'Choose a stronger password.';
+    case 'over_email_send_rate_limit':
+      return 'Too many emails sent. Please wait a minute and try again.';
+    default:
+      return error.message || 'Something went wrong. Please try again.';
+  }
+}
+
+/**
+ * Reset password, in steps:
+ *  1. Code: the 6-digit code from the email (arriving from "Forgot password").
+ *     A valid code signs the user in and starts recovery.
+ *  2. New password: shown once recovery has started, by a code or a reset link.
+ *     The user stays here (useProtectedRoute) until the new password is saved,
+ *     then lands in the app, signed in. Cancel signs out instead.
+ */
 export default function ResetPasswordScreen() {
   const router = useRouter();
-  const { email } = useLocalSearchParams<{ email: string }>();
-  const { verifyPasswordResetOtp, updateUserPassword, resetPasswordForEmail } = useAuth();
+  const { email: emailParam } = useLocalSearchParams<{ email?: string }>();
+  const {
+    session,
+    isPasswordRecovery,
+    verifyPasswordResetOtp,
+    updateUserPassword,
+    resetPasswordForEmail,
+    finishPasswordRecovery,
+    signOut,
+  } = useAuth();
   const { theme } = useTheme();
 
   const [token, setToken] = useState('');
@@ -26,7 +59,18 @@ export default function ResetPasswordScreen() {
   const [loading, setLoading] = useState(false);
   const [resending, setResending] = useState(false);
   const [countdown, setCountdown] = useState(60);
-  const [errorMsg, setErrorMsg] = useState('');
+
+  const email = session?.user?.email ?? emailParam ?? '';
+  const step: 'opening' | 'password' | 'code' = isPasswordRecovery
+    ? session
+      ? 'password'
+      : 'opening'
+    : 'code';
+
+  // An error belongs to the step it happened on, so it's gone when the step changes.
+  const [error, setError] = useState<{ step: typeof step; text: string } | null>(null);
+  const errorMsg = error?.step === step ? error.text : '';
+  const setErrorMsg = (text: string) => setError(text ? { step, text } : null);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout>;
@@ -36,11 +80,26 @@ export default function ResetPasswordScreen() {
     return () => clearTimeout(timer);
   }, [countdown]);
 
-  const handleResetPassword = async () => {
-    if (!token || token.length < 6) {
-      setErrorMsg('Please enter the 6-digit reset code.');
+  // Step 1: a valid code signs in and starts recovery; the screen moves to step 2.
+  const handleVerifyCode = async () => {
+    if (token.trim().length < 6) {
+      setErrorMsg('Please enter the 6-digit code from the email.');
       return;
     }
+    setLoading(true);
+    setErrorMsg('');
+    try {
+      const { error } = await verifyPasswordResetOtp(email, token.trim());
+      if (error) setErrorMsg(resetErrorText(error));
+    } catch (err: any) {
+      setErrorMsg(resetErrorText(err ?? {}));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Step 2: save the new password. Only then does the app open.
+  const handleSavePassword = async () => {
     if (newPassword.length < 6) {
       setErrorMsg('New password must be at least 6 characters.');
       return;
@@ -49,118 +108,201 @@ export default function ResetPasswordScreen() {
       setErrorMsg('Passwords do not match.');
       return;
     }
-
     setLoading(true);
     setErrorMsg('');
-
     try {
-      // 1. Verify 6-digit recovery OTP
-      const { error: otpError } = await verifyPasswordResetOtp(email ?? '', token.trim());
-      if (otpError) throw otpError;
+      const { error } = await updateUserPassword(newPassword);
+      if (error) {
+        setErrorMsg(resetErrorText(error));
+        return;
+      }
+      // Whoever knew the old password may still be signed in elsewhere: sign out
+      // every other device. This phone stays signed in.
+      supabase.auth.signOut({ scope: 'others' }).catch(() => {});
 
-      // 2. Set new password
-      const { error: updateError } = await updateUserPassword(newPassword);
-      if (updateError) throw updateError;
-
-      Alert.alert('Success', 'Password updated successfully! Please log in.', [
-        { text: 'Log In', onPress: () => router.replace('/(auth)/login') },
-      ]);
+      finishPasswordRecovery();
+      router.replace('/(app)');
+      Alert.alert('Password updated', "You're signed in with your new password. Other devices were signed out.");
     } catch (err: any) {
-      setErrorMsg(err.message || 'Failed to reset password.');
+      setErrorMsg(resetErrorText(err ?? {}));
     } finally {
       setLoading(false);
     }
   };
 
+  // Leaving without a new password: sign out of this phone (the reset signed them in).
+  const handleCancel = async () => {
+    try {
+      await signOut({ scope: 'local' });
+    } finally {
+      router.replace('/(auth)/login');
+    }
+  };
+
   const handleResend = async () => {
-    if (countdown > 0 || resending) return;
+    if (countdown > 0 || resending || !email) return;
     setResending(true);
     setErrorMsg('');
-
     try {
-      const { error } = await resetPasswordForEmail(email ?? '');
+      const { error } = await resetPasswordForEmail(email);
       if (error) {
-        setErrorMsg(error.message || 'Failed to resend reset code.');
+        setErrorMsg(resetErrorText(error));
       } else {
         setCountdown(60);
-        Alert.alert('Code Sent', 'A new 6-digit code has been sent to your email.');
+        Alert.alert('Email sent', `We sent a new reset code to ${email}.`);
       }
     } catch (err: any) {
-      setErrorMsg(err.message || 'Could not resend code.');
+      setErrorMsg(resetErrorText(err ?? {}));
     } finally {
       setResending(false);
     }
   };
 
-  return (
-    <View style={[styles.container, { backgroundColor: theme.background }]}>
-      <Text style={[styles.title, { color: theme.text }]}>Set New Password</Text>
-      <Text style={[styles.subtitle, { color: theme.subtext }]}>
-        Enter the 6-digit code sent to {email} and your new password.
-      </Text>
+  const inputStyle = [styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }];
+  const errorText = errorMsg ? (
+    <Text style={styles.errorText} accessibilityRole="alert">
+      {errorMsg}
+    </Text>
+  ) : null;
 
-      {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
+  if (step === 'opening') {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <ActivityIndicator color={theme.primaryText} />
+        <Text style={[styles.subtitle, { color: theme.subtext, marginTop: 16 }]}>Opening your reset link…</Text>
+      </View>
+    );
+  }
 
-      <TextInput
-        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border, letterSpacing: 6 }]}
-        placeholder="123456"
-        placeholderTextColor={theme.subtext}
-        keyboardType="number-pad"
-        maxLength={6}
-        value={token}
-        onChangeText={(val) => {
-          setToken(val);
-          if (errorMsg) setErrorMsg('');
-        }}
-        autoFocus
-      />
+  if (step === 'password') {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.background }]}>
+        <Text style={[styles.title, { color: theme.text }]} accessibilityRole="header">
+          Set a new password
+        </Text>
+        <Text style={[styles.subtitle, { color: theme.subtext }]}>
+          {email ? `Choose a new password for ${email}.` : 'Choose a new password.'}
+        </Text>
 
-      <TextInput
-        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
-        placeholder="New password"
-        placeholderTextColor={theme.subtext}
-        secureTextEntry
-        value={newPassword}
-        onChangeText={(val) => {
-          setNewPassword(val);
-          if (errorMsg) setErrorMsg('');
-        }}
-      />
+        {errorText}
 
-      <TextInput
-        style={[styles.input, { backgroundColor: theme.card, color: theme.text, borderColor: theme.border }]}
-        placeholder="Confirm new password"
-        placeholderTextColor={theme.subtext}
-        secureTextEntry
-        value={confirmPassword}
-        onChangeText={(val) => {
-          setConfirmPassword(val);
-          if (errorMsg) setErrorMsg('');
-        }}
-      />
+        <TextInput
+          style={inputStyle}
+          placeholder="New password (at least 6 characters)"
+          placeholderTextColor={theme.subtext}
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="new-password"
+          textContentType="newPassword"
+          value={newPassword}
+          onChangeText={(val) => {
+            setNewPassword(val);
+            if (errorMsg) setErrorMsg('');
+          }}
+          autoFocus
+        />
+        <TextInput
+          style={inputStyle}
+          placeholder="Confirm new password"
+          placeholderTextColor={theme.subtext}
+          secureTextEntry
+          autoCapitalize="none"
+          autoComplete="new-password"
+          textContentType="newPassword"
+          value={confirmPassword}
+          onChangeText={(val) => {
+            setConfirmPassword(val);
+            if (errorMsg) setErrorMsg('');
+          }}
+          onSubmitEditing={handleSavePassword}
+        />
 
-      <TouchableOpacity
-        style={[styles.button, { backgroundColor: theme.primary }, loading && styles.buttonDisabled]}
-        onPress={handleResetPassword}
-        disabled={loading}
-      >
-        {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Update Password</Text>}
-      </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: theme.primary }, loading && styles.buttonDisabled]}
+          onPress={handleSavePassword}
+          disabled={loading}
+          accessibilityRole="button"
+        >
+          {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Save new password</Text>}
+        </TouchableOpacity>
 
-      <View style={styles.resendContainer}>
-        <Text style={[styles.resendText, { color: theme.subtext }]}>Didn't receive the code? </Text>
-        <TouchableOpacity onPress={handleResend} disabled={countdown > 0 || resending}>
-          <Text
-            style={[
-              styles.resendLink,
-              { color: theme.primaryText },
-              (countdown > 0 || resending) && styles.resendDisabled,
-            ]}
-          >
-            {resending ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Code'}
-          </Text>
+        <TouchableOpacity onPress={handleCancel} disabled={loading} style={styles.linkButton} accessibilityRole="button">
+          <Text style={[styles.linkText, { color: theme.subtext }]}>Cancel and sign out</Text>
         </TouchableOpacity>
       </View>
+    );
+  }
+
+  // Step 1: the code. Without an email (e.g. opened directly), start from "Forgot password".
+  return (
+    <View style={[styles.container, { backgroundColor: theme.background }]}>
+      <Text style={[styles.title, { color: theme.text }]} accessibilityRole="header">
+        Reset your password
+      </Text>
+      <Text style={[styles.subtitle, { color: theme.subtext }]}>
+        {email
+          ? `Enter the 6-digit code we sent to ${email}, or tap the link in that email.`
+          : 'Request a reset email first, then come back here.'}
+      </Text>
+
+      {errorText}
+
+      {email ? (
+        <>
+          <TextInput
+            style={[inputStyle, { letterSpacing: 6 }]}
+            placeholder="123456"
+            placeholderTextColor={theme.subtext}
+            keyboardType="number-pad"
+            autoComplete="one-time-code"
+            textContentType="oneTimeCode"
+            maxLength={6}
+            value={token}
+            onChangeText={(val) => {
+              setToken(val);
+              if (errorMsg) setErrorMsg('');
+            }}
+            onSubmitEditing={handleVerifyCode}
+            autoFocus
+          />
+
+          <TouchableOpacity
+            style={[styles.button, { backgroundColor: theme.primary }, loading && styles.buttonDisabled]}
+            onPress={handleVerifyCode}
+            disabled={loading}
+            accessibilityRole="button"
+          >
+            {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Continue</Text>}
+          </TouchableOpacity>
+
+          <View style={styles.resendContainer}>
+            <Text style={[styles.resendText, { color: theme.subtext }]}>Didn&apos;t get it? </Text>
+            <TouchableOpacity onPress={handleResend} disabled={countdown > 0 || resending} accessibilityRole="button">
+              <Text
+                style={[
+                  styles.resendLink,
+                  { color: theme.primaryText },
+                  (countdown > 0 || resending) && styles.resendDisabled,
+                ]}
+              >
+                {resending ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Send a new code'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </>
+      ) : (
+        <TouchableOpacity
+          style={[styles.button, { backgroundColor: theme.primary }]}
+          onPress={() => router.replace('/(auth)/forgot-password')}
+          accessibilityRole="button"
+        >
+          <Text style={styles.buttonText}>Get a reset email</Text>
+        </TouchableOpacity>
+      )}
+
+      <TouchableOpacity onPress={() => router.replace('/(auth)/login')} style={styles.linkButton} accessibilityRole="button">
+        <Text style={[styles.linkText, { color: theme.subtext }]}>Back to Login</Text>
+      </TouchableOpacity>
     </View>
   );
 }
@@ -212,6 +354,8 @@ const styles = StyleSheet.create({
     ...typography.secondary,
     color: '#D93838',
     marginBottom: 12,
+    textAlign: 'center',
+    maxWidth: 320,
   },
   resendContainer: {
     flexDirection: 'row',
@@ -227,5 +371,11 @@ const styles = StyleSheet.create({
   },
   resendDisabled: {
     opacity: 0.5,
+  },
+  linkButton: {
+    marginTop: 20,
+  },
+  linkText: {
+    ...typography.button,
   },
 });

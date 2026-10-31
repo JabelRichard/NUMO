@@ -26,9 +26,9 @@ export interface ResultsFeedback {
   levelSuggestion: { level: ComfortLevel; text: string } | null;
   /** "Want to add × Multiplying to your plan?" after + Adding is mastered. Yes adds it; Not now waits a week. */
   graduation: { mastered: CoreOperation; operation: CoreOperation; text: string } | null;
-  /** Operations mastered by this workout ("You've mastered + Adding! 🎉"). */
+  /** Operations mastered by this workout ("You've mastered + Adding!"). */
   newlyMastered: CoreOperation[];
-  /** "You've mastered everything! 🏆", once, on the workout that finished the set. */
+  /** "You've mastered everything!", once, on the workout that finished the set. */
   allMastered: string | null;
   /** True only on the workout that reached today's goal (not on bonus rounds after it). */
   goalJustDone: boolean;

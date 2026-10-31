@@ -1,7 +1,7 @@
 import React from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, Platform } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
+import { haptics } from '@/src/utils/haptics';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography, MAX_FONT_SCALE } from '@/src/constants/typography';
 
@@ -25,18 +25,7 @@ export const CustomNumericKeypad: React.FC<KeypadProps> = ({
   const digits = ['1', '2', '3', '4', '5', '6', '7', '8', '9'];
 
   const triggerHaptic = (type: 'light' | 'medium' | 'selection') => {
-    if (Platform.OS === 'web') return;
-    try {
-      if (type === 'light') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      } else if (type === 'medium') {
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-      } else {
-        Haptics.selectionAsync();
-      }
-    } catch {
-      // Graceful fallback if haptics unavailable
-    }
+    void haptics[type]();
   };
 
   const handleDigitPress = (num: string) => {

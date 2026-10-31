@@ -114,7 +114,7 @@ export const COPY = {
   quickCheckSubheading: (length: string) => `You mastered this one. Let's make sure it still feels easy. ${length}`,
   mixHeading: 'Mix it up',
   mixSubheading: (length: string) => `A bit of everything to keep it all fresh. ${length}`,
-  goalDoneHeading: 'Goal done for today! 🎉',
+  goalDoneHeading: 'Goal done for today!',
   goalDoneSubheading: 'Come back tomorrow, or do a bonus round.',
   /** History couldn't be loaded (offline, nothing saved on this phone yet). */
   practiceOnlyHeading: 'Pick something to practice',
@@ -136,25 +136,25 @@ export const COPY = {
   trickiest: (op: CoreOperation) => `Nice start! ${operationName(op)} was the trickiest.`,
   practiceNext: "We'll practice that next.",
   levelUp: (op: CoreOperation, to: DifficultyLevel) =>
-    `Great job! ${operationSymbol(op)} moves up to ${LEVEL_NAMES[to]} next time 🎉`,
+    `Great job! ${operationSymbol(op)} moves up to ${LEVEL_NAMES[to]} next time`,
   levelDown: (op: CoreOperation, to: DifficultyLevel) =>
     `Let's practice ${operationSymbol(op)} on ${LEVEL_NAMES[to]} for a bit.`,
   focusQuestion: (op: CoreOperation) => `Want to focus on ${operationName(op)}?`,
   levelSuggestion: (level: ComfortLevel) => `You're doing great! Want to change your level to ${comfortName(level)}?`,
   /** Celebration on the workout that mastered it. */
-  mastered: (op: CoreOperation) => `You've mastered ${operationName(op)}! 🎉`,
+  mastered: (op: CoreOperation) => `You've mastered ${operationName(op)}!`,
   /** Calm reminder above the graduation question when it was mastered on an earlier workout. */
   masteredBefore: (op: CoreOperation) => `You've mastered ${operationName(op)}.`,
   graduation: (next: CoreOperation) => `Want to add ${operationName(next)} to your plan?`,
   allMastered: (isConfident: boolean) =>
     isConfident
-      ? "You've mastered everything! 🏆 Keep mixing to stay sharp."
-      : "You've mastered everything! 🏆 Try a higher level, or keep mixing.",
+      ? "You've mastered everything! Keep mixing to stay sharp."
+      : "You've mastered everything! Try a higher level, or keep mixing.",
 
   /** Statistics. Progress only ever compares rounds on one operation at one level. */
   warmupLabel: 'Warm-up',
   progressLevelUp: (op: CoreOperation, level: DifficultyLevel) =>
-    `You moved up to ${LEVEL_NAMES[level]} on ${operationName(op)}! 🎉`,
+    `You moved up to ${LEVEL_NAMES[level]} on ${operationName(op)}!`,
   progressLevelUpDetail: 'The questions are harder now, so taking a bit longer is normal.',
   progressFaster: (op: CoreOperation, level: DifficultyLevel) =>
     `You're getting faster at ${operationName(op)} on ${LEVEL_NAMES[level]}.`,

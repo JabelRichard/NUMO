@@ -6,9 +6,8 @@ import {
   TouchableOpacity,
   StyleSheet,
   ActivityIndicator,
-  Alert,
 } from 'react-native';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '@/src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
@@ -17,6 +16,8 @@ import { typography, inputTypography } from '@/src/constants/typography';
 
 export default function ForgotPasswordScreen() {
   const router = useRouter();
+  // Set when a reset link didn't work (see useRecoveryLinks).
+  const { notice } = useLocalSearchParams<{ notice?: 'expired' | 'invalid' }>();
   const { resetPasswordForEmail } = useAuth();
   const { theme } = useTheme();
 
@@ -56,8 +57,22 @@ export default function ForgotPasswordScreen() {
     <View style={[styles.container, { backgroundColor: theme.background }]}>
       <Text style={[styles.title, { color: theme.text }]}>Reset Password</Text>
       <Text style={[styles.subtitle, { color: theme.subtext }]}>
-        Enter your email address and we'll send you a 6-digit code to reset your password.
+        Enter your email address and we&apos;ll email you a code or link to reset your password.
       </Text>
+
+      {notice ? (
+        <View
+          style={[styles.notice, { backgroundColor: theme.card, borderColor: theme.border }]}
+          accessibilityRole="alert"
+        >
+          <Ionicons name="time-outline" size={18} color={theme.subtext} />
+          <Text style={[styles.noticeText, { color: theme.text }]}>
+            {notice === 'expired'
+              ? 'That reset link has expired or was already used. Enter your email to get a new one.'
+              : "That reset link didn't work. Enter your email to get a new one."}
+          </Text>
+        </View>
+      ) : null}
 
       {errorMsg ? <Text style={styles.errorText}>{errorMsg}</Text> : null}
 
@@ -86,7 +101,11 @@ export default function ForgotPasswordScreen() {
         {loading ? <ActivityIndicator color={theme.onPrimary} /> : <Text style={styles.buttonText}>Send Code</Text>}
       </TouchableOpacity>
 
-      <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
+      <TouchableOpacity
+        // Opened from a reset link, there is no Login screen behind this one.
+        onPress={() => (router.canGoBack() ? router.back() : router.replace('/(auth)/login'))}
+        style={styles.backButton}
+      >
         <Text style={[styles.backText, { color: theme.subtext }]}>Back to Login</Text>
       </TouchableOpacity>
     </View>
@@ -153,6 +172,21 @@ const styles = StyleSheet.create({
   },
   backButton: {
     marginTop: 20,
+  },
+  notice: {
+    width: '100%',
+    maxWidth: 340,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 14,
+    marginBottom: 16,
+  },
+  noticeText: {
+    ...typography.secondary,
+    flex: 1,
   },
   backText: {
     ...typography.button,

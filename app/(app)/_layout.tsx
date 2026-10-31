@@ -5,10 +5,15 @@ import Ionicons from '@expo/vector-icons/Ionicons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography } from '@/src/constants/typography';
+import { useAuth } from '@/src/context/AuthContext';
+import { useWorkoutAutoSync } from '@/src/hooks/useWorkoutAutoSync';
 
 export default function AppLayout() {
   const insets = useSafeAreaInsets();
   const { theme } = useTheme();
+  const { user } = useAuth();
+  // Workouts done offline upload when the connection comes back, on any screen.
+  useWorkoutAutoSync(user?.id);
 
   const isDark = theme.isDark;
 

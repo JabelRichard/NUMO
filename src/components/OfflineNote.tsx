@@ -6,10 +6,23 @@ import { PALETTE } from '@/src/constants/palette';
 import { typography } from '@/src/constants/typography';
 import type { CoachDataSource } from '../services/coachService';
 
-/** The note for data that isn't live, or null when it is. */
-export function offlineNoteText(from: CoachDataSource, isOffline: boolean): string | null {
-  if (from === 'live') return null;
-  if (!isOffline) return "Couldn't load your latest progress. Showing what's saved on this phone.";
+/** "1 workout is waiting to sync.", "3 workouts are waiting to sync." */
+export function pendingSyncText(count: number): string {
+  return count === 1 ? '1 workout is waiting to sync.' : `${count} workouts are waiting to sync.`;
+}
+
+/**
+ * The note for data that isn't live, or for workouts still waiting to upload.
+ * Null when everything is live and synced.
+ */
+export function offlineNoteText(from: CoachDataSource, isOffline: boolean, pendingSync = 0): string | null {
+  const pending = pendingSync > 0 ? pendingSyncText(pendingSync) : null;
+  if (from === 'live') return pending && `${pending} It will upload automatically.`;
+  if (!isOffline) {
+    const base = "Couldn't load your latest progress. Showing what's saved on this phone.";
+    return pending ? `${base} ${pending}` : base;
+  }
+  if (pending) return `You're offline. ${pending} It will upload when you're back online.`;
   return from === 'cache'
     ? "You're offline. Workouts still save and sync later."
     : "You're offline. Showing the levels from your plan.";
@@ -18,13 +31,15 @@ export function offlineNoteText(from: CoachDataSource, isOffline: boolean): stri
 interface OfflineNoteProps {
   from: CoachDataSource;
   isOffline: boolean;
+  /** Workouts saved on this phone that haven't uploaded yet. */
+  pendingSync?: number;
   style?: StyleProp<ViewStyle>;
 }
 
 /** Small calm note above the content; the screen stays usable. */
-export function OfflineNote({ from, isOffline, style }: OfflineNoteProps) {
+export function OfflineNote({ from, isOffline, pendingSync = 0, style }: OfflineNoteProps) {
   const { theme } = useTheme();
-  const text = offlineNoteText(from, isOffline);
+  const text = offlineNoteText(from, isOffline, pendingSync);
   if (!text) return null;
 
   return (

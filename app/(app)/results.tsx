@@ -5,7 +5,6 @@ import {
   StyleSheet,
   StatusBar,
   TouchableOpacity,
-  Platform,
   Modal,
   ScrollView,
   ActivityIndicator,
@@ -28,7 +27,7 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
-import * as Haptics from 'expo-haptics';
+import { haptics } from '../../src/utils/haptics';
 import { QuestionAttemptResult } from '../../src/lib/math/types';
 import { flushWorkoutOutbox, getQueuedWorkoutCount } from '../../src/services/workoutService';
 import {
@@ -68,6 +67,9 @@ import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '../../src/constants/palette';
 import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
 import { withTimeout } from '../../src/utils/withTimeout';
+import NetInfo from '@react-native-community/netinfo';
+import { isOfflineState } from '../../src/hooks/useOnlineStatus';
+import { PopIcon } from '../../src/components/PopIcon';
 import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
 import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 
@@ -124,9 +126,7 @@ function AnimatedRollingNumber({
       if (start >= target) {
         setDisplayVal(target);
         clearInterval(timer);
-        if (Platform.OS !== 'web') {
-          Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        }
+        void haptics.light();
       } else {
         setDisplayVal(Math.floor(start));
       }
@@ -202,9 +202,7 @@ function CelebrationCard({
 }) {
   return (
     <View style={[styles.celebrationCard, { backgroundColor }]} accessible accessibilityLabel={text}>
-      <View style={styles.celebrationIconDisc}>
-        <Ionicons name={icon} size={30} color={PALETTE.onPrimary} />
-      </View>
+      <PopIcon name={icon} size={56} delay={250} />
       <Text style={[styles.celebrationText, { color: textColor }]}>{text}</Text>
     </View>
   );
@@ -435,6 +433,8 @@ export default function ResultsScreen() {
 
     let data: CoachData | null = null;
     try {
+      // Known offline: go straight to the copy on the phone instead of waiting out the timeout.
+      if (isOfflineState(await NetInfo.fetch())) throw new Error('Offline');
       data = await withTimeout(loadCoachData(userId), COACH_LOAD_TIMEOUT_MS);
     } catch {
       // Offline: the copy saved on this phone plus anything queued here.
@@ -543,9 +543,7 @@ export default function ResultsScreen() {
     const key = `${roundKey}:${currentStep}`;
     if (celebratedRef.current.has(key)) return;
     celebratedRef.current.add(key);
-    if (Platform.OS !== 'web') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
+    void haptics.success();
   }, [hasCelebration, roundKey, currentStep]);
 
   // With no history to plan from, offer the same round again, never a warm-up.
@@ -572,9 +570,7 @@ export default function ResultsScreen() {
     if (isAnimatingRef.current || currentStep >= TOTAL_STEPS) return;
     isAnimatingRef.current = true;
 
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    }
+    void haptics.medium();
     stepOpacity.value = withTiming(0, { duration: 150 }, () => {
       runOnJS(handleNextStep)();
     });
@@ -582,9 +578,7 @@ export default function ResultsScreen() {
 
   const handleStartNextWorkout = () => {
     if (!nextWorkout) return;
-    if (Platform.OS !== 'web') {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
+    void haptics.success();
 
     const targetPayload = {
       ...toWorkoutParams(nextWorkout),
@@ -660,9 +654,7 @@ export default function ResultsScreen() {
   };
 
   const handleGoHome = () => {
-    if (Platform.OS !== 'web') {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    }
+    void haptics.light();
     router.replace('/(app)');
   };
 
@@ -861,6 +853,18 @@ export default function ResultsScreen() {
                       {isRetryingSync ? 'Retrying…' : 'Retry'}
                     </Text>
                   </TouchableOpacity>
+                </View>
+              )}
+
+              {saveStatus === 'failed' && (
+                <View
+                  style={[styles.syncNotice, { backgroundColor: cardBg, borderColor: borderSubtle }]}
+                  accessibilityRole="alert"
+                >
+                  <Ionicons name="alert-circle-outline" size={18} color={subtextColor} />
+                  <Text style={[styles.syncNoticeText, { color: subtextColor }]}>
+                    This workout couldn't be saved, so it won't count toward your progress.
+                  </Text>
                 </View>
               )}
             </View>
@@ -1225,14 +1229,6 @@ const styles = StyleSheet.create({
     gap: 14,
     padding: 16,
     borderRadius: 20,
-  },
-  celebrationIconDisc: {
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: PALETTE.primary,
   },
   celebrationText: {
     ...typography.body,

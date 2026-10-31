@@ -6,6 +6,7 @@ import { useTheme } from '@/src/context/ThemeContext';
 import { PALETTE } from '@/src/constants/palette';
 import { typography } from '@/src/constants/typography';
 import { CoachPlan, toWorkoutParams, WorkoutRequest } from '../lib/coach';
+import { PopIcon } from './PopIcon';
 
 /** Opens the workout screen for a coach request, fresh. Practice and Statistics both start here. */
 export function useStartWorkout() {
@@ -21,7 +22,7 @@ export function useStartWorkout() {
     });
 }
 
-/** "Mix it up" and "Goal done for today! 🎉" use the heading; other picks show "× Multiplying · Medium". */
+/** "Mix it up" and "Goal done for today!" use the heading; other picks show "× Multiplying · Medium". */
 export const todaysPickTitle = (coach: CoachPlan) =>
   coach.message.kind === 'goal_done' || coach.message.kind === 'mix' ? coach.message.heading : coach.focusLabel;
 
@@ -54,9 +55,15 @@ export function TodaysPickCard({ coach, style }: TodaysPickCardProps) {
       ]}
     >
       <Text style={[styles.eyebrow, { color: theme.primaryText }]}>Today's pick</Text>
-      <Text style={[styles.title, { color: isDark ? PALETTE.backgroundLight : PALETTE.dark }]} accessibilityRole="header">
-        {title}
-      </Text>
+      <View style={styles.titleLine}>
+        {coach.message.kind === 'goal_done' && <PopIcon name="checkmark-done" size={30} delay={200} />}
+        <Text
+          style={[styles.title, { color: isDark ? PALETTE.backgroundLight : PALETTE.dark }]}
+          accessibilityRole="header"
+        >
+          {title}
+        </Text>
+      </View>
       <Text style={[styles.line, { color: theme.subtext }]}>{coach.message.subheading}</Text>
       <TouchableOpacity
         style={[styles.button, { backgroundColor: theme.primary }]}
@@ -88,9 +95,15 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     marginBottom: 4,
   },
+  titleLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   title: {
     ...typography.sectionHeading,
     letterSpacing: -0.4,
+    flexShrink: 1,
     marginBottom: 4,
   },
   line: {

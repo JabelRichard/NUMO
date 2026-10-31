@@ -59,7 +59,7 @@ const PHONE_WIDE_PERSONAL_KEYS = [
   '@numo_reminders_enabled',
   '@numo_reminder_time',
 ];
-const DEVICE_PREFERENCE_KEYS = ['user_theme', '@numo_sound_enabled', '@numo_haptics_enabled'];
+const DEVICE_PREFERENCE_KEYS = ['user_theme', '@numo_haptics_enabled'];
 
 const queuedWorkout = {
   queueId: 'q1',

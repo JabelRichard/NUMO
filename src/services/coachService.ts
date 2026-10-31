@@ -36,6 +36,20 @@ export interface CoachData {
    * workouts, so these are saved with it. Missing when the history is unknown.
    */
   lifetime?: LifetimeTotals;
+  /** Workouts done on this phone that aren't on the server yet (the offline outbox). */
+  pendingSync?: number;
+}
+
+const timeOf = (w: CoachWorkout) => new Date(w.completed_at).getTime();
+
+/**
+ * Queued workouts that aren't among the saved ones. A queued workout can already be
+ * saved (a slow save that arrived after the phone gave up); it counts once.
+ */
+function notYetSaved(queued: CoachWorkout[], saved: CoachWorkout[]): CoachWorkout[] {
+  const savedTimes = new Set(saved.map(timeOf));
+  const savedIds = new Set(saved.map((w) => w.id).filter(Boolean));
+  return queued.filter((w) => !(w.id && savedIds.has(w.id)) && !savedTimes.has(timeOf(w)));
 }
 
 type SavedSettings = Awaited<ReturnType<typeof getUserSettings>>;
@@ -73,8 +87,9 @@ export async function loadCoachData(userId: string): Promise<CoachData> {
     getQueuedWorkouts(userId).catch(() => [] as CoachWorkout[]),
   ]);
   await saveCoachCache(userId, plan, saved);
-  const workouts = [...saved, ...queued];
-  return { plan, workouts, lifetime: lifetimeTotals(workouts) };
+  const unsaved = notYetSaved(queued, saved);
+  const workouts = [...saved, ...unsaved];
+  return { plan, workouts, lifetime: lifetimeTotals(workouts), pendingSync: unsaved.length };
 }
 
 /** Only the fields the coach reads, so the cached copy stays small. */
@@ -104,8 +119,6 @@ async function saveCoachCache(userId: string, plan: CoachPlanInput, saved: Coach
   }
 }
 
-const timeOf = (w: CoachWorkout) => new Date(w.completed_at).getTime();
-
 /**
  * Offline: the last plan and workouts read online, plus workouts still queued on this
  * phone. A queued workout that has since been saved appears once. Null when nothing
@@ -122,13 +135,16 @@ export async function loadCachedCoachData(userId: string): Promise<CoachData | n
   if (!cached || !Array.isArray(cached.workouts)) return null;
 
   const queued = await getQueuedWorkouts(userId).catch(() => [] as CoachWorkout[]);
-  const savedTimes = new Set(cached.workouts.map(timeOf));
-  const savedIds = new Set(cached.workouts.map((w) => w.id).filter(Boolean));
-  const unsaved = queued.filter((w) => !(w.id && savedIds.has(w.id)) && !savedTimes.has(timeOf(w)));
+  const unsaved = notYetSaved(queued, cached.workouts);
   const workouts = [...cached.workouts, ...unsaved];
   // Caches from before the records were saved: count what's cached.
   const savedLifetime = isLifetimeTotals(cached.lifetime) ? cached.lifetime : lifetimeTotals(cached.workouts);
-  return { plan: cached.plan ?? {}, workouts, lifetime: addToLifetime(savedLifetime, unsaved, workouts) };
+  return {
+    plan: cached.plan ?? {},
+    workouts,
+    lifetime: addToLifetime(savedLifetime, unsaved, workouts),
+    pendingSync: unsaved.length,
+  };
 }
 
 /**
@@ -140,7 +156,7 @@ export async function loadPhoneCoachData(userId: string): Promise<CoachData> {
     getTrainingGoals().catch(() => null),
     getQueuedWorkouts(userId).catch(() => [] as CoachWorkout[]),
   ]);
-  return { plan: toPlanInput(null, local), workouts: queued };
+  return { plan: toPlanInput(null, local), workouts: queued, pendingSync: queued.length };
 }
 
 /**

@@ -1,6 +1,6 @@
 import { useTheme } from "@/src/context/ThemeContext";
 import Ionicons from "@expo/vector-icons/Ionicons";
-import * as Haptics from "expo-haptics";
+import { haptics } from "../../src/utils/haptics";
 import * as ImagePicker from "expo-image-picker";
 import { useFocusEffect, useRouter } from "expo-router";
 import {
@@ -203,11 +203,7 @@ export default function ProfileScreen() {
   const metaAvatarUrl: string | undefined = session?.user?.user_metadata?.avatar_url;
 
   const triggerHaptic = () => {
-    try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    } catch {
-      // Graceful fallback
-    }
+    void haptics.light();
   };
 
   const openSheet = useCallback(() => {

@@ -130,6 +130,9 @@ export async function syncOnboardingDraftIfPresent(userId: string): Promise<void
 
 // --- Account & Profile Management ---
 
+// Profile photos: public bucket, files at <user id>/avatar_<time>.<ext>.
+const AVATAR_BUCKET = 'avatars';
+
 export async function getUserProfile(
   userId: string
 ): Promise<{ full_name?: string; avatar_url?: string }> {
@@ -176,6 +179,41 @@ export async function updateProfileName(
   return { success: true };
 }
 
+/**
+ * Removes every file in this user's avatars folder except `keepPath`.
+ * Throws if the folder can't be listed or not every file was removed.
+ */
+export async function removeAvatarFiles(userId: string, keepPath?: string): Promise<void> {
+  const bucket = supabase.storage.from(AVATAR_BUCKET);
+  const pageSize = 100;
+  const paths: string[] = [];
+
+  // Collect everything first; removing while paging would shift the offsets.
+  for (let offset = 0; ; offset += pageSize) {
+    const { data, error } = await bucket.list(userId, { limit: pageSize, offset });
+    if (error) throw new Error(error.message);
+    for (const file of data ?? []) {
+      const path = `${userId}/${file.name}`;
+      if (path !== keepPath) paths.push(path);
+    }
+    if (!data || data.length < pageSize) break;
+  }
+
+  for (let i = 0; i < paths.length; i += pageSize) {
+    const batch = paths.slice(i, i + pageSize);
+    const { data, error } = await bucket.remove(batch);
+    if (error) throw new Error(error.message);
+    // A delete blocked by a storage policy isn't an error; it just removes nothing.
+    if ((data?.length ?? 0) < batch.length) {
+      throw new Error(`Removed ${data?.length ?? 0} of ${batch.length} photo files; check the avatars DELETE policy.`);
+    }
+  }
+}
+
+/**
+ * Uploads a new photo, points the profile at its public URL, then deletes the
+ * user's older photos.
+ */
 export async function uploadProfileAvatar(
   userId: string,
   base64Image: string,
@@ -187,34 +225,47 @@ export async function uploadProfileAvatar(
 
     const arrayBuffer = decodeBase64ToArrayBuffer(base64Image);
 
-    // Upload to 'avatars' storage bucket
+    // Every upload gets a new name, so there is nothing to overwrite.
     const { error: uploadError } = await supabase.storage
-      .from('avatars')
+      .from(AVATAR_BUCKET)
       .upload(filePath, arrayBuffer, {
         contentType,
-        upsert: true,
+        upsert: false,
       });
 
     if (uploadError) {
       return { success: false, error: uploadError.message };
     }
 
-    // Retrieve public URL
     const { data: publicUrlData } = supabase.storage
-      .from('avatars')
+      .from(AVATAR_BUCKET)
       .getPublicUrl(filePath);
 
     const avatarUrl = publicUrlData.publicUrl;
 
     // Save avatar_url to profiles table & auth metadata
-    await supabase
+    const { error: profileError } = await supabase
       .from('profiles')
       .update({ avatar_url: avatarUrl, updated_at: new Date().toISOString() })
       .eq('id', userId);
 
+    if (profileError) {
+      // The profile still points at the old photo; don't leave the new one behind.
+      await supabase.storage.from(AVATAR_BUCKET).remove([filePath]);
+      return { success: false, error: profileError.message };
+    }
+
     await supabase.auth.updateUser({
       data: { avatar_url: avatarUrl },
     });
+
+    // Older photos (and any left over from failed cleanups) go now. If this fails,
+    // the next upload tries again.
+    try {
+      await removeAvatarFiles(userId, filePath);
+    } catch (err) {
+      console.warn('Could not delete old profile photos:', err);
+    }
 
     return { success: true, avatarUrl };
   } catch (err: any) {
@@ -237,6 +288,14 @@ export async function removeProfileAvatar(
   await supabase.auth.updateUser({
     data: { avatar_url: null },
   });
+
+  // The photo is already gone from the profile; a failed file cleanup is retried on
+  // the next upload or at account deletion.
+  try {
+    await removeAvatarFiles(userId);
+  } catch (err) {
+    console.warn('Could not delete profile photo files:', err);
+  }
 
   return { success: true };
 }
@@ -266,16 +325,28 @@ export async function updateAccountPasswordWithOldPassword(
   return { success: true };
 }
 
-export async function deleteUserAccount(): Promise<{ success: boolean; error?: string }> {
+/**
+ * Deletes the signed-in user's account. delete_user removes the auth user, and
+ * profiles and workout_sessions go with it (ON DELETE CASCADE). Storage files don't
+ * cascade, so the profile photos are removed first, while the user can still reach
+ * them. If that fails the account is still deleted; the error is logged.
+ * The caller signs out and clears the phone afterwards.
+ */
+export async function deleteUserAccount(userId: string): Promise<{ success: boolean; error?: string }> {
   try {
-    const { error } = await supabase.rpc('delete_user_account');
+    await removeAvatarFiles(userId);
+  } catch (err) {
+    console.error('Could not delete profile photos before deleting the account:', err);
+  }
+
+  try {
+    const { error } = await supabase.rpc('delete_user');
 
     if (error) {
       console.error('Account deletion RPC error:', error);
       return { success: false, error: error.message };
     }
 
-    await supabase.auth.signOut();
     return { success: true };
   } catch (err: any) {
     return { success: false, error: err.message || 'Failed to delete account' };

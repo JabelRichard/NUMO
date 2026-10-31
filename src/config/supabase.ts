@@ -1,4 +1,4 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient, Session } from '@supabase/supabase-js';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
@@ -50,3 +50,21 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     detectSessionInUrl: false,
   },
 });
+
+/**
+ * The session saved on this device, read without trying to refresh it. Offline with
+ * an expired access token, getSession() can't refresh and reports no session, even
+ * though this saved one (and its refresh token) is still valid for later.
+ * Null when nothing usable is saved.
+ */
+export async function readStoredSession(): Promise<Session | null> {
+  try {
+    // The key the auth client saves under (by default sb-<project ref>-auth-token).
+    const key = (supabase.auth as unknown as { storageKey: string }).storageKey;
+    const raw = await ExpoSecureStoreAdapter.getItem(key);
+    const stored = raw ? JSON.parse(raw) : null;
+    return stored?.access_token && stored?.refresh_token && stored?.user ? (stored as Session) : null;
+  } catch {
+    return null;
+  }
+}

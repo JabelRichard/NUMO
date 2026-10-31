@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -11,7 +11,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useFocusEffect } from 'expo-router';
+import { useFocusEffect, useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
@@ -97,6 +97,8 @@ export default function PracticeScreen() {
   const { width } = useWindowDimensions();
   const { user } = useAuth();
   const { theme } = useTheme();
+  const router = useRouter();
+  const { op: requestedOp } = useLocalSearchParams<{ op?: string }>();
   const { isOffline, recheck } = useOnlineStatus(() => loadScreenData());
 
   const isDark = theme.isDark;
@@ -172,6 +174,15 @@ export default function PracticeScreen() {
 
   const closeSheet = () => setSheetOp(null);
 
+  // Home's "Try something new" link opens that operation's sheet here. The param is
+  // cleared once used, so coming back to this tab later doesn't reopen it.
+  useEffect(() => {
+    if (!requestedOp || !coach) return;
+    const op = OPERATIONS.find((o) => o.id === requestedOp)?.id;
+    if (op) openSheet(op);
+    router.setParams({ op: undefined });
+  }, [requestedOp, coach]);
+
   const handleStartFromSheet = () => {
     if (!sheetRequest) return;
     closeSheet();
@@ -240,7 +251,12 @@ export default function PracticeScreen() {
           {level && (
             <View style={styles.rowRight}>
               <Text style={[styles.rowLevel, { color: primaryText }]}>{level}</Text>
-              {isMastered && <Text style={[styles.rowMastered, { color: accentStrong }]}>✓ Mastered</Text>}
+              {isMastered && (
+                <View style={styles.rowMasteredLine}>
+                  <Ionicons name="checkmark-circle" size={14} color={accentStrong} />
+                  <Text style={[styles.rowMastered, { color: accentStrong }]}>Mastered</Text>
+                </View>
+              )}
             </View>
           )}
           <Ionicons name="chevron-forward" size={18} color={secondaryText} />
@@ -283,7 +299,14 @@ export default function PracticeScreen() {
             <ActivityIndicator style={styles.loading} size="large" color={accentStrong} />
           ) : (
             <>
-              {loaded && <OfflineNote from={loaded.from} isOffline={isOffline} style={styles.offlineNote} />}
+              {loaded && (
+                <OfflineNote
+                  from={loaded.from}
+                  isOffline={isOffline}
+                  pendingSync={loaded.data.pendingSync}
+                  style={styles.offlineNote}
+                />
+              )}
 
               {coach && <TodaysPickCard coach={coach} style={styles.pickCard} />}
 
@@ -545,6 +568,11 @@ const styles = StyleSheet.create({
     ...typography.secondary,
     fontWeight: '600',
     textAlign: 'right',
+  },
+  rowMasteredLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
   },
   rowMastered: {
     ...typography.secondary,

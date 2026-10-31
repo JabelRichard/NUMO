@@ -80,6 +80,7 @@ describe('loadPhoneCoachData', () => {
         levelSetAt: null,
       },
       workouts: queued,
+      pendingSync: queued.length,
     });
   });
 
@@ -101,6 +102,16 @@ describe('loadCoachDataWithFallback', () => {
     expect(loaded.from).toBe('live');
     expect(loaded.data.workouts).toHaveLength(1);
     expect(await AsyncStorage.getItem(`numo_coach_cache_v1:${ME}`)).not.toBeNull();
+  });
+
+  it('online: a queued workout already on the server counts once, and is not pending', async () => {
+    const both = workout('2026-10-28T10:00:00.000Z');
+    const waiting = workout('2026-10-29T10:00:00.000Z');
+    (fetchAllWorkouts as jest.Mock).mockResolvedValueOnce([...saved, both]);
+    (getQueuedWorkouts as jest.Mock).mockResolvedValueOnce([both, waiting]);
+    const loaded = await loadCoachDataWithFallback(ME, true);
+    expect(loaded.data.workouts).toHaveLength(3);
+    expect(loaded.data.pendingSync).toBe(1);
   });
 
   it('online but the load fails: the cached copy plus queued workouts', async () => {

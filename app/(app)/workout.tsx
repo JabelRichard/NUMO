@@ -22,9 +22,8 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../../src/context/AuthContext';
 import { typography, MAX_FONT_SCALE } from '../../src/constants/typography';
 import { getUserSettings } from '../../src/services/settingsService';
-import { saveWorkoutSession, queueWorkoutForSync } from '../../src/services/workoutService';
+import { saveOrQueueWorkout, WorkoutSaveStatus } from '../../src/services/workoutService';
 import { CustomNumericKeypad } from '../../src/components/CustomNumericKeypad';
-import { OfflineNotice } from '../../src/components/OfflineNotice';
 import { QuestionGenerator } from '../../src/lib/math/questionGenerator';
 import { recordAttempt } from '../../src/lib/math/questionValidator';
 import {
@@ -98,8 +97,9 @@ export default function MathWorkoutScreen() {
     };
   }, [clearFeedbackTimeout]);
 
-  // Offline connection handling
-  const { isOffline, recheck: handleRetryConnection } = useOnlineStatus();
+  // Workouts run fully offline: questions are made on the phone, and a result that
+  // can't be saved now waits in the outbox. Offline only changes a line under the title.
+  const { isOffline, recheck } = useOnlineStatus();
 
   const createWorkoutSession = useCallback((targetCount?: number): MathQuestion[] => {
     return generatorRef.current.generateSession({
@@ -219,8 +219,8 @@ export default function MathWorkoutScreen() {
     }
   };
 
-  // Single place a workout is persisted. If the save fails it is queued in the
-  // offline outbox and results.tsx tells the user it will sync later.
+  // Single place a workout is persisted: saved now, or queued in the offline outbox
+  // (offline, failed or too slow). results.tsx tells the user which.
   const finishWorkout = async (finalAttempts: QuestionAttemptResult[]) => {
     setIsFinishing(true);
 
@@ -230,28 +230,21 @@ export default function MathWorkoutScreen() {
     const userId = session?.user?.id;
 
     let savedSessionId = '';
-    let saveStatus: 'saved' | 'queued' = 'queued';
+    let saveStatus: WorkoutSaveStatus = 'failed';
 
     if (userId) {
-      const { data, error } = await saveWorkoutSession(
+      const online = await recheck();
+      const result = await saveOrQueueWorkout(
+        userId,
         finalAttempts,
         canonicalMode,
         activeDifficulty,
-        userId,
         completedAt,
-        request.source
+        request.source,
+        online
       );
-
-      if (data && !error) {
-        savedSessionId = data.id;
-        saveStatus = 'saved';
-      } else {
-        try {
-          await queueWorkoutForSync(userId, finalAttempts, canonicalMode, activeDifficulty, completedAt, request.source);
-        } catch (e) {
-          console.warn('Failed to queue workout for later sync:', e);
-        }
-      }
+      saveStatus = result.status;
+      savedSessionId = result.id ?? '';
     }
 
     if (!isMountedRef.current) return;
@@ -374,15 +367,6 @@ export default function MathWorkoutScreen() {
   const answerFontSize = isNarrow ? 40 : isCompact ? 48 : typography.problem.fontSize;
   const cursorHeight = isNarrow ? 36 : isCompact ? 42 : 48;
 
-  if (isOffline) {
-    return (
-      <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
-        <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
-        <OfflineNotice onRetry={handleRetryConnection} />
-      </SafeAreaView>
-    );
-  }
-
   if (!currentQuestion) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
@@ -429,6 +413,15 @@ export default function MathWorkoutScreen() {
         <Text style={[styles.operationTitle, { color: secondaryText }, isCompact && styles.operationTitleCompact]}>
           {getOperationDisplayTitle()}
         </Text>
+
+        {isOffline && (
+          <View style={styles.offlineLine} accessibilityLiveRegion="polite">
+            <Ionicons name="cloud-offline-outline" size={14} color={secondaryText} />
+            <Text style={[styles.offlineLineText, { color: secondaryText }]}>
+              Offline · your result will sync later
+            </Text>
+          </View>
+        )}
       </View>
 
       {/* Equation and Input Display Area */}
@@ -570,6 +563,16 @@ const styles = StyleSheet.create({
     marginTop: 6,
     fontSize: 11,
     lineHeight: 15,
+  },
+  offlineLine: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 6,
+  },
+  offlineLineText: {
+    ...typography.caption,
   },
   displayArea: {
     flex: 1,

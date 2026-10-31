@@ -15,9 +15,11 @@ import {
   Platform,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import Ionicons from '@expo/vector-icons/Ionicons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants, { ExecutionEnvironment } from 'expo-constants';
+import * as Application from 'expo-application';
 import { useAuth } from '../../src/context/AuthContext';
 import { useTheme } from '@/src/context/ThemeContext';
 import { typography, inputTypography } from '@/src/constants/typography';
@@ -25,6 +27,10 @@ import { supabase } from '../../src/config/supabase';
 import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
 import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 import { syncBeforeSignOut } from '../../src/services/localDataService';
+import { deleteUserAccount } from '../../src/services/settingsService';
+import { flushWorkoutOutbox, getQueuedWorkoutCount } from '../../src/services/workoutService';
+import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
+import { getHapticsEnabled, setHapticsEnabled as saveHapticsEnabled } from '../../src/utils/haptics';
 import {
   scheduleDailyReminder,
   cancelDailyReminder,
@@ -32,12 +38,15 @@ import {
   REMINDER_TIME_KEY,
 } from '../../src/services/notificationService';
 
-const APP_VERSION = '1.0.4';
-const BUILD_NUMBER = '24';
+// The version comes from app.json. The build number comes from the installed app,
+// because EAS sets it at build time (appVersionSource: remote). Expo Go and the web
+// report Expo's own build or none, so it's left out there.
+const APP_VERSION = Constants.expoConfig?.version ?? Application.nativeApplicationVersion ?? '';
+const BUILD_NUMBER =
+  Constants.executionEnvironment === ExecutionEnvironment.StoreClient ? null : Application.nativeBuildVersion;
+const VERSION_LABEL = `NUMO v${APP_VERSION}${BUILD_NUMBER ? ` (${BUILD_NUMBER})` : ''}`;
 
 const STORAGE_KEYS = {
-  SOUND_ENABLED: '@numo_sound_enabled',
-  HAPTICS_ENABLED: '@numo_haptics_enabled',
   REMINDERS_ENABLED: REMINDERS_ENABLED_KEY,
   REMINDER_TIME: REMINDER_TIME_KEY,
 };
@@ -87,7 +96,6 @@ export default function SettingsScreen() {
   const switchIosBg = isDark ? 'rgba(255, 255, 255, 0.2)' : '#CBD5E1';
 
   const [loading, setLoading] = useState(true);
-  const [soundEnabled, setSoundEnabled] = useState(true);
   const [hapticsEnabled, setHapticsEnabled] = useState(true);
   // Off until the person turns it on; sign-out cancels it and clears the setting.
   const [remindersEnabled, setRemindersEnabled] = useState(false);
@@ -105,15 +113,13 @@ export default function SettingsScreen() {
 
   const loadPreferences = useCallback(async () => {
     try {
-      const [storedSound, storedHaptics, storedReminders, storedTime] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEYS.SOUND_ENABLED),
-        AsyncStorage.getItem(STORAGE_KEYS.HAPTICS_ENABLED),
+      const [haptics, storedReminders, storedTime] = await Promise.all([
+        getHapticsEnabled(),
         AsyncStorage.getItem(STORAGE_KEYS.REMINDERS_ENABLED),
         AsyncStorage.getItem(STORAGE_KEYS.REMINDER_TIME),
       ]);
 
-      if (storedSound !== null) setSoundEnabled(storedSound === 'true');
-      if (storedHaptics !== null) setHapticsEnabled(storedHaptics === 'true');
+      setHapticsEnabled(haptics);
       if (storedReminders !== null) setRemindersEnabled(storedReminders === 'true');
       if (storedTime !== null) setReminderTime(storedTime);
     } catch (e) {
@@ -127,15 +133,57 @@ export default function SettingsScreen() {
     loadPreferences();
   }, [loadPreferences]);
 
-  const handleToggleSound = async (val: boolean) => {
-    setSoundEnabled(val);
-    await AsyncStorage.setItem(STORAGE_KEYS.SOUND_ENABLED, String(val)).catch(() => {});
-  };
-
+  // Every vibration in the app reads this through src/utils/haptics.
   const handleToggleHaptics = async (val: boolean) => {
     setHapticsEnabled(val);
-    await AsyncStorage.setItem(STORAGE_KEYS.HAPTICS_ENABLED, String(val)).catch(() => {});
+    await saveHapticsEnabled(val);
   };
+
+  // Sync status: the only thing that syncs in the background is the workout outbox
+  // (workouts whose save failed). Profile and plan changes save directly or fail
+  // on the spot, so they never wait.
+  const [pendingWorkouts, setPendingWorkouts] = useState<number | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+
+  const refreshPendingWorkouts = useCallback(async () => {
+    if (!userId) return;
+    setPendingWorkouts(await getQueuedWorkoutCount(userId).catch(() => null));
+  }, [userId]);
+
+  const syncNow = useCallback(async () => {
+    if (!userId || isSyncing) return;
+    setIsSyncing(true);
+    try {
+      await flushWorkoutOutbox(userId);
+    } finally {
+      await refreshPendingWorkouts();
+      setIsSyncing(false);
+    }
+  }, [userId, isSyncing, refreshPendingWorkouts]);
+
+  // Back online: try the queue straight away, like Home does.
+  const { isOffline } = useOnlineStatus(() => {
+    void syncNow();
+  });
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshPendingWorkouts();
+    }, [refreshPendingWorkouts])
+  );
+
+  const syncStatus = (() => {
+    const waiting =
+      pendingWorkouts && pendingWorkouts > 0
+        ? `${pendingWorkouts} ${pendingWorkouts === 1 ? 'workout' : 'workouts'} waiting to sync`
+        : null;
+    if (isOffline) return { color: '#9CA3AF', text: waiting ? `Offline · ${waiting}` : 'Offline' };
+    if (isSyncing) return { color: '#F59E0B', text: 'Syncing workouts…' };
+    if (waiting) return { color: '#F59E0B', text: waiting };
+    if (pendingWorkouts === 0) return { color: '#22C55E', text: 'All workouts synced' };
+    return null; // Not counted yet.
+  })();
+  const canSyncNow = !isOffline && !isSyncing && (pendingWorkouts ?? 0) > 0;
 
   const handleToggleReminders = async (val: boolean) => {
     setRemindersEnabled(val);
@@ -269,9 +317,10 @@ export default function SettingsScreen() {
   };
 
   const handleDeleteAccount = () => {
+    if (isDeleting) return;
     Alert.alert(
       'Delete Account',
-      'This will permanently delete your account, session logs, and accuracy stats. This action cannot be undone.',
+      'This will permanently delete your account, workout history, stats and profile photo. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -285,10 +334,11 @@ export default function SettingsScreen() {
 
             setIsDeleting(true);
             try {
-              const { error } = await supabase.rpc('delete_user');
+              // Removes the profile photos, then the account (data follows by CASCADE).
+              const { success, error } = await deleteUserAccount(userId);
 
-              if (error) {
-                throw error;
+              if (!success) {
+                throw new Error(error);
               }
 
               try {
@@ -367,32 +417,9 @@ export default function SettingsScreen() {
             </View>
 
             <Text style={[styles.sectionHeaderLabel, { color: secondaryText }]}>
-              AUDIO & FEEDBACK
+              FEEDBACK
             </Text>
             <View style={[styles.groupCard, { backgroundColor: cardBg, borderColor: borderSubtle }]}>
-              <View style={styles.settingRow}>
-                <View style={styles.settingLeft}>
-                  <View
-                    style={[
-                      styles.iconCircle,
-                      { backgroundColor: isDark ? 'rgba(188, 227, 170, 0.2)' : '#EAF7E4' },
-                    ]}
-                  >
-                    <Ionicons name="volume-high" size={18} color={isDark ? greenAccent : '#23611C'} />
-                  </View>
-                  <Text style={[styles.settingTitle, { color: primaryText }]}>Sound Effects</Text>
-                </View>
-                <Switch
-                  value={soundEnabled}
-                  onValueChange={handleToggleSound}
-                  trackColor={switchTrackColor}
-                  thumbColor={switchThumbColor}
-                  ios_backgroundColor={switchIosBg}
-                />
-              </View>
-
-              <View style={[styles.rowDivider, { backgroundColor: dividerColor }]} />
-
               <View style={styles.settingRow}>
                 <View style={styles.settingLeft}>
                   <View
@@ -618,16 +645,28 @@ export default function SettingsScreen() {
             </View>
 
             <View style={styles.footnoteWrapper}>
-              <View style={styles.syncRow}>
-                <View style={[styles.syncDot, { backgroundColor: '#22C55E' }]} />
-                <Text style={[styles.syncStatusText, { color: secondaryText }]}>
-                  Cloud Sync: Active
-                </Text>
-              </View>
+              {syncStatus && (
+                <TouchableOpacity
+                  style={styles.syncRow}
+                  onPress={syncNow}
+                  disabled={!canSyncNow}
+                  activeOpacity={0.7}
+                  accessibilityRole={canSyncNow ? 'button' : 'text'}
+                  accessibilityLabel={canSyncNow ? `${syncStatus.text}. Sync now` : syncStatus.text}
+                  accessibilityLiveRegion="polite"
+                >
+                  <View style={[styles.syncDot, { backgroundColor: syncStatus.color }]} />
+                  <Text style={[styles.syncStatusText, { color: secondaryText }]}>
+                    {syncStatus.text}
+                    {canSyncNow ? ' · ' : ''}
+                    {canSyncNow && (
+                      <Text style={[styles.syncActionText, { color: primaryText }]}>Sync now</Text>
+                    )}
+                  </Text>
+                </TouchableOpacity>
+              )}
 
-              <Text style={[styles.appVersionText, { color: secondaryText }]}>
-                NUMO v{APP_VERSION} ({BUILD_NUMBER})
-              </Text>
+              <Text style={[styles.appVersionText, { color: secondaryText }]}>{VERSION_LABEL}</Text>
             </View>
           </View>
         </ScrollView>
@@ -872,6 +911,11 @@ const styles = StyleSheet.create({
   },
   syncStatusText: {
     ...typography.caption,
+  },
+  syncActionText: {
+    ...typography.caption,
+    fontWeight: '600',
+    textDecorationLine: 'underline',
   },
   appVersionText: {
     ...typography.caption,

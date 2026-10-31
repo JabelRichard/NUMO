@@ -2,6 +2,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { supabase } from "../config/supabase";
 import { QuestionAttemptResult, OperationType } from "../lib/math/types";
 import { buildBreakdown, CoachWorkout, WorkoutBreakdown, WorkoutSource } from "../lib/coach";
+import { withTimeout } from "../utils/withTimeout";
 
 export const OUTBOX_KEY_PREFIX = "@numo_workout_outbox_v1:";
 
@@ -40,7 +41,11 @@ interface QueuedWorkout {
   source?: WorkoutSource; // missing on workouts queued by older app versions
 }
 
-const flushingUsers = new Set<string>();
+/** The upload run in progress for each user, so callers during a run share it. */
+const flushes = new Map<string, Promise<number>>();
+
+/** Give up waiting for a save after this long and queue the workout instead. */
+export const SAVE_TIMEOUT_MS = 8000;
 
 export async function saveWorkoutSession(
   attempts: QuestionAttemptResult[],
@@ -165,26 +170,60 @@ export async function getQueuedWorkouts(userId: string): Promise<CoachWorkout[]>
   });
 }
 
-/** Tries to save every queued workout. Returns how many were synced. */
-export async function flushWorkoutOutbox(userId: string): Promise<number> {
-  if (!userId || flushingUsers.has(userId)) return 0;
-  flushingUsers.add(userId);
+/**
+ * Whether a workout finished at `completedAt` is already saved. A save can reach the
+ * server even though the phone never heard back (timeout, lost connection), so a
+ * queued workout is checked before it is sent again. Every save sends its finish
+ * time, so user + finish time identifies a workout. Null when the check itself fails.
+ */
+async function isWorkoutSaved(userId: string, completedAt: string): Promise<boolean | null> {
+  try {
+    const { data, error } = await supabase
+      .from("workout_sessions")
+      .select("id")
+      .eq("user_id", userId)
+      .eq("completed_at", completedAt)
+      .limit(1);
+    if (error) return null;
+    return (data?.length ?? 0) > 0;
+  } catch {
+    return null;
+  }
+}
 
+/**
+ * Tries to save every queued workout, oldest first, skipping any already saved.
+ * Returns how many left the queue. A call while a run is going waits for that run.
+ */
+export function flushWorkoutOutbox(userId: string): Promise<number> {
+  if (!userId) return Promise.resolve(0);
+  const running = flushes.get(userId);
+  if (running) return running;
+  const run = flushOutbox(userId).finally(() => flushes.delete(userId));
+  flushes.set(userId, run);
+  return run;
+}
+
+async function flushOutbox(userId: string): Promise<number> {
   try {
     const queued = await readOutbox(userId);
     if (queued.length === 0) return 0;
 
     const syncedIds = new Set<string>();
     for (const item of queued) {
-      const { data, error } = await saveWorkoutSession(
-        item.attempts,
-        item.mode,
-        item.difficulty,
-        userId,
-        item.completedAt,
-        item.source
-      );
-      if (error || !data) break; // Still offline; keep the rest queued in order.
+      const saved = await isWorkoutSaved(userId, item.completedAt);
+      if (saved === null) break; // Still offline; keep the rest queued in order.
+      if (!saved) {
+        const { data, error } = await saveWorkoutSession(
+          item.attempts,
+          item.mode,
+          item.difficulty,
+          userId,
+          item.completedAt,
+          item.source
+        );
+        if (error || !data) break;
+      }
       syncedIds.add(item.queueId);
     }
 
@@ -199,8 +238,44 @@ export async function flushWorkoutOutbox(userId: string): Promise<number> {
   } catch (err) {
     console.warn("Error flushing workout outbox:", err);
     return 0;
-  } finally {
-    flushingUsers.delete(userId);
+  }
+}
+
+export type WorkoutSaveStatus = "saved" | "queued" | "failed";
+
+/**
+ * Saves a finished workout, or keeps it on the phone to upload later. Offline it goes
+ * straight to the queue. Online it waits at most SAVE_TIMEOUT_MS; if the save fails
+ * or takes longer, it is queued, and the upload later skips it if the slow save did
+ * arrive. "failed" only if the phone couldn't store it either.
+ */
+export async function saveOrQueueWorkout(
+  userId: string,
+  attempts: QuestionAttemptResult[],
+  mode: OperationType,
+  difficulty: string,
+  completedAt: string,
+  source: WorkoutSource | undefined,
+  online: boolean
+): Promise<{ status: WorkoutSaveStatus; id?: string }> {
+  if (online) {
+    try {
+      const { data, error } = await withTimeout(
+        saveWorkoutSession(attempts, mode, difficulty, userId, completedAt, source),
+        SAVE_TIMEOUT_MS
+      );
+      if (data && !error) return { status: "saved", id: data.id };
+    } catch {
+      // Timed out; queued below.
+    }
+  }
+
+  try {
+    await queueWorkoutForSync(userId, attempts, mode, difficulty, completedAt, source);
+    return { status: "queued" };
+  } catch (e) {
+    console.warn("Failed to queue workout for later sync:", e);
+    return { status: "failed" };
   }
 }
 

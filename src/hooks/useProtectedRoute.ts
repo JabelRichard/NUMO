@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useRouter, useSegments } from 'expo-router';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
+import { isOfflineState } from './useOnlineStatus';
 import { useAuth } from '../context/AuthContext';
 import { getUserSettings, saveUserSettings } from '../services/settingsService';
 
 export function useProtectedRoute(isSplashDone: boolean = true) {
-  const { session, isLoading } = useAuth();
+  const { session, isLoading, isPasswordRecovery } = useAuth();
   const segments = useSegments();
   const router = useRouter();
   const isNavigatingRef = useRef(false);
@@ -16,9 +18,20 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
 
     const inAuthGroup = segments[0] === '(auth)';
     const isOnboarding = (segments as string[]).includes('onboarding');
+    const onResetPassword = (segments as string[]).includes('reset-password');
 
     async function evaluateRouting() {
       try {
+        if (isPasswordRecovery) {
+          // A reset code or link signed the user in, but the new password isn't saved
+          // yet: stay on "set new password", never Home. The reset screen ends this.
+          if (!onResetPassword) {
+            isNavigatingRef.current = true;
+            router.replace('/(auth)/reset-password');
+          }
+          return;
+        }
+
         if (!session) {
           // Guest user trying to access main app
           if (!inAuthGroup) {
@@ -35,7 +48,7 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
               const { settings } = JSON.parse(draftStr);
 
               // Update profiles table using your existing service
-              await saveUserSettings(userId, {
+              const result = await saveUserSettings(userId, {
                 daily_question_goal: settings?.daily_question_goal ?? 10,
                 goals: settings?.goals ?? ['everyday'],
                 has_completed_onboarding: true,
@@ -44,6 +57,8 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
                 friction_areas: settings?.friction_areas,
                 friction_area: settings?.friction_area,
               });
+              // Not saved (e.g. offline): keep the draft and try again next time.
+              if (!result.success) throw new Error(result.error);
 
               await AsyncStorage.removeItem('@numo_onboarding_draft');
               await AsyncStorage.setItem('@numo_onboarding_completed', 'true');
@@ -55,9 +70,16 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
           // 2. CHECK STATUS: Check local flag first, then Supabase settings
           const localCompleted = await AsyncStorage.getItem('@numo_onboarding_completed');
           const settings = await getUserSettings(userId);
+          // Remember it on this phone, so an offline launch doesn't need the profile.
+          if (settings?.has_completed_onboarding && localCompleted !== 'true') {
+            await AsyncStorage.setItem('@numo_onboarding_completed', 'true');
+          }
           const hasCompleted = localCompleted === 'true' || Boolean(settings?.has_completed_onboarding);
 
           if (!hasCompleted) {
+            // The profile couldn't be read because we're offline: don't send a
+            // returning user to onboarding. This runs again on the next navigation.
+            if (!settings && isOfflineState(await NetInfo.fetch())) return;
             if (!isOnboarding) {
               isNavigatingRef.current = true;
               router.replace('/(auth)/onboarding');
@@ -80,5 +102,5 @@ export function useProtectedRoute(isSplashDone: boolean = true) {
     }
 
     evaluateRouting();
-  }, [session, isLoading, isSplashDone, segments]);
+  }, [session, isLoading, isSplashDone, segments, isPasswordRecovery]);
 }
