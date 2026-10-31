@@ -1,11 +1,12 @@
 import { TextStyle } from 'react-native';
 import type { FontFamilyDefinition } from 'expo-font';
-// Per-weight imports so only these five font files end up in the bundle.
+// Per-weight imports so only these six font files end up in the bundle.
 import { Inter_400Regular } from '@expo-google-fonts/inter/400Regular';
 import { Inter_500Medium } from '@expo-google-fonts/inter/500Medium';
 import { Inter_600SemiBold } from '@expo-google-fonts/inter/600SemiBold';
 import { InterTight_600SemiBold } from '@expo-google-fonts/inter-tight/600SemiBold';
 import { InterTight_700Bold } from '@expo-google-fonts/inter-tight/700Bold';
+import { InterTight_800ExtraBold } from '@expo-google-fonts/inter-tight/800ExtraBold';
 
 // Font family names registered by useFonts in app/_layout.tsx.
 // Each family groups its weights, so pick a face with fontWeight.
@@ -29,6 +30,7 @@ export const FONT_DEFINITIONS: FontFamilyDefinition[] = [
     fontDefinitions: [
       { path: InterTight_600SemiBold, weight: 600, style: 'normal' },
       { path: InterTight_700Bold, weight: 700, style: 'normal' },
+      { path: InterTight_800ExtraBold, weight: 800, style: 'normal' },
     ],
   },
 ];

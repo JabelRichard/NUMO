@@ -1565,7 +1565,7 @@ const styles = StyleSheet.create({
   badgeSymbol: {
     fontFamily: FONT_FAMILY.heading,
     fontSize: 20,
-    fontWeight: "700",
+    fontWeight: "600",
     lineHeight: 24,
   },
   goalTextStack: {

@@ -11,6 +11,18 @@ const spot = (op: CoachOperation) => WEAK_SPOTS.find((w) => w.id === op);
 /** "+", "−", "×", "÷". */
 export const operationSymbol = (op: CoreOperation): string => spot(op)?.symbol ?? '';
 
+/** "Multiplying", "Mixing them up": the name without its symbol, for screen readers. */
+export const operationTitle = (op: CoachOperation): string => spot(op)?.title ?? op;
+
+/** Short names for the small cards on Home, where "Mixing them up" won't fit. */
+const SHORT_NAMES: Record<CoachOperation, string> = {
+  addition: 'Adding',
+  subtraction: 'Subtract',
+  multiplication: 'Multiply',
+  division: 'Dividing',
+  mixed: 'Mixed',
+};
+
 /** "× Multiplying", or "Mixing them up". */
 export function operationName(op: CoachOperation): string {
   const s = spot(op);
@@ -129,6 +141,33 @@ export const COPY = {
   pickHeading: (op: CoachOperation) => `Your pick: ${operationName(op)}`,
   pickSubheading: (length: string) => `Just this once, then back to your plan. ${length}`,
   pickWarmupSubheading: (length: string) => `This will be your warm-up. ${length}`,
+
+  /** Home header, by the phone's local hour. */
+  greeting: (hour: number) =>
+    hour < 12 ? 'Good morning,' : hour < 18 ? 'Good afternoon,' : 'Good evening,',
+  openProfile: 'Open your profile',
+  /** Home streak card. */
+  dayStreak: (days: number) => `${days}-day streak`,
+  ofGoalToday: (goal: number) => `of ${goal} today`,
+  questionsTodayLabel: (done: number, goal: number) => `${done} of ${goal} questions done today`,
+  weekDayLabel: (day: string, practiced: boolean, isToday: boolean) =>
+    `${day}${isToday ? ', today' : ''}: ${practiced ? 'practised' : 'not practised'}`,
+  /** Home hero card. */
+  goalDoneChip: 'Goal done for today',
+  /** Home only; the heading then says "Today: …" instead of improvingHeading. */
+  improvingChip: "You're getting faster",
+  heroQuestions: (count: number) => plural(count, 'question'),
+  heroMinutes: (minutes: number) => `~${minutes} min`,
+  heroLabel: (button: string, op: CoachOperation, count: number) =>
+    `${button}: ${operationTitle(op)}, ${plural(count, 'question')}`,
+  /** Home "pick your own" row. */
+  pickYourOwn: 'Or pick your own',
+  pickShortName: (op: CoachOperation) => SHORT_NAMES[op],
+  tryNewShort: (op: CoreOperation) => `Try ${operationName(op)}`,
+  masteredTag: 'Mastered',
+  mixedLevelsTag: 'Your levels',
+  pickLabel: (op: CoachOperation, tag: string) => `${operationTitle(op)}, ${tag}. Pick it for one workout`,
+  backToPlan: "Back to today's plan",
 
   resultsWarmupSubtitle: "Here's what your warm-up showed.",
   resultsSubtitle: 'Picked from your plan and your last few workouts.',

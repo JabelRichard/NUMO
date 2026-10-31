@@ -6,6 +6,7 @@ import {
   TouchableOpacity,
   StatusBar,
   Image,
+  ScrollView,
   useWindowDimensions,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,89 +24,40 @@ import { useAuth } from '../../src/context/AuthContext';
 import { getUserProfile } from '../../src/services/settingsService';
 import { CoachData, LoadedCoachData, loadCoachDataWithFallback } from '../../src/services/coachService';
 import {
+  activityBuckets,
   CoachOperation,
   COPY,
-  focusLabel,
+  dailyGoalOf,
+  estimateMinutes,
   getCoachPlan,
+  LEVEL_NAMES,
   roundLength,
   toWorkoutParams,
   workoutForOperation,
 } from '../../src/lib/coach';
 import { useTheme } from '@/src/context/ThemeContext';
-import { typography } from '@/src/constants/typography';
+import { FONT_FAMILY, MAX_FONT_SCALE, typography } from '@/src/constants/typography';
 import { OfflineNote } from '../../src/components/OfflineNote';
-import { PopIcon } from '../../src/components/PopIcon';
+import { HeroCard } from '../../src/components/home/HeroCard';
+import { HOME_COLORS } from '../../src/components/home/homeColors';
+import { PickCard } from '../../src/components/home/PickCard';
+import { Rise } from '../../src/components/home/Rise';
+import { StreakCard, WeekDay } from '../../src/components/home/StreakCard';
 import { useOnlineStatus } from '../../src/hooks/useOnlineStatus';
 import { useResponsiveContentWidth } from '../../src/hooks/useResponsiveContentWidth';
 import { useResponsiveTopPadding } from '../../src/hooks/useResponsiveTopPadding';
 import { getInitials } from '../../src/utils/getInitials';
+import { haptics } from '../../src/utils/haptics';
+import { countDayStreak, localDayKey } from '../../src/utils/localDates';
 
 type OperationType = CoachOperation;
 
 const EMPTY_COACH_DATA: CoachData = { plan: {}, workouts: [] };
 
-interface OperationBubbleProps {
-  type: OperationType;
-  isFocalCenter?: boolean;
-  themeColors: {
-    bg: string;
-    fg: string;
-    borderColor?: string;
-  };
-}
-
-function OperationBubble({ type, isFocalCenter = false, themeColors }: OperationBubbleProps) {
-  const size = isFocalCenter ? 86 : 74;
-
-  const renderGlyph = () => {
-    switch (type) {
-      case 'addition':
-        return <Ionicons name="add" size={isFocalCenter ? 38 : 32} color={themeColors.fg} />;
-      case 'subtraction':
-        return <Ionicons name="remove" size={isFocalCenter ? 36 : 30} color={themeColors.fg} />;
-      case 'multiplication':
-        return <Ionicons name="close" size={isFocalCenter ? 38 : 34} color={themeColors.fg} />;
-      case 'division':
-        return (
-          <Text
-            style={[
-              styles.divisionGlyph,
-              {
-                color: themeColors.fg,
-                fontSize: isFocalCenter ? 38 : 32,
-                lineHeight: isFocalCenter ? 44 : 36,
-              },
-            ]}
-          >
-            ÷
-          </Text>
-        );
-      case 'mixed':
-      default:
-        return <Ionicons name="shuffle" size={isFocalCenter ? 36 : 30} color={themeColors.fg} />;
-    }
-  };
-
-  return (
-    <View
-      style={[
-        styles.operationCircle,
-        {
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-          backgroundColor: themeColors.bg,
-          borderColor: themeColors.borderColor || 'transparent',
-          borderWidth: isFocalCenter ? 1.5 : 0,
-        },
-      ]}
-    >
-      {renderGlyph()}
-    </View>
-  );
-}
-
 const MAX_CONTENT_WIDTH = 480;
+
+// The picks row, in this order, minus today's focus.
+const ALL_OPS: OperationType[] = ['addition', 'subtraction', 'multiplication', 'division', 'mixed'];
 
 export default function DashboardScreen() {
   const router = useRouter();
@@ -115,6 +67,7 @@ export default function DashboardScreen() {
   const { theme } = useTheme();
 
   const isNarrow = width < 360;
+  const gutter = isNarrow ? 16 : 20;
   // 480 on a phone, wider on a tablet.
   const contentWidth = useResponsiveContentWidth(MAX_CONTENT_WIDTH);
   // Under the safe area; more on a tablet.
@@ -129,13 +82,8 @@ export default function DashboardScreen() {
   // Only the newest load may update the screen.
   const loadIdRef = useRef(0);
 
-  // A tapped outer bubble is a one-time choice; the coach's plan returns afterwards.
+  // A tapped pick card is a one-time choice; the coach's plan returns afterwards.
   const [selectedOverrideOp, setSelectedOverrideOp] = useState<OperationType | null>(null);
-
-  // Animations
-  const contentOpacity = useSharedValue(0);
-  const contentTranslateY = useSharedValue(16);
-  const pulseCenter = useSharedValue(1);
 
   // Skeleton pulse animation
   const skeletonPulse = useSharedValue(0.4);
@@ -150,17 +98,6 @@ export default function DashboardScreen() {
       true
     );
   }, [skeletonPulse]);
-
-  useEffect(() => {
-    pulseCenter.value = withRepeat(
-      withSequence(
-        withTiming(1.03, { duration: 2200, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 2200, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      true
-    );
-  }, [pulseCenter]);
 
   // Same as Practice: live data, else the cached copy plus queued workouts, else the
   // plan saved on this phone. Offline never replaces the screen; a small note says so.
@@ -184,13 +121,12 @@ export default function DashboardScreen() {
     if (loadId !== loadIdRef.current) return;
     setLoaded(next);
 
+    // The sections stagger in (see Rise) when they first mount.
     if (isInitialMount.current) {
       setIsLoading(false);
       isInitialMount.current = false;
-      contentOpacity.value = withTiming(1, { duration: 400, easing: Easing.out(Easing.quad) });
-      contentTranslateY.value = withTiming(0, { duration: 400, easing: Easing.out(Easing.quad) });
     }
-  }, [session?.user?.id, contentOpacity, contentTranslateY, recheck]);
+  }, [session?.user?.id, recheck]);
 
   useFocusEffect(
     useCallback(() => {
@@ -200,26 +136,16 @@ export default function DashboardScreen() {
     }, [loadDashboardState])
   );
 
-  const containerAnimatedStyle = useAnimatedStyle(() => ({
-    opacity: contentOpacity.value,
-    transform: [{ translateY: contentTranslateY.value }],
-  }));
-
-  const centerAnimatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseCenter.value }],
-  }));
-
   const skeletonAnimatedStyle = useAnimatedStyle(() => ({
     opacity: skeletonPulse.value,
   }));
 
   const isDark = theme.isDark;
-  const screenBg = isDark ? '#0A0F0B' : theme.background || '#F1ECE9';
+  const screenBg = isDark ? '#0A0F0B' : theme.background || HOME_COLORS.background;
   const textColor = theme.text;
-  const textSubtle = theme.subtext;
+  const textSubtle = isDark ? theme.subtext : HOME_COLORS.textSecondary;
+  const textMuted = isDark ? theme.subtext : HOME_COLORS.textMuted;
   const cardBg = theme.card;
-  const accentGreen = '#BCE3AA';
-  const accentLilac = '#F2CAEC';
 
   const skeletonBoneColor = isDark ? 'rgba(255, 255, 255, 0.08)' : 'rgba(10, 15, 11, 0.07)';
   const bottomBarPadding = Math.max(insets.bottom, 16) + 85;
@@ -229,6 +155,7 @@ export default function DashboardScreen() {
     session?.user?.user_metadata?.full_name ||
     session?.user?.email?.split('@')[0] ||
     'Champion';
+  const firstName = displayName.trim().split(/\s+/)[0];
 
   const avatarUrl =
     profile.avatar_url ||
@@ -253,9 +180,6 @@ export default function DashboardScreen() {
   );
 
   const focusOp: OperationType = selectedOverrideOp ?? coach.focus;
-  const focusText = selectedOverrideOp
-    ? focusLabel(selectedOverrideOp, selectedOverrideOp === 'mixed' ? undefined : coach.levels[selectedOverrideOp])
-    : coach.focusLabel;
 
   const { headingText, subheadingText, buttonText } = useMemo(() => {
     if (selectedOverrideOp && pickedRequest) {
@@ -271,14 +195,47 @@ export default function DashboardScreen() {
       };
     }
     return {
-      headingText: coach.message.heading,
+      // Home shows "You're getting faster" in the pill, so the heading names today's focus.
+      headingText: coach.message.kind === 'improving' ? COPY.dailyHeading(coach.focus) : coach.message.heading,
       subheadingText: coach.message.subheading,
       buttonText: coach.message.button,
     };
   }, [coach, coachData.plan.sessionDurationMinutes, pickedRequest, selectedOverrideOp]);
 
+  // Streak card: the same local-day helpers Statistics uses.
+  const { streak, week } = useMemo(() => {
+    const now = new Date();
+    const times = coachData.workouts.map((w) => w.completed_at);
+    const practiced = new Set(times.filter(Boolean).map((t) => localDayKey(t)));
+    const days: WeekDay[] = activityBuckets('week', now).map((day) => ({
+      letter: day.label,
+      name: day.name,
+      practiced: practiced.has(localDayKey(new Date(day.start))),
+      isToday: day.isCurrent,
+    }));
+    return { streak: countDayStreak(times, now), week: days };
+  }, [coachData.workouts]);
+  const dailyGoal = dailyGoalOf(coachData.plan);
+
+  const goalDone = coach.message.kind === 'goal_done' && !selectedOverrideOp;
+  const improving = coach.message.kind === 'improving' && !selectedOverrideOp;
+  const chipText = goalDone ? COPY.goalDoneChip : improving ? COPY.improvingChip : coach.goalLine;
+
+  const request = pickedRequest ?? coach.workout;
+  const heroChips = [
+    focusOp === 'mixed' ? COPY.mixedLevelsTag : LEVEL_NAMES[request.difficultyByOperation[focusOp] ?? coach.levels[focusOp]],
+    COPY.heroQuestions(request.questionCount),
+    COPY.heroMinutes(estimateMinutes(request.questionCount, coachData.plan.sessionDurationMinutes)),
+  ];
+
+  const pickTag = (op: OperationType) =>
+    op === 'mixed'
+      ? COPY.mixedLevelsTag
+      : coach.mastered.includes(op)
+        ? COPY.masteredTag
+        : LEVEL_NAMES[coach.levels[op]];
+
   const handleStartWorkout = () => {
-    const request = pickedRequest ?? coach.workout;
     router.push({
       pathname: '/workout' as any,
       params: {
@@ -289,48 +246,60 @@ export default function DashboardScreen() {
     });
   };
 
-  const allOps: OperationType[] = [
-    'addition',
-    'multiplication',
-    'subtraction',
-    'division',
-    'mixed',
-  ];
+  const handleHeroPress = () => {
+    haptics.light();
+    handleStartWorkout();
+  };
 
-  // Outer 4 non-active operations arranged in the grid
-  const outerOps = allOps.filter((op) => op !== focusOp);
-
-  const topLeftOp = outerOps[0];
-  const topRightOp = outerOps[1];
-  const bottomLeftOp = outerOps[2];
-  const bottomRightOp = outerOps[3];
+  // The four operations that aren't today's focus.
+  const outerOps = ALL_OPS.filter((op) => op !== focusOp);
 
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: screenBg }]} edges={['top', 'bottom']}>
       <StatusBar barStyle={isDark ? 'light-content' : 'dark-content'} />
 
-      {/* Header Bar */}
+      {/* Greeting header */}
       <View
         style={[
           styles.headerRow,
           {
             maxWidth: contentWidth,
-            paddingHorizontal: isNarrow ? 18 : 24,
+            paddingHorizontal: gutter,
             paddingTop: topPadding,
           },
         ]}
       >
-        <Text style={[styles.brandTitle, { color: textColor }]}>NUMO</Text>
+        {isLoading ? (
+          <Animated.View style={[styles.greeting, skeletonAnimatedStyle]}>
+            <View style={[styles.skeletonGreetingSmall, { backgroundColor: skeletonBoneColor }]} />
+            <View style={[styles.skeletonGreetingName, { backgroundColor: skeletonBoneColor }]} />
+          </Animated.View>
+        ) : (
+          <Rise index={0} style={styles.greeting}>
+            <Text style={[styles.greetingLine, { color: textSubtle }]}>
+              {COPY.greeting(new Date().getHours())}
+            </Text>
+            <Text
+              style={[styles.greetingName, { color: textColor }]}
+              numberOfLines={1}
+              maxFontSizeMultiplier={MAX_FONT_SCALE.screenTitle}
+            >
+              {firstName}
+            </Text>
+          </Rise>
+        )}
 
         <TouchableOpacity
           style={[styles.avatarButton, { backgroundColor: cardBg }]}
           activeOpacity={0.8}
           onPress={() => router.push('/(app)/Profile')}
+          accessibilityRole="button"
+          accessibilityLabel={COPY.openProfile}
         >
           {avatarUrl ? (
             <Image source={{ uri: avatarUrl }} style={styles.avatarImage} />
           ) : (
-            <View style={[styles.avatarInner, { backgroundColor: accentGreen }]}>
+            <View style={[styles.avatarInner, { backgroundColor: HOME_COLORS.green }]}>
               <Text style={styles.avatarText}>{getInitials(displayName)}</Text>
             </View>
           )}
@@ -338,194 +307,138 @@ export default function DashboardScreen() {
       </View>
 
       {isLoading ? (
-        <Animated.View style={[styles.mainContainer, { maxWidth: contentWidth }, skeletonAnimatedStyle]}>
-          <View style={styles.upperStage}>
-            <View style={[styles.skeletonBadge, { backgroundColor: skeletonBoneColor }]} />
-            <View style={[styles.skeletonHeadingLine, { backgroundColor: skeletonBoneColor }]} />
-            <View style={[styles.skeletonHeadingLineShort, { backgroundColor: skeletonBoneColor }]} />
-            <View style={[styles.skeletonSubheadingLine, { backgroundColor: skeletonBoneColor }]} />
+        <Animated.View
+          style={[
+            styles.mainContainer,
+            styles.skeletonContainer,
+            { maxWidth: contentWidth, paddingHorizontal: gutter, paddingBottom: bottomBarPadding },
+            skeletonAnimatedStyle,
+          ]}
+        >
+          <View style={[styles.skeletonStreak, { backgroundColor: skeletonBoneColor }]} />
+          <View>
+            <View style={[styles.skeletonChip, { backgroundColor: skeletonBoneColor }]} />
+            <View style={[styles.skeletonHeading, { backgroundColor: skeletonBoneColor }]} />
+            <View style={[styles.skeletonSubheading, { backgroundColor: skeletonBoneColor }]} />
           </View>
-
-          <View style={styles.centerStageWrapper}>
-            <View style={styles.circlesCluster}>
-              <View style={styles.circlesRow}>
-                <View style={[styles.skeletonCircle, { backgroundColor: skeletonBoneColor }]} />
-                <View style={[styles.skeletonCircle, { backgroundColor: skeletonBoneColor }]} />
-              </View>
-
-              <View style={[styles.skeletonCircleCenter, { backgroundColor: skeletonBoneColor }]} />
-
-              <View style={styles.circlesRow}>
-                <View style={[styles.skeletonCircle, { backgroundColor: skeletonBoneColor }]} />
-                <View style={[styles.skeletonCircle, { backgroundColor: skeletonBoneColor }]} />
-              </View>
-            </View>
-          </View>
-
-          <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
-            <View style={[styles.skeletonButton, { backgroundColor: skeletonBoneColor }]} />
+          <View style={[styles.skeletonHero, { backgroundColor: skeletonBoneColor }]} />
+          <View style={styles.picksRow}>
+            {[0, 1, 2, 3].map((i) => (
+              <View key={i} style={[styles.skeletonPick, { backgroundColor: skeletonBoneColor }]} />
+            ))}
           </View>
         </Animated.View>
       ) : (
-        <Animated.View style={[styles.mainContainer, { maxWidth: contentWidth }, containerAnimatedStyle]}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={[
+            styles.mainContainer,
+            { maxWidth: contentWidth, paddingHorizontal: gutter, paddingBottom: bottomBarPadding },
+          ]}
+          showsVerticalScrollIndicator={false}
+        >
           {loaded && (
             <OfflineNote
               from={loaded.from}
               isOffline={isOffline}
               pendingSync={loaded.data.pendingSync}
-              style={styles.offlineNote}
             />
           )}
 
-          {/* Upper Text Stage */}
-          <View style={styles.upperStage}>
-            {coach.goalLine && (
-              <View
-                style={[
-                  styles.tagBadge,
-                  {
-                    backgroundColor: isDark
-                      ? 'rgba(188, 227, 170, 0.18)'
-                      : accentLilac,
-                  },
-                ]}
-              >
-                <Text
-                  style={[
-                    styles.tagBadgeText,
-                    { color: isDark ? accentGreen : '#0A0F0B' },
-                  ]}
-                >
-                  {coach.goalLine}
-                </Text>
+          <Rise index={1}>
+            <StreakCard
+              streak={streak}
+              questionsToday={coach.questionsToday}
+              dailyGoal={dailyGoal}
+              week={week}
+              isDark={isDark}
+              cardColor={cardBg}
+              textColor={textColor}
+              subtleColor={textMuted}
+            />
+          </Rise>
+
+          {/* Coach chip + heading */}
+          <Rise index={2}>
+            {chipText && (
+              <View style={styles.chip}>
+                <Ionicons
+                  name={goalDone ? 'checkmark-circle' : 'flash'}
+                  size={13}
+                  color={HOME_COLORS.ink}
+                />
+                <Text style={styles.chipText}>{chipText}</Text>
               </View>
             )}
-
-            {coach.message.kind === 'goal_done' && !selectedOverrideOp && (
-              <PopIcon name="checkmark-done" size={52} delay={300} style={styles.goalDoneIcon} />
-            )}
-
-            <Text style={[styles.clarityHeading, { color: textColor }]}>
+            <Text
+              style={[styles.heading, { color: textColor }]}
+              maxFontSizeMultiplier={MAX_FONT_SCALE.display}
+            >
               {headingText}
             </Text>
+            <Text style={[styles.subheading, { color: textSubtle }]}>{subheadingText}</Text>
+          </Rise>
 
-            <Text style={[styles.claritySubheading, { color: textSubtle }]}>
-              {subheadingText}
-            </Text>
-          </View>
+          {/* The card is the start button */}
+          <Rise index={3} style={styles.heroWrap}>
+            <HeroCard
+              operation={focusOp}
+              chips={heroChips}
+              progress={goalDone ? 1 : coach.questionsToday / dailyGoal}
+              accent={goalDone ? HOME_COLORS.lilac : HOME_COLORS.green}
+              buttonText={buttonText}
+              accessibilityLabel={COPY.heroLabel(buttonText, focusOp, request.questionCount)}
+              goalDone={goalDone}
+              onPress={handleHeroPress}
+            />
+          </Rise>
 
-          {/* Center Stage: Interactive Operation Bubbles */}
-          <View style={styles.centerStageWrapper}>
-            <View style={styles.circlesCluster}>
-
-              {/* Top Row: Interactive Outer Bubbles */}
-              <View style={styles.circlesRow}>
+          {/* Or pick your own */}
+          <Rise index={4}>
+            <View style={styles.picksHeader}>
+              <Text style={[styles.picksLabel, { color: textColor }]}>{COPY.pickYourOwn}</Text>
+              {selectedOverrideOp ? (
                 <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedOverrideOp(topLeftOp)}
+                  onPress={() => setSelectedOverrideOp(null)}
+                  hitSlop={{ top: 14, bottom: 14, left: 8, right: 8 }}
+                  accessibilityRole="button"
+                  accessibilityLabel={COPY.backToPlan}
                 >
-                  <OperationBubble
-                    type={topLeftOp}
-                    themeColors={{
-                      bg: isDark ? 'rgba(188, 227, 170, 0.18)' : '#FFFFFF',
-                      fg: isDark ? accentGreen : '#0A0F0B',
-                    }}
-                  />
+                  <Text style={[styles.linkText, { color: textMuted }]}>{COPY.backToPlan}</Text>
                 </TouchableOpacity>
-
-                <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedOverrideOp(topRightOp)}
-                >
-                  <OperationBubble
-                    type={topRightOp}
-                    themeColors={{
-                      bg: isDark ? 'rgba(242, 202, 236, 0.22)' : accentLilac,
-                      fg: isDark ? accentLilac : '#0A0F0B',
-                    }}
-                  />
-                </TouchableOpacity>
-              </View>
-
-              {/* Center Focal Point: Active Recommended / Selected Operation */}
-              <Animated.View style={[styles.centerFocalWrap, centerAnimatedStyle]}>
-                <TouchableOpacity
-                  activeOpacity={0.85}
-                  onPress={() => {
-                    // Tapping center resets back to coach's automatic recommendation
-                    if (selectedOverrideOp) setSelectedOverrideOp(null);
-                  }}
-                >
-                  <OperationBubble
-                    type={focusOp}
-                    isFocalCenter={true}
-                    themeColors={{
-                      bg: isDark ? 'rgba(188, 227, 170, 0.28)' : accentGreen,
-                      fg: isDark ? accentGreen : '#0A0F0B',
-                      borderColor: isDark ? accentGreen : 'rgba(10, 15, 11, 0.12)',
-                    }}
-                  />
-                </TouchableOpacity>
-                <Text style={[styles.focusLabel, { color: textColor }]} numberOfLines={1}>
-                  {focusText}
-                </Text>
-              </Animated.View>
-
-              {/* Bottom Row: Interactive Outer Bubbles */}
-              <View style={styles.circlesRow}>
-                <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedOverrideOp(bottomLeftOp)}
-                >
-                  <OperationBubble
-                    type={bottomLeftOp}
-                    themeColors={{
-                      bg: isDark ? 'rgba(255, 255, 255, 0.09)' : '#FFFFFF',
-                      fg: textColor,
-                    }}
-                  />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  activeOpacity={0.75}
-                  onPress={() => setSelectedOverrideOp(bottomRightOp)}
-                >
-                  <OperationBubble
-                    type={bottomRightOp}
-                    themeColors={{
-                      bg: isDark ? 'rgba(242, 202, 236, 0.18)' : '#FFFFFF',
-                      fg: isDark ? accentLilac : '#0A0F0B',
-                    }}
-                  />
-                </TouchableOpacity>
-              </View>
-
+              ) : (
+                coach.tryNew && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedOverrideOp(coach.tryNew!.operation)}
+                    hitSlop={{ top: 14, bottom: 14, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={coach.tryNew.text}
+                    style={styles.linkShrink}
+                  >
+                    <Text style={[styles.linkText, { color: textMuted }]} numberOfLines={1}>
+                      {COPY.tryNewShort(coach.tryNew.operation)}
+                    </Text>
+                  </TouchableOpacity>
+                )
+              )}
             </View>
-
-            {coach.tryNew && !selectedOverrideOp && (
-              <TouchableOpacity
-                style={styles.tryNewLink}
-                activeOpacity={0.7}
-                onPress={() => setSelectedOverrideOp(coach.tryNew!.operation)}
-              >
-                <Text style={[styles.tryNewText, { color: textSubtle }]}>{coach.tryNew.text}</Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Start Button */}
-          <View style={[styles.actionWrapper, { paddingBottom: bottomBarPadding }]}>
-            <TouchableOpacity
-              style={[styles.startButton, { backgroundColor: accentGreen }]}
-              activeOpacity={0.85}
-              onPress={handleStartWorkout}
-            >
-              <Text style={styles.startButtonText}>{buttonText}</Text>
-              <Ionicons name="arrow-forward" size={22} color="#0A0F0B" />
-            </TouchableOpacity>
-          </View>
-
-        </Animated.View>
+            <View style={styles.picksRow}>
+              {outerOps.map((op) => (
+                <PickCard
+                  key={op}
+                  operation={op}
+                  tag={pickTag(op)}
+                  mastered={op !== 'mixed' && coach.mastered.includes(op)}
+                  isDark={isDark}
+                  cardColor={cardBg}
+                  textColor={textColor}
+                  subtleColor={textMuted}
+                  onPress={() => setSelectedOverrideOp(op)}
+                />
+              ))}
+            </View>
+          </Rise>
+        </ScrollView>
       )}
     </SafeAreaView>
   );
@@ -542,11 +455,22 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingBottom: 4,
+    gap: 12,
     zIndex: 2,
   },
-  brandTitle: {
-    ...typography.sectionHeading,
-    letterSpacing: -0.5,
+  greeting: {
+    flex: 1,
+  },
+  greetingLine: {
+    ...typography.secondary,
+    fontSize: 15,
+  },
+  greetingName: {
+    fontFamily: FONT_FAMILY.heading,
+    fontWeight: '600',
+    fontSize: 26,
+    lineHeight: 31,
+    letterSpacing: -0.6,
   },
   avatarButton: {
     width: 44,
@@ -572,154 +496,116 @@ const styles = StyleSheet.create({
   },
   avatarText: {
     ...typography.button,
-    color: '#0A0F0B',
+    color: HOME_COLORS.ink,
+  },
+  scroll: {
+    flex: 1,
   },
   mainContainer: {
-    flex: 1,
+    flexGrow: 1,
     width: '100%',
     alignSelf: 'center',
-    paddingHorizontal: 24,
-    justifyContent: 'space-between',
-    zIndex: 1,
+    paddingTop: 14,
+    gap: 18,
   },
-  offlineNote: {
-    marginTop: 12,
-  },
-  upperStage: {
+  chip: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    paddingTop: 36,
+    gap: 5,
+    backgroundColor: HOME_COLORS.lilac,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    marginBottom: 10,
   },
-  tagBadge: {
-    paddingHorizontal: 16,
-    paddingVertical: 6,
-    borderRadius: 14,
-    marginBottom: 12,
-  },
-  tagBadgeText: {
+  chipText: {
     ...typography.caption,
+    fontWeight: '600',
+    color: HOME_COLORS.ink,
   },
-  goalDoneIcon: {
-    marginBottom: 14,
-  },
-  clarityHeading: {
-    ...typography.display,
-    textAlign: 'center',
+  heading: {
+    fontFamily: FONT_FAMILY.heading,
+    fontWeight: '600',
+    fontSize: 30,
+    lineHeight: 36,
     letterSpacing: -0.8,
   },
-  claritySubheading: {
+  subheading: {
     ...typography.body,
-    textAlign: 'center',
-    marginTop: 8,
-    paddingHorizontal: 14,
+    fontSize: 15,
+    lineHeight: 22,
+    marginTop: 4,
   },
-  centerStageWrapper: {
+  heroWrap: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 240,
   },
-  circlesCluster: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 16,
-  },
-  circlesRow: {
+  picksHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 24,
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 10,
   },
-  centerFocalWrap: {
-    zIndex: 3,
-    alignItems: 'center',
+  picksLabel: {
+    ...typography.button,
+    fontSize: 14,
   },
-  focusLabel: {
+  linkShrink: {
+    flexShrink: 1,
+  },
+  linkText: {
     ...typography.caption,
-    marginTop: 8,
-    textAlign: 'center',
-  },
-  tryNewLink: {
-    marginTop: 18,
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-  },
-  tryNewText: {
-    ...typography.caption,
-    textAlign: 'center',
+    fontSize: 13,
     textDecorationLine: 'underline',
   },
-  operationCircle: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.08,
-    shadowRadius: 10,
-    elevation: 3,
-  },
-  divisionGlyph: {
-    fontWeight: '700',
-    textAlign: 'center',
-  },
-  actionWrapper: {
-    width: '100%',
-    alignItems: 'center',
-  },
-  startButton: {
-    width: '100%',
-    height: 64,
-    borderRadius: 32,
+  picksRow: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.14,
-    shadowRadius: 14,
-    elevation: 4,
+    gap: 8,
   },
-  startButtonText: {
-    ...typography.button,
-    color: '#0A0F0B',
+  skeletonContainer: {
+    flex: 1,
   },
-  skeletonBadge: {
-    width: 130,
-    height: 26,
-    borderRadius: 13,
-    marginBottom: 16,
-  },
-  skeletonHeadingLine: {
-    width: 260,
-    height: 28,
-    borderRadius: 8,
+  skeletonGreetingSmall: {
+    width: 120,
+    height: 14,
+    borderRadius: 6,
     marginBottom: 8,
   },
-  skeletonHeadingLineShort: {
-    width: 180,
-    height: 28,
+  skeletonGreetingName: {
+    width: 150,
+    height: 26,
     borderRadius: 8,
-    marginBottom: 14,
   },
-  skeletonSubheadingLine: {
+  skeletonStreak: {
+    height: 102,
+    borderRadius: 22,
+  },
+  skeletonChip: {
+    width: 150,
+    height: 24,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  skeletonHeading: {
+    width: 250,
+    height: 30,
+    borderRadius: 8,
+    marginBottom: 10,
+  },
+  skeletonSubheading: {
     width: 220,
     height: 14,
     borderRadius: 6,
   },
-  skeletonCircle: {
-    width: 74,
-    height: 74,
-    borderRadius: 37,
-  },
-  skeletonCircleCenter: {
-    width: 86,
-    height: 86,
-    borderRadius: 43,
-  },
-  skeletonButton: {
-    width: '100%',
-    height: 64,
+  skeletonHero: {
+    flex: 1,
+    minHeight: 210,
     borderRadius: 32,
+  },
+  skeletonPick: {
+    flex: 1,
+    height: 112,
+    borderRadius: 20,
   },
 });

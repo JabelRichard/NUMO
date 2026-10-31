@@ -8,6 +8,8 @@ export * from './activity';
 export { buildBreakdown, normalizeOperation, normalizeDifficulty, toEntries } from './entries';
 export {
   operationName,
+  operationTitle,
+  estimateMinutes,
   operationSymbol,
   focusLabel,
   roundLength,
